@@ -198,8 +198,8 @@ brew install cmake pkg-config openssl
 ### Building
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/secondlife-viewer-rust.git
-cd secondlife-viewer-rust
+git clone git@github.com:jmacdonald404/slv-rust
+cd slv-rust
 
 # Build in release mode
 cargo build --release
