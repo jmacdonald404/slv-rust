@@ -1,6 +1,4 @@
-# slv-rust
-
-# SecondLife Viewer - Rust Implementation
+# slv-rust: a SecondLife Viewer - Rust Implementation
 
 A modern SecondLife viewer implementation built with Rust, focusing on performance, safety, and modularity.
 
