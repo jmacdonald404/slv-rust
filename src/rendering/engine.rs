@@ -18,6 +18,8 @@ use crate::assets::mesh::{Mesh, MeshLoader};
 
 use crate::rendering::light::{Light, LightUniform};
 
+use tracing::{info, error};
+
 pub struct RenderEngine<'a> {
     instance: Instance,
     adapter: Adapter,
@@ -364,15 +366,17 @@ impl<'a> RenderEngine<'a> {
                     let frame = match self.surface.get_current_texture() {
                         Ok(frame) => frame,
                         Err(wgpu::SurfaceError::Lost) => {
+                            error!("Surface lost, resizing");
                             self.resize(self.size);
                             return;
                         },
                         Err(wgpu::SurfaceError::OutOfMemory) => {
+                            error!("Out of memory, exiting");
                             *control_flow = ControlFlow::Exit;
                             return;
                         },
                         Err(e) => {
-                            eprintln!("Surface error: {:?}", e);
+                            error!("Surface error: {:?}", e);
                             return;
                         }
                     };
@@ -404,6 +408,7 @@ impl<'a> RenderEngine<'a> {
                     }
                     self.queue.submit(Some(encoder.finish()));
                     frame.present();
+                    info!("Frame rendered successfully");
                 },
                 _ => {}
             }

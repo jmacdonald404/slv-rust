@@ -2,6 +2,7 @@ use wgpu::{Buffer, BufferUsages};
 use anyhow::Result;
 use async_trait::async_trait;
 use std::path::Path;
+use tracing::{info, error};
 
 pub struct Mesh {
     pub vertex_buffer: Buffer,
@@ -25,6 +26,8 @@ impl<'a> super::manager::AssetLoader<Mesh> for MeshLoader<'a> {
         // For now, we'll just create a dummy mesh.
         // In a real scenario, this would parse a mesh file (e.g., .obj, .gltf)
         // and create the appropriate buffers.
+
+        info!("Loading mesh: {:?}", path);
 
         #[repr(C)]
         #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]

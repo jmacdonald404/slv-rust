@@ -22,11 +22,11 @@ The core asset loading system has been implemented, focusing on textures. This i
        * Create a SceneGraph structure to manage hierarchical transformations. (DONE)
        * Implement methods to add, remove, and update objects in the scene. (DONE)
    4. Basic lighting:
-       * Add a simple directional light or ambient light.
-       * Update shaders to incorporate lighting.
+       * Add a simple directional light or ambient light. (DONE)
+       * Update shaders to incorporate lighting. (DONE)
    5. Error handling and logging:
-       * Improve error handling throughout the engine.
-       * Integrate with the tracing crate for better logging.
+       * Improve error handling throughout the engine. (DONE)
+       * Integrate with the tracing crate for better logging. (DONE)
    6. Refactor `RenderEngine` for better modularity:
        * Break down RenderEngine into smaller, more manageable components (e.g., Renderer, ResourceManager).
    7. Clean up and optimize:
@@ -45,12 +45,10 @@ The core asset loading system has been implemented, focusing on textures. This i
 - SceneGraph: `src/rendering/scene/graph.rs` (lines 1–27)
 - Object struct: `src/rendering/scene/mod.rs` (lines 4–13)
 - Light struct/uniform: `src/rendering/light.rs` (lines 1–28)
-- Lighting shader stub: `src/rendering/shaders/shader.wgsl` (lines 1–31)
+- Lighting: Lighting is now integrated in the render loop and shader. The render loop updates the light uniform buffer and the mesh is rendered with lighting applied. (See `src/rendering/engine.rs` lines ~330-420, `src/rendering/shaders/shader.wgsl` lines 1-31)
+- Error Handling/Logging: Add robust error handling and integrate `tracing` throughout. (All modules, especially asset loading and rendering)
 
 ### TODOs
 
-- [ ] **Lighting**: Complete integration of lighting in the render loop and shader. (See `src/rendering/engine.rs`, `src/rendering/shaders/shader.wgsl`)
-- [x] **Lighting**: Lighting is now integrated in the render loop and shader. The render loop updates the light uniform buffer and the mesh is rendered with lighting applied. (See `src/rendering/engine.rs` lines ~330-420, `src/rendering/shaders/shader.wgsl` lines 1-31)
-- [ ] **Error Handling/Logging**: Add robust error handling and integrate `tracing` throughout. (All modules, especially asset loading and rendering)
 - [ ] **Refactor RenderEngine**: Break into smaller modules for modularity. (See `src/rendering/engine.rs`)
 - [ ] **Cleanup/Optimization**: Remove unused code, optimize, ensure proper resource management. (All modules)

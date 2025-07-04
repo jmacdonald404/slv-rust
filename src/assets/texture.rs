@@ -3,6 +3,7 @@ use image::GenericImageView;
 use anyhow::Result;
 use async_trait::async_trait;
 use std::path::Path;
+use tracing::{info, error};
 
 pub struct Texture {
     pub texture: wgpu::Texture,
@@ -85,8 +86,16 @@ impl<'a> TextureLoader<'a> {
 #[async_trait]
 impl<'a> super::manager::AssetLoader<Texture> for TextureLoader<'a> {
     async fn load(&self, path: &Path) -> Result<Texture> {
-        let bytes = tokio::fs::read(path).await?;
-        let texture = Texture::from_bytes(self.device, self.queue, &bytes, path.to_str().unwrap_or("unnamed_texture"))?;
-        Ok(texture)
+        match image::open(path) {
+            Ok(img) => {
+                info!("Loaded texture: {:?}", path);
+                let texture = Texture::from_image(self.device, self.queue, &img, Some(path.to_str().unwrap_or("unnamed_texture")))?;
+                Ok(texture)
+            },
+            Err(e) => {
+                error!("Failed to load texture: {:?}, error: {}", path, e);
+                return Err(TextureError::LoadFailed);
+            }
+        }
     }
 }
