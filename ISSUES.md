@@ -15,5 +15,8 @@ Both client and server should successfully send and receive messages, and the pr
 **Actual Behavior:**
 "Server listening" and "Client sent" messages are printed, but the program then hangs, indicating the server is not receiving the message or the client is not receiving the echo.
 
-**Current Hypothesis:**
-Possible timing issue or incorrect binding/sending addresses, although the code appears logically correct. Further debugging with more print statements is needed.
+**Root Cause (Identified):**
+The server's `UdpTransport` was binding to an ephemeral port (`0.0.0.0:xxxxx`) instead of the intended `127.0.0.1:8080`. The client was correctly sending to `127.0.0.1:8080`, leading to a mismatch.
+
+**Resolution Attempt:**
+Modified `Circuit::new` to accept a `bind_addr` parameter, allowing explicit control over the local address the UDP socket binds to. Updated `main.rs` to ensure the server binds to `127.0.0.1:8080` and the client binds to `0.0.0.0:0` (ephemeral).

@@ -9,6 +9,7 @@ pub struct UdpTransport {
 impl UdpTransport {
     pub async fn new(addr: &str) -> io::Result<Self> {
         let socket = UdpSocket::bind(addr).await?;
+        println!("UdpTransport bound to: {}", socket.local_addr()?);
         Ok(Self { socket })
     }
 
