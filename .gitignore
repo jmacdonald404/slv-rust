@@ -2,3 +2,4 @@
 gemini-github-helper.py
 gemini-github-manager.sh
 ./gemini-github-config.json
+.env

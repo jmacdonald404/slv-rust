@@ -3,6 +3,7 @@ use std::path::Path;
 use anyhow::Result;
 use crate::assets::cache::AssetCache;
 use crate::assets::{Asset, texture::TextureLoader, mesh::MeshLoader};
+use std::sync::Arc;
 use wgpu::{Device, Queue};
 
 #[async_trait]
@@ -10,17 +11,17 @@ pub trait AssetLoader<A> {
     async fn load(&self, path: &Path) -> Result<A>;
 }
 
-pub struct ResourceManager<'a> {
+pub struct ResourceManager {
     pub cache: AssetCache<String, Asset>,
-    pub texture_loader: TextureLoader<'a>,
-    pub mesh_loader: MeshLoader<'a>,
+    pub texture_loader: TextureLoader,
+    pub mesh_loader: MeshLoader,
 }
 
-impl<'a> ResourceManager<'a> {
-    pub fn new(device: &'a Device, queue: &'a Queue) -> Self {
+impl ResourceManager {
+    pub fn new(device: Arc<Device>, queue: Arc<Queue>) -> Self {
         Self {
             cache: AssetCache::new(),
-            texture_loader: TextureLoader::new(device, queue),
+            texture_loader: TextureLoader::new(Arc::clone(&device), Arc::clone(&queue)),
             mesh_loader: MeshLoader::new(device),
         }
     }
@@ -38,14 +39,14 @@ impl<'a> ResourceManager<'a> {
     }
 
     pub fn get_texture(&self, path: &str) -> Option<&crate::assets::texture::Texture> {
-        match self.cache.get(path) {
+        match self.cache.get(&path.to_string()) {
             Some(Asset::Texture(t)) => Some(t),
             _ => None,
         }
     }
 
     pub fn get_mesh(&self, path: &str) -> Option<&crate::assets::mesh::Mesh> {
-        match self.cache.get(path) {
+        match self.cache.get(&path.to_string()) {
             Some(Asset::Mesh(m)) => Some(m),
             _ => None,
         }

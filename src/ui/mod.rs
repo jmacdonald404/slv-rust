@@ -4,11 +4,11 @@
 // TODO: Add modules for HUD, settings, chat, inventory, preferences
 
 use egui_winit::State as EguiWinitState;
-use egui_wgpu::renderer::ScreenDescriptor;
-use egui::{Context as EguiContext};
-use winit::event::WindowEvent;
+use egui_wgpu::{Renderer as EguiRenderer, ScreenDescriptor};
+use egui::{Context as EguiContext, ViewportId};
 use wgpu::{Device, Queue, SurfaceConfiguration, TextureView};
-use egui_wgpu::Renderer as EguiRenderer;
+use winit::event::WindowEvent;
+use winit::window::Window;
 use std::collections::VecDeque;
 
 pub mod main_window;
@@ -22,14 +22,15 @@ pub struct UiContext {
 }
 
 impl UiContext {
-    pub fn new(window: &winit::window::Window) -> Self {
+    pub fn new(window: &Window) -> Self {
         let egui_ctx = EguiContext::default();
-        let egui_winit = EguiWinitState::new(window);
+        let viewport_id = ViewportId::ROOT;
+        let egui_winit = EguiWinitState::new(egui_ctx.clone(), viewport_id, &window, None, None, None);
         Self { egui_ctx, egui_winit }
     }
 
-    pub fn handle_event(&mut self, event: &WindowEvent) -> bool {
-        self.egui_winit.on_event(&self.egui_ctx, event).consumed
+    pub fn handle_event(&mut self, window: &Window, event: &WindowEvent) -> bool {
+        self.egui_winit.on_window_event(&window, event).consumed
     }
 }
 
@@ -38,8 +39,8 @@ pub struct UiRenderer {
 }
 
 impl UiRenderer {
-    pub fn new(device: &Device, surface_config: &SurfaceConfiguration, format: wgpu::TextureFormat) -> Self {
-        let renderer = EguiRenderer::new(device, format, None, 1);
+    pub fn new(device: &Device, _surface_config: &SurfaceConfiguration, format: wgpu::TextureFormat) -> Self {
+        let renderer = EguiRenderer::new(device, format, None, 1, false);
         Self { renderer }
     }
 
@@ -49,33 +50,37 @@ impl UiRenderer {
         queue: &Queue,
         surface_config: &SurfaceConfiguration,
         view: &TextureView,
+        window: &Window,
         egui_ctx: &EguiContext,
-        full_output: &egui::FullOutput,
+        full_output: egui::FullOutput,
     ) {
         let screen_descriptor = ScreenDescriptor {
             size_in_pixels: [surface_config.width, surface_config.height],
-            pixels_per_point: surface_config.width as f32 / surface_config.width as f32, // TODO: Use actual scale factor
+            pixels_per_point: window.scale_factor() as f32,
         };
-        let paint_jobs = egui_ctx.tessellate(full_output.shapes.clone());
-        self.renderer.update_buffers(
-            device,
-            queue,
-            &paint_jobs,
-            &full_output.textures_delta,
-            &screen_descriptor,
-        );
+        let paint_jobs = egui_ctx.tessellate(full_output.shapes, screen_descriptor.pixels_per_point);
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("egui UI Encoder"),
         });
-        self.renderer.render(
-            &mut encoder,
-            view,
-            &paint_jobs,
-            &screen_descriptor,
-            None,
-        );
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Egui Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            let mut render_pass = render_pass.forget_lifetime();
+            self.renderer.render(&mut render_pass, &paint_jobs, &screen_descriptor);
+        }
         queue.submit(Some(encoder.finish()));
-        self.renderer.free_unused_textures();
     }
 }
 
@@ -114,17 +119,28 @@ pub fn run_ui_frame(
     queue: &Queue,
     surface_config: &SurfaceConfiguration,
     view: &TextureView,
+    window: &Window,
     ui_state: &mut UiState,
 ) {
     // Begin egui frame
-    let raw_input = ui_ctx.egui_winit.take_egui_input(&ui_ctx.egui_ctx);
+    let raw_input = ui_ctx.egui_winit.take_egui_input(window);
     let full_output = ui_ctx.egui_ctx.run(raw_input, |ctx| {
         crate::ui::main_window::show_main_window(ctx);
         crate::ui::chat::show_chat_panel(ctx, &mut ui_state.chat_input, &mut ui_state.chat_messages);
         crate::ui::inventory::show_inventory_panel(ctx, &ui_state.inventory_items);
         crate::ui::preferences::show_preferences_panel(ctx, &mut ui_state.preferences);
     });
-    ui_renderer.paint(device, queue, surface_config, view, &ui_ctx.egui_ctx, &full_output);
+
+    // Draw egui frame
+    ui_renderer.paint(
+        device,
+        queue,
+        surface_config,
+        view,
+        window,
+        &ui_ctx.egui_ctx,
+        full_output,
+    );
 }
 
 // TODO: Add stubs for future UI state (e.g., avatar, object selection, notifications)

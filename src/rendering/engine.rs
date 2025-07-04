@@ -1,29 +1,75 @@
 use winit::{
-    event::{Event, WindowEvent, StartCause},
-    event_loop::{EventLoop, ControlFlow, ActiveEventLoop},
-    window::{Window, WindowBuilder, WindowId},
+    event::*,
+    window::Window,
     application::ApplicationHandler,
 };
-
-use wgpu::{Adapter, Device, Instance, Queue, Surface, util::DeviceExt};
+use wgpu::util::DeviceExt;
 use crate::rendering::camera::{Camera, CameraController};
 use crate::rendering::camera_uniform::CameraUniform;
-use cgmath::prelude::*;
-use wgpu::VertexBufferLayout;
-
 use crate::assets::manager::ResourceManager;
-use crate::assets::mesh::Mesh;
+use crate::assets::mesh::{Mesh, Vertex};
+use crate::rendering::light::{Light};
+use std::sync::Arc;
+use winit::event_loop::ActiveEventLoop;
 
-use crate::rendering::light::{Light, LightUniform};
-
-use tracing::{info, error};
-
-pub struct Renderer<'a> {
-    pub render_pipeline: &'a wgpu::RenderPipeline,
+pub struct State<'a> {
+    pub renderer: Option<RenderEngine<'a>>,
+    pub last_light_position: cgmath::Point3<f32>,
+    pub window: Option<Arc<Window>>,
 }
 
-impl<'a> Renderer<'a> {
-    pub fn new(render_pipeline: &'a wgpu::RenderPipeline) -> Self {
+impl<'a> ApplicationHandler for State<'a> {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.renderer.is_none() {
+            let window = Arc::new(event_loop.create_window(Window::default_attributes().with_title("slv-rust")).expect("Failed to create window"));
+            self.window = Some(window.clone());
+            let renderer = pollster::block_on(RenderEngine::new(window));
+            self.renderer = Some(renderer);
+        }
+    }
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, window_id: winit::window::WindowId, event: WindowEvent) {
+        if self.window.as_ref().map_or(true, |w| w.id() != window_id) {
+            return;
+        }
+        if let Some(renderer) = self.renderer.as_mut() {
+            if !renderer.camera_controller.process_events(&event) {
+                match event {
+                    WindowEvent::CloseRequested => {
+                        event_loop.exit();
+                    },
+                    WindowEvent::Resized(physical_size) => {
+                        renderer.resize(physical_size);
+                    },
+                    WindowEvent::RedrawRequested => {
+                        renderer.camera_controller.update_camera(&mut renderer.camera);
+                        let camera_uniform = CameraUniform {
+                            view_proj: renderer.camera.build_view_projection_matrix().into(),
+                        };
+                        renderer.queue.write_buffer(&renderer.uniform_buffer, 0, bytemuck::cast_slice(&[camera_uniform]));
+                        if renderer.light.position != self.last_light_position {
+                            let light_uniform = renderer.light.to_uniform();
+                            renderer.queue.write_buffer(&renderer.light_uniform_buffer, 0, bytemuck::cast_slice(&[light_uniform]));
+                            self.last_light_position = renderer.light.position;
+                        }
+                        renderer.render_frame();
+                        if let Some(window) = self.window.as_ref() {
+                            window.request_redraw();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+pub struct Renderer {
+    pub render_pipeline: Arc<wgpu::RenderPipeline>,
+}
+
+impl Renderer {
+    pub fn new(render_pipeline: Arc<wgpu::RenderPipeline>) -> Self {
         Self { render_pipeline }
     }
 
@@ -32,7 +78,7 @@ impl<'a> Renderer<'a> {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         surface: &wgpu::Surface,
-        size: winit::dpi::PhysicalSize<u32>,
+        _size: winit::dpi::PhysicalSize<u32>,
         mesh: &Mesh,
         bind_group: &wgpu::BindGroup,
         texture_bind_group: &wgpu::BindGroup,
@@ -65,12 +111,14 @@ impl<'a> Renderer<'a> {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: true,
+                        store: wgpu::StoreOp::Store,
                     },
                 })],
                 depth_stencil_attachment: None,
+                occlusion_query_set: None,
+                timestamp_writes: None,
             });
-            render_pass.set_pipeline(self.render_pipeline);
+            render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_bind_group(0, bind_group, &[]); // Camera
             render_pass.set_bind_group(1, texture_bind_group, &[]); // Texture
             render_pass.set_bind_group(2, light_bind_group, &[]); // Light
@@ -84,46 +132,35 @@ impl<'a> Renderer<'a> {
 }
 
 pub struct RenderEngine<'a> {
-    instance: Instance,
-    adapter: Adapter,
-    device: Device,
-    queue: Queue,
-    surface: Surface<'a>,
-    window: winit::window::Window,
+    instance: wgpu::Instance,
+    adapter: wgpu::Adapter,
+    device: Arc<wgpu::Device>,
+    queue: Arc<wgpu::Queue>,
+    surface: wgpu::Surface<'a>,
+    window: Arc<winit::window::Window>,
     size: winit::dpi::PhysicalSize<u32>,
     config: wgpu::SurfaceConfiguration,
-    render_pipeline: wgpu::RenderPipeline,
+    render_pipeline: Arc<wgpu::RenderPipeline>,
     camera: Camera,
     camera_controller: CameraController,
     uniform_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
-    resource_manager: ResourceManager<'a>,
+    resource_manager: ResourceManager,
     texture_bind_group: wgpu::BindGroup,
     mesh: Mesh,
     light: Light,
     light_uniform_buffer: wgpu::Buffer,
     light_bind_group: wgpu::BindGroup,
-    renderer: Renderer<'a>,
+    renderer: Renderer,
 }
 
 impl<'a> RenderEngine<'a> {
-    pub async fn new(event_loop: &EventLoop<()>) -> Self {
-        let window = WindowBuilder::new()
-            .with_title("slv-rust")
-            .build(event_loop)
-            .unwrap();
-
-        let size = window.inner_size();
-
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+    pub async fn new(window: Arc<winit::window::Window>) -> Self {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
-            dx12_shader_compiler: Default::default(),
-            flags: wgpu::InstanceFlags::empty(),
-            gles_minor_version: wgpu::Gles3MinorVersion::Automatic,
+            ..Default::default()
         });
-
-        let surface = unsafe { instance.create_surface(&window) }.unwrap();
-
+        let surface = instance.create_surface(window.clone()).expect("Failed to create surface");
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::default(),
@@ -131,33 +168,29 @@ impl<'a> RenderEngine<'a> {
                 force_fallback_adapter: false,
             })
             .await
-            .unwrap();
-
+            .expect("Failed to find an appropriate adapter");
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: None,
                     required_features: wgpu::Features::empty(),
                     required_limits: wgpu::Limits::default(),
+                    memory_hints: wgpu::MemoryHints::default(),
                 },
-                None, // Trace path
+                None
             )
             .await
-            .unwrap();
-
-        let surface_caps = surface.get_capabilities(&adapter);
-        let surface_format = surface_caps.formats.iter()
-            .copied()
-            .filter(|f| f.is_srgb())
-            .next()
-            .unwrap_or(surface_caps.formats[0]);
+            .expect("Failed to create device");
+        let device = Arc::new(device);
+        let queue = Arc::new(queue);
+        let size = window.inner_size();
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: surface_format,
+            format: wgpu::TextureFormat::Bgra8UnormSrgb,
             width: size.width,
             height: size.height,
-            present_mode: surface_caps.present_modes[0],
-            alpha_mode: surface_caps.alpha_modes[0],
+            present_mode: wgpu::PresentMode::Fifo,
+            alpha_mode: wgpu::CompositeAlphaMode::Auto,
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
@@ -266,18 +299,18 @@ impl<'a> RenderEngine<'a> {
             push_constant_ranges: &[],
         });
 
-        let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let render_pipeline = Arc::new(device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Render Pipeline"),
             layout: Some(&render_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: "vs_main",
-                buffers: &[crate::assets::mesh::Vertex::desc()],
+                entry_point: Some("vs_main"),
+                buffers: &[Vertex::desc()],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: "fs_main",
+                entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: config.format,
                     blend: Some(wgpu::BlendState::REPLACE),
@@ -301,22 +334,22 @@ impl<'a> RenderEngine<'a> {
                 alpha_to_coverage_enabled: false,
             },
             multiview: None,
-        });
+            cache: None,
+        }));
 
-        let resource_manager = ResourceManager::new(&device, &queue);
+        let resource_manager = ResourceManager::new(Arc::clone(&device), Arc::clone(&queue));
         let texture_path = std::path::Path::new("assets/textures/happy-tree.png");
         let mesh_path = std::path::Path::new("assets/meshes/default.obj");
         let mut resource_manager = resource_manager;
         resource_manager.load_texture(texture_path).await.unwrap();
         resource_manager.load_mesh(mesh_path).await.unwrap();
         let texture_ref = resource_manager.get_texture(texture_path.to_str().unwrap()).unwrap();
-        let mesh_ref = resource_manager.get_mesh(mesh_path.to_str().unwrap()).unwrap();
+        let mesh_ref = resource_manager.get_mesh(mesh_path.to_str().unwrap()).unwrap().clone();
 
         let light = Light {
             position: cgmath::Point3::new(0.0, 0.0, 0.0),
             color: cgmath::Vector3::new(1.0, 1.0, 1.0),
         };
-        // TODO: Integrate lighting calculations into the render loop and update shader logic as needed.
 
         let light_uniform = light.to_uniform();
 
@@ -356,7 +389,7 @@ impl<'a> RenderEngine<'a> {
             }
         );
 
-        let renderer = Renderer::new(&render_pipeline);
+        let renderer = Renderer::new(Arc::clone(&render_pipeline));
 
         Self {
             instance,
@@ -374,7 +407,7 @@ impl<'a> RenderEngine<'a> {
             bind_group,
             resource_manager,
             texture_bind_group,
-            mesh: mesh_ref.clone(),
+            mesh: mesh_ref,
             light,
             light_uniform_buffer,
             light_bind_group,
@@ -382,58 +415,26 @@ impl<'a> RenderEngine<'a> {
         }
     }
 
-    pub fn run(&mut self) {
-        use winit::event::{Event, WindowEvent};
-        use winit::event_loop::ControlFlow;
-        use winit::event_loop::EventLoop;
-
-        let event_loop = EventLoop::new();
-        let mut last_light_position = self.light.position;
-        event_loop.run(move |event, _, control_flow| {
-            *control_flow = ControlFlow::Poll;
-            match event {
-                Event::WindowEvent { event, window_id } if window_id == self.window.id() => {
-                    if !self.camera_controller.process_events(&event) {
-                        match event {
-                            WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
-                            WindowEvent::Resized(physical_size) => {
-                                self.resize(physical_size);
-                            },
-                            _ => {},
-                        }
-                    }
-                },
-                Event::MainEventsCleared => {
-                    self.camera_controller.update_camera(&mut self.camera);
-                    self.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[self.camera.build_view_projection_matrix().into()]));
-                    // Update light position or color if needed
-                    if self.light.position != last_light_position {
-                        let light_uniform = self.light.to_uniform();
-                        self.queue.write_buffer(&self.light_uniform_buffer, 0, bytemuck::cast_slice(&[light_uniform]));
-                        last_light_position = self.light.position;
-                    }
-                    self.window.request_redraw();
-                },
-                Event::RedrawRequested(window_id) if window_id == self.window.id() => {
-                    self.renderer.render_frame(
-                        &self.device,
-                        &self.queue,
-                        &self.surface,
-                        self.size,
-                        &self.mesh,
-                        &self.bind_group,
-                        &self.texture_bind_group,
-                        &self.light_bind_group,
-                    );
-                },
-                _ => {}
-            }
-        });
+    pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
+        if new_size.width > 0 && new_size.height > 0 {
+            self.size = new_size;
+            self.config.width = new_size.width;
+            self.config.height = new_size.height;
+            self.surface.configure(&self.device, &self.config);
+        }
     }
 
-    pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
-        // TODO: implement resize logic
-        // TODO: Integrate error handling and logging (see progress.md)
+    fn render_frame(&mut self) {
+        self.renderer.render_frame(
+            &self.device,
+            &self.queue,
+            &self.surface,
+            self.size,
+            &self.mesh,
+            &self.bind_group,
+            &self.texture_bind_group,
+            &self.light_bind_group,
+        );
     }
 }
 
