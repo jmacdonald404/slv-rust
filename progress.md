@@ -11,10 +11,25 @@ The core asset loading system has been implemented, focusing on textures. This i
 - Added vertex and index buffers for basic rendering of a textured primitive.
 
 **Remaining Work:**
-- Implementing other asset types (Mesh, Material, Shader) and their loaders.
-- Integrating mesh loading into the rendering pipeline.
-- Developing a scene graph and object management system.
-- Adding basic lighting.
-- Improving error handling and logging.
-- Refactoring `RenderEngine` for better modularity.
-- General cleanup and optimization.
+
+    1. Implement other asset types (Mesh, Material, Shader) and their loaders.
+       * Define asset types for Mesh, Material, and Shader.
+       * Create AssetLoader implementations for Mesh, Material, and Shader.
+   2. Integrate mesh loading into the rendering pipeline:
+       * Load a default mesh using the new asset system.
+       * Pass the loaded mesh to the render pipeline.
+   3. Developi a scene graph and object management system.
+       * Create a SceneGraph structure to manage hierarchical transformations.
+       * Implement methods to add, remove, and update objects in the scene.
+   4. Basic lighting:
+       * Add a simple directional light or ambient light.
+       * Update shaders to incorporate lighting.
+   5. Error handling and logging:
+       * Improve error handling throughout the engine.
+       * Integrate with the tracing crate for better logging.
+   6. Refactor `RenderEngine` for better modularity:
+       * Break down RenderEngine into smaller, more manageable components (e.g., Renderer, ResourceManager).
+   7. Clean up and optimize:
+       * Remove unused code, optimize performance.
+       * Ensure proper resource management (e.g., dropping WGPU resources).
+       * General cleanup and optimization.
