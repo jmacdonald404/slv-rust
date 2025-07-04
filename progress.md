@@ -13,14 +13,14 @@ The core asset loading system has been implemented, focusing on textures. This i
 **Remaining Work:**
 
     1. Implement other asset types (Mesh, Material, Shader) and their loaders.
-       * Define asset types for Mesh, Material, and Shader.
-       * Create AssetLoader implementations for Mesh, Material, and Shader.
+       * Define asset types for Mesh, Material, and Shader. (DONE)
+       * Create AssetLoader implementations for Mesh, Material, and Shader. (DONE)
    2. Integrate mesh loading into the rendering pipeline:
-       * Load a default mesh using the new asset system.
-       * Pass the loaded mesh to the render pipeline.
-   3. Developi a scene graph and object management system.
-       * Create a SceneGraph structure to manage hierarchical transformations.
-       * Implement methods to add, remove, and update objects in the scene.
+       * Load a default mesh using the new asset system. (DONE)
+       * Pass the loaded mesh to the render pipeline. (DONE)
+   3. Develop a scene graph and object management system.
+       * Create a SceneGraph structure to manage hierarchical transformations. (DONE)
+       * Implement methods to add, remove, and update objects in the scene. (DONE)
    4. Basic lighting:
        * Add a simple directional light or ambient light.
        * Update shaders to incorporate lighting.
