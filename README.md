@@ -50,49 +50,50 @@ A modern SecondLife viewer implementation built with Rust, focusing on performan
 ```toml
 [dependencies]
 # Networking
-tokio = { version = "1.0", features = ["full"] }
-quinn = "0.10"  # QUIC protocol (future upgrade path)
-bytes = "1.0"
+tokio = { version = "1.38.0", features = ["full"] }
+quinn = "0.11.0"
+bytes = "1.6.0"
 
 # Rendering
-wgpu = "0.18"  # Cross-platform graphics
-winit = "0.29"  # Window management
-glam = "0.24"   # Linear algebra
-image = "0.24"  # Image processing
+wgpu = "0.20.1"  # Cross-platform graphics
+winit = "0.30.3"  # Window management
+glam = "0.28.0"   # Linear algebra
+image = "0.25.1"  # Image processing
 
 # Asset Processing
-jpeg2000 = "0.1"  # JPEG2000 decoder
-collada = "0.1"   # DAE mesh format
-hound = "3.5"     # Audio processing
+jpeg2k-sandboxed = "0.9.1"  # JPEG2000 decoder
+collada = "0.16.0"   # DAE mesh format
+hound = "3.5.1"     # Audio processing
 
 # UI Framework
-egui = "0.24"     # Immediate mode GUI
-egui_wgpu = "0.24"
+egui = "0.28.1"     # Immediate mode GUI
+egui-wgpu = "0.28.1"
+egui-winit = "0.28.1"
 
 # Serialization
-serde = { version = "1.0", features = ["derive"] }
-bincode = "1.3"   # Binary serialization
-uuid = "1.6"      # UUID handling
+serde = { version = "1.0.203", features = ["derive"] }
+bincode = "1.3.3"   # Binary serialization
+uuid = { version = "1.9.1", features = ["v4"] }
 
 # Utilities
-tracing = "0.1"   # Logging
-config = "0.13"   # Configuration management
+tracing = "0.1.40"   # Logging
+tracing-subscriber = "0.3.18"
+config = "0.14.0"   # Configuration management
 ```
 
 ### Optional Dependencies
 ```toml
 [dependencies]
 # Physics (choose one)
-rapier3d = "0.17"      # Rust physics engine
-bullet3-rs = "0.1"    # Bullet physics bindings
+rapier3d = { version = "0.19.0", optional = true }
 
 # Audio
-rodio = "0.17"         # Audio playback
-cpal = "0.15"          # Cross-platform audio
+rodio = { version = "0.18.1", optional = true }
+cpal = { version = "0.15.3", optional = true }
 
 # Compression
-flate2 = "1.0"         # Zlib compression
-lz4 = "1.1"           # LZ4 compression
+flate2 = { version = "1.0.30", optional = true }
+lz4 = { version = "1.25.0", optional = true }
 ```
 
 ## Project Structure
