@@ -14,8 +14,10 @@ const MAX_RETRANSMISSIONS: u32 = 5;
 pub struct Circuit {
     transport: UdpTransport,
     next_sequence_number: u32,
+    next_expected_sequence_number: Arc<Mutex<u32>>,
     unacked_messages: Arc<Mutex<HashMap<u32, (Message, Instant, u32, SocketAddr, Vec<u8>)>>>, // sequence_id -> (message, sent_time, retransmission_count, target_addr, encoded_message)
     receiver_channel: mpsc::Receiver<(PacketHeader, Message, SocketAddr)>, // Channel for receiving messages from the processing task
+    out_of_order_buffer: Arc<Mutex<HashMap<u32, (PacketHeader, Message, SocketAddr)>>>, // sequence_id -> (header, message, sender_addr)
 }
 
 impl Circuit {
@@ -26,6 +28,10 @@ impl Circuit {
         let unacked_messages_arc = Arc::new(Mutex::new(HashMap::<u32, (Message, Instant, u32, SocketAddr, Vec<u8>)>::new()));
         let unacked_messages_arc_clone = Arc::clone(&unacked_messages_arc);
         let bind_addr_string = bind_addr.to_string();
+        let next_expected_sequence_number_arc = Arc::new(Mutex::new(1));
+        let next_expected_sequence_number_arc_clone = Arc::clone(&next_expected_sequence_number_arc);
+        let out_of_order_buffer_arc = Arc::new(Mutex::new(HashMap::<u32, (PacketHeader, Message, SocketAddr)>::new()));
+        let out_of_order_buffer_arc_clone = Arc::clone(&out_of_order_buffer_arc);
 
         tokio::spawn(async move {
             let transport_task = UdpTransport::new(&bind_addr_string).await.expect("Failed to bind UDP socket in spawned task");
@@ -43,6 +49,30 @@ impl Circuit {
                                     }
                                 }
                                 received_message => {
+                                    let mut messages_to_send = Vec::new();
+                                    {
+                                        let mut current_expected_seq = next_expected_sequence_number_arc_clone.lock().unwrap();
+                                        let mut out_of_order_buffer = out_of_order_buffer_arc_clone.lock().unwrap();
+
+                                        if header.sequence_id == *current_expected_seq {
+                                            // Process in-order packet
+                                            messages_to_send.push((header.clone(), received_message.clone(), addr));
+                                            *current_expected_seq += 1;
+
+                                            // Check buffer for consecutive packets
+                                            while let Some((h, m, a)) = out_of_order_buffer.remove(&*current_expected_seq) {
+                                                messages_to_send.push((h, m, a));
+                                                *current_expected_seq += 1;
+                                            }
+                                        } else if header.sequence_id > *current_expected_seq {
+                                            // Store out-of-order packet
+                                            out_of_order_buffer.insert(header.sequence_id, (header.clone(), received_message.clone(), addr));
+                                        } else {
+                                            // Duplicate or already processed, discard
+                                            println!("Discarding duplicate or old packet: {:?}", header);
+                                        }
+                                    }
+
                                     // Send ACK for received message
                                     let ack_message = Message::Ack { sequence_id: header.sequence_id };
                                     let ack_header = PacketHeader { sequence_id: 0, flags: 0 }; // ACK messages don't need sequence numbers for now
@@ -50,8 +80,11 @@ impl Circuit {
                                         // Send ACK, this is an await point
                                         let _ = transport_task.send(&encoded_ack, &addr).await;
                                     }
-                                    // Send received message to main circuit, this is an await point
-                                    let _ = sender_channel_for_task.send((header, received_message, addr)).await;
+
+                                    // Send processed messages to main circuit
+                                    for (h, m, a) in messages_to_send {
+                                        let _ = sender_channel_for_task.send((h, m, a)).await;
+                                    }
                                 }
                             }
                         }
@@ -93,8 +126,10 @@ impl Circuit {
         Ok(Self {
             transport,
             next_sequence_number: 1,
+            next_expected_sequence_number: Arc::new(Mutex::new(1)),
             unacked_messages: unacked_messages_arc,
             receiver_channel,
+            out_of_order_buffer: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
