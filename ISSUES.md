@@ -36,9 +36,12 @@ Client received echo: PacketHeader { sequence_id: 1, flags: 0 }, KeepAlive
 The current networking layer lacks packet reliability, meaning packets can be lost, duplicated, or arrive out of order. This issue tracks the implementation of automatic retransmission and ordering.
 
 **Sub-tasks:**
-- Introduce sequence numbers for all outgoing packets.
-- Implement Acknowledgements (ACKs) for received packets.
-- Implement Retransmission logic for unacknowledged packets.
-- Handle out-of-order packet delivery.
+- [x] Introduce sequence numbers for all outgoing packets.
+- [x] Implement Acknowledgements (ACKs) for received packets.
+- [x] Implement Retransmission logic for unacknowledged packets.
+- [ ] Handle out-of-order packet delivery.
+
+**Resolution:**
+Basic packet reliability has been implemented. Messages now include a sequence ID in their header. The receiving end sends an ACK message for each received packet. Messages are stored and retransmitted if an ACK is not received within a defined timeout, up to a maximum number of attempts.
 
 **Priority:** High
