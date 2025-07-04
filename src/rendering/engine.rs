@@ -11,8 +11,7 @@ use crate::rendering::camera_uniform::CameraUniform;
 use cgmath::prelude::*;
 use wgpu::VertexBufferLayout;
 
-use crate::assets::manager::AssetLoader;
-use crate::assets::cache::AssetCache;
+use crate::assets::manager::ResourceManager;
 use crate::assets::texture::TextureLoader;
 use crate::assets::mesh::{Mesh, MeshLoader};
 
@@ -34,7 +33,7 @@ pub struct RenderEngine<'a> {
     camera_controller: CameraController,
     uniform_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
-    asset_cache: AssetCache<String, crate::assets::Asset>,
+    resource_manager: ResourceManager<'a>,
     texture_bind_group: wgpu::BindGroup,
     mesh: Mesh,
     light: Light,
@@ -239,45 +238,14 @@ impl<'a> RenderEngine<'a> {
             multiview: None,
         });
 
-        let mut asset_cache = AssetCache::new();
-        let texture_loader = TextureLoader::new(&device, &queue);
+        let resource_manager = ResourceManager::new(&device, &queue);
         let texture_path = std::path::Path::new("assets/textures/happy-tree.png");
-        let texture = texture_loader.load(texture_path).await.unwrap();
-        asset_cache.insert(texture_path.to_str().unwrap().to_string(), crate::assets::Asset::Texture(texture));
-
-        let texture_asset = asset_cache.get(&texture_path.to_str().unwrap().to_string()).unwrap();
-        let texture_ref = match texture_asset {
-            crate::assets::Asset::Texture(t) => t,
-            _ => panic!("Expected a texture asset"),
-        };
-
-        let texture_bind_group = device.create_bind_group(
-            &wgpu::BindGroupDescriptor {
-                layout: &texture_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&texture_ref.view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&texture_ref.sampler),
-                    }
-                ],
-                label: Some("texture_bind_group"),
-            }
-        );
-
-        let mesh_loader = MeshLoader::new(&device);
-        let mesh_path = std::path::Path::new("assets/meshes/default.obj"); // Dummy path
-        let mesh = mesh_loader.load(mesh_path).await.unwrap();
-        asset_cache.insert(mesh_path.to_str().unwrap().to_string(), crate::assets::Asset::Mesh(mesh));
-
-        let mesh_asset = asset_cache.get(&mesh_path.to_str().unwrap().to_string()).unwrap();
-        let mesh_ref = match mesh_asset {
-            crate::assets::Asset::Mesh(m) => m,
-            _ => panic!("Expected a mesh asset"),
-        };
+        let mesh_path = std::path::Path::new("assets/meshes/default.obj");
+        let mut resource_manager = resource_manager;
+        resource_manager.load_texture(texture_path).await.unwrap();
+        resource_manager.load_mesh(mesh_path).await.unwrap();
+        let texture_ref = resource_manager.get_texture(texture_path.to_str().unwrap()).unwrap();
+        let mesh_ref = resource_manager.get_mesh(mesh_path.to_str().unwrap()).unwrap();
 
         let light = Light {
             position: cgmath::Point3::new(0.0, 0.0, 0.0),
@@ -306,6 +274,23 @@ impl<'a> RenderEngine<'a> {
             label: Some("light_bind_group"),
         });
 
+        let texture_bind_group = device.create_bind_group(
+            &wgpu::BindGroupDescriptor {
+                layout: &texture_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&texture_ref.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&texture_ref.sampler),
+                    }
+                ],
+                label: Some("texture_bind_group"),
+            }
+        );
+
         Self {
             instance,
             adapter,
@@ -320,7 +305,7 @@ impl<'a> RenderEngine<'a> {
             camera_controller,
             uniform_buffer,
             bind_group,
-            asset_cache,
+            resource_manager,
             texture_bind_group,
             mesh: mesh_ref.clone(),
             light,
