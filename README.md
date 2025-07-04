@@ -254,7 +254,7 @@ environment_volume = 0.9
 
 ### Phase 1: Core Infrastructure
 - [x] Basic networking layer
-- [ ] Fundamental rendering pipeline
+- [x] Fundamental rendering pipeline
 - [ ] Asset loading system
 - [ ] Basic UI framework
 
