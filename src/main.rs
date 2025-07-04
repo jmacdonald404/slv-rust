@@ -1,10 +1,15 @@
 use slv_rust::networking::circuit::Circuit;
 use slv_rust::networking::protocol::messages::Message;
+use slv_rust::rendering::engine::RenderEngine;
 use std::net::SocketAddr;
 use tokio::time::{self, Duration};
+use winit::event_loop::EventLoop;
 
 #[tokio::main]
 async fn main() {
+    let event_loop = EventLoop::new();
+    let render_engine = RenderEngine::new(&event_loop).await;
+
     let server_listen_addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
     let client_listen_addr: &str = "0.0.0.0:0"; // Bind to ephemeral port
 
@@ -44,4 +49,6 @@ async fn main() {
     }
 
     server_handle.await.unwrap();
+
+    render_engine.run(event_loop);
 }
