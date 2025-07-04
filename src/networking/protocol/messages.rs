@@ -18,9 +18,7 @@ pub enum Message {
         session_id: String,
         circuit_code: u32,
     },
-    UseCircuitCodeReply {
-        success: bool,
-    },
+    UseCircuitCodeReply(bool),
     // Chat message from the viewer to the simulator
     ChatFromViewer {
         message: String,

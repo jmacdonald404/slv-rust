@@ -145,7 +145,7 @@ pub struct UiState {
     pub login_task: Option<JoinHandle<()>>,
     pub login_result_tx: Sender<LoginResult>,
     pub login_result_rx: Receiver<LoginResult>,
-    pub udp_circuit: Option<Circuit>,
+    pub udp_circuit: Option<std::sync::Arc<tokio::sync::Mutex<Circuit>>>,
     pub udp_progress: UdpConnectionProgress,
     pub udp_connect_tx: Sender<crate::ui::main_window::UdpConnectResult>,
     pub udp_connect_rx: Receiver<crate::ui::main_window::UdpConnectResult>,
@@ -228,7 +228,7 @@ pub fn run_ui_frame(
     let full_output = ui_ctx.egui_ctx.run(raw_input, |ctx| {
         crate::ui::main_window::show_main_window(ctx, ui_state);
         if let crate::ui::LoginUiState::MainApp | crate::ui::LoginUiState::LoadingWorld | crate::ui::LoginUiState::InWorld = ui_state.login_ui_state {
-            crate::ui::chat::show_chat_panel(ctx, &mut ui_state.chat_input, &mut ui_state.chat_messages, ui_state);
+            crate::ui::chat::show_chat_panel(ctx, &mut ui_state.chat_input, &mut ui_state.chat_messages, &ui_state.udp_circuit, &ui_state.login_state.session_info);
             crate::ui::inventory::show_inventory_panel(ctx, &ui_state.inventory_items);
             crate::ui::preferences::show_preferences_panel(ctx, &mut ui_state.preferences, in_world);
         } else {

@@ -1,7 +1,6 @@
 use winit::{
     event::*,
     window::Window,
-    application::ApplicationHandler,
 };
 use wgpu::util::DeviceExt;
 use crate::rendering::camera::{Camera, CameraController};
@@ -10,8 +9,13 @@ use crate::assets::manager::ResourceManager;
 use crate::assets::mesh::{Mesh, Vertex};
 use crate::rendering::light::{Light};
 use std::sync::Arc;
-use winit::event_loop::ActiveEventLoop;
-use crate::main::AppState;
+use std::fmt;
+
+pub struct State<'a> {
+    pub renderer: Option<RenderEngine<'a>>,
+    pub last_light_position: cgmath::Point3<f32>,
+    pub window: Option<Arc<winit::window::Window>>,
+}
 
 pub struct Renderer {
     pub render_pipeline: Arc<wgpu::RenderPipeline>,
@@ -83,22 +87,22 @@ impl Renderer {
 pub struct RenderEngine<'a> {
     instance: wgpu::Instance,
     adapter: wgpu::Adapter,
-    device: Arc<wgpu::Device>,
-    queue: Arc<wgpu::Queue>,
+    pub device: Arc<wgpu::Device>,
+    pub queue: Arc<wgpu::Queue>,
     surface: wgpu::Surface<'a>,
     window: Arc<winit::window::Window>,
     size: winit::dpi::PhysicalSize<u32>,
     config: wgpu::SurfaceConfiguration,
     render_pipeline: Arc<wgpu::RenderPipeline>,
-    camera: Camera,
-    camera_controller: CameraController,
-    uniform_buffer: wgpu::Buffer,
+    pub camera: Camera,
+    pub camera_controller: CameraController,
+    pub uniform_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     resource_manager: ResourceManager,
     texture_bind_group: wgpu::BindGroup,
     mesh: Mesh,
-    light: Light,
-    light_uniform_buffer: wgpu::Buffer,
+    pub light: Light,
+    pub light_uniform_buffer: wgpu::Buffer,
     light_bind_group: wgpu::BindGroup,
     renderer: Renderer,
 }
@@ -373,7 +377,7 @@ impl<'a> RenderEngine<'a> {
         }
     }
 
-    fn render_frame(&mut self) {
+    pub fn render_frame(&mut self) {
         self.renderer.render_frame(
             &self.device,
             &self.queue,
@@ -387,57 +391,6 @@ impl<'a> RenderEngine<'a> {
     }
 }
 
-impl<'a> ApplicationHandler for AppState<'a> {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.render_state.renderer.is_none() {
-            let window = Arc::new(event_loop.create_window(Window::default_attributes().with_title("slv-rust")).expect("Failed to create window"));
-            self.render_state.window = Some(window.clone());
-            let renderer = pollster::block_on(RenderEngine::new(window));
-            self.render_state.renderer = Some(renderer);
-        }
-    }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, window_id: winit::window::WindowId, event: WindowEvent) {
-        if self.render_state.window.as_ref().map_or(true, |w| w.id() != window_id) {
-            return;
-        }
-        if let Some(renderer) = self.render_state.renderer.as_mut() {
-            if !renderer.camera_controller.process_events(&event) {
-                match event {
-                    WindowEvent::CloseRequested => {
-                        // Call coordinated cleanup before exit
-                        pollster::block_on(self.cleanup());
-                        event_loop.exit();
-                    },
-                    WindowEvent::Resized(physical_size) => {
-                        renderer.resize(physical_size);
-                    },
-                    WindowEvent::RedrawRequested => {
-                        renderer.camera_controller.update_camera(&mut renderer.camera);
-                        let camera_uniform = CameraUniform {
-                            view_proj: renderer.camera.build_view_projection_matrix().into(),
-                        };
-                        renderer.queue.write_buffer(&renderer.uniform_buffer, 0, bytemuck::cast_slice(&[camera_uniform]));
-                        if renderer.light.position != self.render_state.last_light_position {
-                            let light_uniform = renderer.light.to_uniform();
-                            renderer.queue.write_buffer(&renderer.light_uniform_buffer, 0, bytemuck::cast_slice(&[light_uniform]));
-                            self.render_state.last_light_position = renderer.light.position;
-                        }
-                        renderer.render_frame();
-                        if let Some(window) = self.render_state.window.as_ref() {
-                            window.request_redraw();
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        // After handling the event, check for logout request
-        if self.ui_state.logout_requested {
-            pollster::block_on(self.cleanup());
-            self.ui_state.logout_requested = false;
-        }
-    }
-}
 
 

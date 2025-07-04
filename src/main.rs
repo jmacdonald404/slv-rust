@@ -1,34 +1,13 @@
 use slv_rust::rendering::engine::State as RenderState;
 use slv_rust::ui::UiState;
 use winit::event_loop::EventLoop;
-use std::net::SocketAddr;
-use slv_rust::networking::circuit::Circuit;
 use std::sync::{Arc, Mutex};
 use std::panic;
 use tokio::runtime::Runtime;
 use tracing_subscriber;
 use tracing::info;
-
-pub struct AppState<'a> {
-    pub render_state: RenderState<'a>,
-    pub ui_state: UiState,
-}
-
-impl<'a> AppState<'a> {
-    pub async fn cleanup(&mut self) {
-        if let Some(circuit) = self.ui_state.udp_circuit.as_mut() {
-            if let Some(session) = &self.ui_state.login_state.session_info {
-                if let Ok(ip) = session.sim_ip.parse() {
-                    let sim_addr = SocketAddr::new(ip, session.sim_port);
-                    circuit.disconnect_and_logout(&sim_addr).await;
-                    self.ui_state.udp_circuit = None;
-                    self.ui_state.udp_progress = slv_rust::ui::UdpConnectionProgress::NotStarted;
-                    self.ui_state.login_state.status_message = "Disconnected from server.".to_string();
-                }
-            }
-        }
-    }
-}
+use slv_rust::app::AppState;
+use tokio::signal;
 
 fn main() {
     tracing_subscriber::fmt::init();
@@ -53,6 +32,20 @@ fn main() {
         }
         eprintln!("Panic occurred: {}", info);
     }));
-    let mut app_state_unwrapped = Arc::try_unwrap(app_state).expect("AppState Arc still has multiple owners").into_inner().unwrap();
-    event_loop.run_app(&mut app_state_unwrapped).expect("Failed to run app");
+    // Spawn shutdown handler for ctrl+c
+    let app_state_shutdown = Arc::clone(&app_state);
+    std::thread::spawn(move || {
+        let rt = Runtime::new().unwrap();
+        rt.block_on(async {
+            signal::ctrl_c().await.expect("Failed to listen for ctrl_c");
+            if let Ok(mut state) = app_state_shutdown.lock() {
+                state.cleanup().await;
+            }
+            println!("Graceful shutdown: UDP circuit disconnected.");
+            std::process::exit(0);
+        });
+    });
+    // Run the app
+    let mut app_state_guard = app_state.lock().unwrap();
+    event_loop.run_app(&mut *app_state_guard).expect("Failed to run app");
 }

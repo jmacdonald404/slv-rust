@@ -69,7 +69,7 @@ fn parse_login_response(xml: &str) -> Result<LoginSessionInfo, String> {
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"member" && in_struct => {
                 if let (Some(name), Some(value)) = (last_name.take(), last_value.take()) {
-                    match name.as_str() {
+                    match &*name {
                         "agent_id" => agent_id = Some(value),
                         "session_id" => session_id = Some(value),
                         "secure_session_id" => secure_session_id = Some(value),
@@ -90,10 +90,10 @@ fn parse_login_response(xml: &str) -> Result<LoginSessionInfo, String> {
         (agent_id, session_id, secure_session_id, sim_ip, sim_port, circuit_code)
     {
         Ok(LoginSessionInfo {
-            agent_id,
-            session_id,
-            secure_session_id,
-            sim_ip,
+            agent_id: agent_id.to_string(),
+            session_id: session_id.to_string(),
+            secure_session_id: secure_session_id.to_string(),
+            sim_ip: sim_ip.to_string(),
             sim_port,
             circuit_code,
         })

@@ -11,9 +11,11 @@ use crossbeam_channel::{unbounded, Sender, Receiver};
 use tokio::task::JoinHandle;
 use tokio::time::{timeout, Duration};
 use crate::ui::chat;
+use tokio::sync::Mutex;
+use std::sync::Arc;
 
 pub struct UdpConnectResult {
-    pub result: Result<Circuit, String>,
+    pub result: Result<std::sync::Arc<tokio::sync::Mutex<Circuit>>, String>,
 }
 
 pub fn show_main_window(ctx: &egui::Context, ui_state: &mut UiState) {
@@ -49,10 +51,10 @@ pub fn show_main_window(ctx: &egui::Context, ui_state: &mut UiState) {
                                 // Wait for handshake response (UseCircuitCodeReply)
                                 let handshake_result = timeout(Duration::from_secs(5), circuit.recv_message()).await;
                                 match handshake_result {
-                                    Ok(Ok((_header, Message::UseCircuitCodeReply { success }), _addr)) if success => {
-                                        let _ = udp_tx.send(UdpConnectResult { result: Ok(circuit) });
+                                    Ok(Ok((_header, Message::UseCircuitCodeReply(success), _addr))) if success => {
+                                        let _ = udp_tx.send(UdpConnectResult { result: Ok(std::sync::Arc::new(tokio::sync::Mutex::new(circuit))) });
                                     }
-                                    Ok(Ok((_header, Message::UseCircuitCodeReply { success: false }), _addr)) => {
+                                    Ok(Ok((_header, Message::UseCircuitCodeReply(success), _addr))) if !success => {
                                         let _ = udp_tx.send(UdpConnectResult { result: Err("Handshake rejected by simulator".to_string()) });
                                     }
                                     Ok(Ok((_header, msg, _addr))) => {
@@ -85,20 +87,24 @@ pub fn show_main_window(ctx: &egui::Context, ui_state: &mut UiState) {
     // Poll for UDP connection result
     while let Ok(result) = ui_state.udp_connect_rx.try_recv() {
         match result.result {
-            Ok(mut circuit) => {
+            Ok(circuit_mutex) => {
                 ui_state.udp_progress = UdpConnectionProgress::Connected;
-                ui_state.udp_circuit = Some(circuit);
+                ui_state.udp_circuit = Some(circuit_mutex.clone());
                 ui_state.login_ui_state = LoginUiState::LoadingWorld;
                 // Spawn world entry listener task
                 let world_entry_tx = ui_state.udp_connect_tx.clone();
+                let circuit_mutex_clone = circuit_mutex.clone();
                 let handle = tokio::spawn(async move {
                     // Wait for first message from sim (stub: just receive one message)
-                    let entry_result = tokio::time::timeout(std::time::Duration::from_secs(5), circuit.recv_message()).await;
+                    let entry_result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                        let mut circuit = circuit_mutex_clone.lock().await;
+                        circuit.recv_message().await
+                    }).await;
                     match entry_result {
                         Ok(Ok((_header, _msg, _addr))) => {
                             // World entry success (stub)
                             // Send a dummy result to trigger UI transition
-                            let _ = world_entry_tx.send(UdpConnectResult { result: Ok(circuit) });
+                            let _ = world_entry_tx.send(UdpConnectResult { result: Ok(circuit_mutex_clone) });
                         }
                         Ok(Err(e)) => {
                             let _ = world_entry_tx.send(UdpConnectResult { result: Err(format!("UDP receive error: {e}")) });
@@ -136,17 +142,23 @@ pub fn show_main_window(ctx: &egui::Context, ui_state: &mut UiState) {
     }
 
     // Preferences modal stub
-    if ui_state.login_state.prefs_modal_open {
+    let mut prefs_open = ui_state.login_state.prefs_modal_open;
+    let mut should_close = false;
+    if prefs_open {
         egui::Window::new("Preferences")
             .collapsible(false)
             .resizable(false)
-            .open(&mut ui_state.login_state.prefs_modal_open)
+            .open(&mut prefs_open)
             .show(ctx, |ui| {
                 ui.label("Preferences modal (stub)");
                 if ui.button("Close").clicked() {
-                    ui_state.login_state.prefs_modal_open = false;
+                    should_close = true;
                 }
             });
+        if should_close {
+            prefs_open = false;
+        }
+        ui_state.login_state.prefs_modal_open = prefs_open;
     }
 
     // In show_main_window, poll chat_event_rx and append to chat_messages:
