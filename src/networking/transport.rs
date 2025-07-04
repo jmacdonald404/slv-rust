@@ -3,7 +3,7 @@ use std::io;
 use std::net::SocketAddr;
 
 pub struct UdpTransport {
-    socket: UdpSocket,
+    pub socket: UdpSocket,
 }
 
 impl UdpTransport {
