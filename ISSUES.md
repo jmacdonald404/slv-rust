@@ -39,7 +39,7 @@ The current networking layer lacks packet reliability, meaning packets can be lo
 - [x] Introduce sequence numbers for all outgoing packets.
 - [x] Implement Acknowledgements (ACKs) for received packets.
 - [x] Implement Retransmission logic for unacknowledged packets.
-- [ ] Handle out-of-order packet delivery.
+- [x] Handle out-of-order packet delivery.
 
 **Resolution:**
 Basic packet reliability has been implemented. Messages now include a sequence ID in their header. The receiving end sends an ACK message for each received packet. Messages are stored and retransmitted if an ACK is not received within a defined timeout, up to a maximum number of attempts.
