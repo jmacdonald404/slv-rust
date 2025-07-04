@@ -46,15 +46,15 @@ Basic packet reliability has been implemented. Messages now include a sequence I
 
 **Priority:** High
 
-## Issue 3: Implement Fundamental Rendering Pipeline
+## Issue 4: Implement Asset Loading System
 
 **Description:**
-Implement the core rendering pipeline to display basic 3D scenes. This involves setting up the graphics backend, managing rendering passes, and handling basic geometry and materials.
+Implement the core asset loading system to handle various asset types (textures, meshes, audio) and manage their caching and streaming.
 
 **Sub-tasks:**
-- [x] Initialize a graphics backend (wgpu).
-- [x] Create a basic rendering loop.
-- [x] Render a simple primitive (e.g., a colored triangle or cube).
-- [x] Set up basic camera controls.
+- Define asset types and their metadata.
+- Implement a basic asset loader for a single asset type (e.g., textures).
+- Set up a caching mechanism for loaded assets.
+- Integrate asset loading into the rendering pipeline (e.g., load a texture and apply it to the rendered primitive).
 
 **Priority:** High
