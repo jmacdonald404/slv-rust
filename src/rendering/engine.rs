@@ -19,6 +19,71 @@ use crate::rendering::light::{Light, LightUniform};
 
 use tracing::{info, error};
 
+pub struct Renderer<'a> {
+    pub render_pipeline: &'a wgpu::RenderPipeline,
+}
+
+impl<'a> Renderer<'a> {
+    pub fn new(render_pipeline: &'a wgpu::RenderPipeline) -> Self {
+        Self { render_pipeline }
+    }
+
+    pub fn render_frame(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        surface: &wgpu::Surface,
+        size: winit::dpi::PhysicalSize<u32>,
+        mesh: &Mesh,
+        bind_group: &wgpu::BindGroup,
+        texture_bind_group: &wgpu::BindGroup,
+        light_bind_group: &wgpu::BindGroup,
+    ) {
+        let frame = match surface.get_current_texture() {
+            Ok(frame) => frame,
+            Err(wgpu::SurfaceError::Lost) => {
+                // Surface lost, resizing should be handled by caller
+                return;
+            },
+            Err(wgpu::SurfaceError::OutOfMemory) => {
+                // Out of memory, exit should be handled by caller
+                return;
+            },
+            Err(_) => {
+                // Other errors, skip frame
+                return;
+            }
+        };
+        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Render Encoder"),
+        });
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: true,
+                    },
+                })],
+                depth_stencil_attachment: None,
+            });
+            render_pass.set_pipeline(self.render_pipeline);
+            render_pass.set_bind_group(0, bind_group, &[]); // Camera
+            render_pass.set_bind_group(1, texture_bind_group, &[]); // Texture
+            render_pass.set_bind_group(2, light_bind_group, &[]); // Light
+            render_pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+            render_pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+            render_pass.draw_indexed(0..mesh.num_indices, 0, 0..1);
+        }
+        queue.submit(Some(encoder.finish()));
+        frame.present();
+    }
+}
+
 pub struct RenderEngine<'a> {
     instance: Instance,
     adapter: Adapter,
@@ -39,6 +104,7 @@ pub struct RenderEngine<'a> {
     light: Light,
     light_uniform_buffer: wgpu::Buffer,
     light_bind_group: wgpu::BindGroup,
+    renderer: Renderer<'a>,
 }
 
 impl<'a> RenderEngine<'a> {
@@ -291,6 +357,8 @@ impl<'a> RenderEngine<'a> {
             }
         );
 
+        let renderer = Renderer::new(&render_pipeline);
+
         Self {
             instance,
             adapter,
@@ -311,6 +379,7 @@ impl<'a> RenderEngine<'a> {
             light,
             light_uniform_buffer,
             light_bind_group,
+            renderer,
         }
     }
 
@@ -347,53 +416,16 @@ impl<'a> RenderEngine<'a> {
                     self.window.request_redraw();
                 },
                 Event::RedrawRequested(window_id) if window_id == self.window.id() => {
-                    // Acquire frame
-                    let frame = match self.surface.get_current_texture() {
-                        Ok(frame) => frame,
-                        Err(wgpu::SurfaceError::Lost) => {
-                            error!("Surface lost, resizing");
-                            self.resize(self.size);
-                            return;
-                        },
-                        Err(wgpu::SurfaceError::OutOfMemory) => {
-                            error!("Out of memory, exiting");
-                            *control_flow = ControlFlow::Exit;
-                            return;
-                        },
-                        Err(e) => {
-                            error!("Surface error: {:?}", e);
-                            return;
-                        }
-                    };
-                    let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
-                    let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                        label: Some("Render Encoder"),
-                    });
-                    {
-                        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                            label: Some("Render Pass"),
-                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                view: &view,
-                                resolve_target: None,
-                                ops: wgpu::Operations {
-                                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                                    store: true,
-                                },
-                            })],
-                            depth_stencil_attachment: None,
-                        });
-                        render_pass.set_pipeline(&self.render_pipeline);
-                        render_pass.set_bind_group(0, &self.bind_group, &[]); // Camera
-                        render_pass.set_bind_group(1, &self.texture_bind_group, &[]); // Texture
-                        render_pass.set_bind_group(2, &self.light_bind_group, &[]); // Light
-                        // Set vertex/index buffers and draw mesh
-                        render_pass.set_vertex_buffer(0, self.mesh.vertex_buffer.slice(..));
-                        render_pass.set_index_buffer(self.mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-                        render_pass.draw_indexed(0..self.mesh.num_indices, 0, 0..1);
-                    }
-                    self.queue.submit(Some(encoder.finish()));
-                    frame.present();
-                    info!("Frame rendered successfully");
+                    self.renderer.render_frame(
+                        &self.device,
+                        &self.queue,
+                        &self.surface,
+                        self.size,
+                        &self.mesh,
+                        &self.bind_group,
+                        &self.texture_bind_group,
+                        &self.light_bind_group,
+                    );
                 },
                 _ => {}
             }

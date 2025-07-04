@@ -47,8 +47,8 @@ The core asset loading system has been implemented, focusing on textures. This i
 - Light struct/uniform: `src/rendering/light.rs` (lines 1–28)
 - Lighting: Lighting is now integrated in the render loop and shader. The render loop updates the light uniform buffer and the mesh is rendered with lighting applied. (See `src/rendering/engine.rs` lines ~330-420, `src/rendering/shaders/shader.wgsl` lines 1-31)
 - Error Handling/Logging: Add robust error handling and integrate `tracing` throughout. (All modules, especially asset loading and rendering)
+- Refactor RenderEngine: Asset management and rendering logic have been modularized into ResourceManager and Renderer. (See `src/assets/manager.rs`, `src/rendering/engine.rs`)
 
 ### TODOs
 
-- [ ] **Refactor RenderEngine**: Break into smaller modules for modularity. (See `src/rendering/engine.rs`)
 - [ ] **Cleanup/Optimization**: Remove unused code, optimize, ensure proper resource management. (All modules)
