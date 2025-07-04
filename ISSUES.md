@@ -12,11 +12,20 @@ After implementing basic UDP transport, circuit management, and message serializ
 **Expected Behavior:**
 Both client and server should successfully send and receive messages, and the program should exit gracefully after the echo is complete.
 
-**Actual Behavior:**
+**Actual Behavior (Initial):**
 "Server listening" and "Client sent" messages are printed, but the program then hangs, indicating the server is not receiving the message or the client is not receiving the echo.
 
 **Root Cause (Identified):**
 The server's `UdpTransport` was binding to an ephemeral port (`0.0.0.0:xxxxx`) instead of the intended `127.0.0.1:8080`. The client was correctly sending to `127.0.0.1:8080`, leading to a mismatch.
 
-**Resolution Attempt:**
-Modified `Circuit::new` to accept a `bind_addr` parameter, allowing explicit control over the local address the UDP socket binds to. Updated `main.rs` to ensure the server binds to `127.0.0.1:8080` and the client binds to `0.0.0.0:0` (ephemeral).
+**Resolution:**
+Modified `Circuit::new` to accept a `bind_addr` parameter, allowing explicit control over the local address the UDP socket binds to. Updated `main.rs` to ensure the server binds to `127.0.0.1:8080` and the client binds to `0.0.0.0:0` (ephemeral). The `cargo run` output confirms successful message exchange:
+```
+UdpTransport bound to: 127.0.0.1:8080
+Server listening on 127.0.0.1:8080
+UdpTransport bound to: 0.0.0.0:53432
+Client sent KeepAlive message to 127.0.0.1:8080
+Server received: PacketHeader { sequence_id: 1, flags: 0 }, KeepAlive from 127.0.0.1:53432
+Server echoed message back to 127.0.0.1:53432.
+Client received echo: PacketHeader { sequence_id: 1, flags: 0 }, KeepAlive
+```
