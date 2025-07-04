@@ -1,61 +1,20 @@
-# v0.1.0-alpha Release Notes
+# v0.1.1-alpha Release Notes
 
 ## Core Features Implemented
 
-### Basic Networking Layer
-- Implemented UDP transport for low-latency communication (see `src/networking/transport.rs`).
-- Added message serialization/deserialization and basic circuit management for reliable packet delivery.
-- Foundation for SecondLife protocol communication is in place.
-
-### Fundamental Rendering Pipeline
-- Set up wgpu-based rendering engine with window creation and swapchain management (see `src/rendering/engine.rs`).
-- Implemented camera, uniform buffer, and basic render pass.
-- Supports drawing indexed triangle meshes and integrates with asset and scene management.
-
-### Basic Asset Loading System
-
-**Description:**
-- Defined `AssetLoader` trait and `AssetCache` for generic asset management.
-- Implemented `TextureLoader` to load image files into `wgpu::Texture` objects.
-- Integrated the new asset loading and caching into the `RenderEngine`, replacing hardcoded texture loading.
-- Updated `winit` and `wgpu` API usage to resolve compilation errors and ensure compatibility.
-- Added vertex and index buffers for basic rendering of a textured primitive.
-
-
-    1. Implement other asset types (Mesh, Material, Shader) and their loaders.
-       * Define asset types for Mesh, Material, and Shader. (DONE)
-       * Create AssetLoader implementations for Mesh, Material, and Shader. (DONE)
-   2. Integrate mesh loading into the rendering pipeline:
-       * Load a default mesh using the new asset system. (DONE)
-       * Pass the loaded mesh to the render pipeline. (DONE)
-   3. Develop a scene graph and object management system.
-       * Create a SceneGraph structure to manage hierarchical transformations. (DONE)
-       * Implement methods to add, remove, and update objects in the scene. (DONE)
-   4. Basic lighting:
-       * Add a simple directional light or ambient light. (DONE)
-       * Update shaders to incorporate lighting. (DONE)
-   5. Error handling and logging:
-       * Improve error handling throughout the engine. (DONE)
-       * Integrate with the tracing crate for better logging. (DONE)
-   6. Refactor `RenderEngine` for better modularity:
-       * Break down RenderEngine into smaller, more manageable components (e.g., Renderer, ResourceManager).
-   7. Clean up and optimize:
-       * Remove unused code, optimize performance.
-       * Ensure proper resource management (e.g., dropping WGPU resources).
-       * General cleanup and optimization.
-
-## Progress Update (as of 2024-06-09)
-
 ### File/Line Pointers for Implemented Features
 
-- AssetLoader trait and AssetCache: `src/assets/manager.rs`, `src/assets/cache.rs`
-- TextureLoader: `src/assets/texture.rs`
-- RenderEngine asset integration: `src/rendering/engine.rs` (lines 1–330)
-- Mesh asset type/loader: `src/assets/mesh.rs`
-- SceneGraph: `src/rendering/scene/graph.rs` (lines 1–27)
-- Object struct: `src/rendering/scene/mod.rs` (lines 4–13)
-- Light struct/uniform: `src/rendering/light.rs` (lines 1–28)
-- Lighting: Lighting is now integrated in the render loop and shader. The render loop updates the light uniform buffer and the mesh is rendered with lighting applied. (See `src/rendering/engine.rs` lines ~330-420, `src/rendering/shaders/shader.wgsl` lines 1-31)
-- Error Handling/Logging: Add robust error handling and integrate `tracing` throughout. (All modules, especially asset loading and rendering)
-- Refactor RenderEngine: Asset management and rendering logic have been modularized into ResourceManager and Renderer. (See `src/assets/manager.rs`, `src/rendering/engine.rs`)
-- Cleanup/Optimization: Remove unused code, optimize, ensure proper resource management. (All modules)
+---
+
+## TODO: Next Steps Toward v0.2.0
+
+- [ ] **Basic UI Framework**: Integrate an immediate-mode GUI (egui) for basic HUD and settings panels. Set up UI event loop and rendering in `src/ui/`.
+  - Added comment stubs for egui integration and UI event loop in `src/ui/mod.rs` (lines 1-10).
+  - Added stubs for main window, chat, inventory, and preferences panels in `src/ui/main_window.rs`, `src/ui/chat.rs`, `src/ui/inventory.rs`, and `src/ui/preferences.rs` (lines 1-3 in each).
+  - These stubs outline where egui context, event handling, and UI panels will be implemented for the HUD and settings.
+  - Implemented egui_wgpu painting in `src/ui/mod.rs` (see UiRenderer struct and run_ui_frame, lines 13-80).
+  - All major panels now have basic state and interactivity: chat (message input/display), inventory (item list), preferences (sound toggle, volume slider). State is passed to each panel. (See `src/ui/mod.rs`, `src/ui/chat.rs`, `src/ui/inventory.rs`, `src/ui/preferences.rs`)
+- [ ] **Avatar System**: Implement basic avatar representation and appearance loading in `src/world/avatar.rs`. Support for mesh/texture assignment and simple animation stubs.
+- [ ] **Object Rendering**: Add support for rendering multiple scene objects using the scene graph (`src/rendering/scene/graph.rs`). Implement object transforms and per-object material/mesh assignment.
+- [ ] **Terrain System**: Implement terrain mesh generation and rendering in `src/world/terrain.rs`. Integrate with asset and scene management.
+- [ ] **Basic Physics**: Integrate a physics engine (e.g., rapier3d) for simple collision detection and rigid body dynamics in `src/world/physics.rs`.
