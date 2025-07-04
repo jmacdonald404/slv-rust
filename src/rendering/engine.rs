@@ -281,6 +281,7 @@ impl<'a> RenderEngine<'a> {
             position: cgmath::Point3::new(0.0, 0.0, 0.0),
             color: cgmath::Vector3::new(1.0, 1.0, 1.0),
         };
+        // TODO: Integrate lighting calculations into the render loop and update shader logic as needed.
 
         let light_uniform = light.to_uniform();
 
@@ -328,10 +329,13 @@ impl<'a> RenderEngine<'a> {
 
     pub fn run(&mut self) {
         // TODO: implement run logic
+        // TODO: Integrate error handling and logging (see progress.md)
+        // TODO: Refactor RenderEngine into smaller modules for modularity
     }
 
     pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
         // TODO: implement resize logic
+        // TODO: Integrate error handling and logging (see progress.md)
     }
 }
 

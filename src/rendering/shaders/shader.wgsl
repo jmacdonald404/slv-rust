@@ -23,6 +23,7 @@ fn vs_main(@builtin(vertex_index) in_vertex_index: u32, @location(0) position: v
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4 {
+    // TODO: Refine/complete lighting logic as needed for correct shading
     let light_dir = normalize(light.position - in.world_position.xyz);
     let diffuse = max(dot(in.normal, light_dir), 0.0);
     let final_color = textureSample(t_diffuse, s_diffuse, in.tex_coords).rgb * (light.color * diffuse);

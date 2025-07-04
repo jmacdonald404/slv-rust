@@ -33,3 +33,23 @@ The core asset loading system has been implemented, focusing on textures. This i
        * Remove unused code, optimize performance.
        * Ensure proper resource management (e.g., dropping WGPU resources).
        * General cleanup and optimization.
+
+## Progress Update (as of 2024-06-09)
+
+### File/Line Pointers for Implemented Features
+
+- AssetLoader trait and AssetCache: `src/assets/manager.rs`, `src/assets/cache.rs`
+- TextureLoader: `src/assets/texture.rs`
+- RenderEngine asset integration: `src/rendering/engine.rs` (lines 1–330)
+- Mesh asset type/loader: `src/assets/mesh.rs`
+- SceneGraph: `src/rendering/scene/graph.rs` (lines 1–27)
+- Object struct: `src/rendering/scene/mod.rs` (lines 4–13)
+- Light struct/uniform: `src/rendering/light.rs` (lines 1–28)
+- Lighting shader stub: `src/rendering/shaders/shader.wgsl` (lines 1–31)
+
+### TODOs
+
+- [ ] **Lighting**: Complete integration of lighting in the render loop and shader. (See `src/rendering/engine.rs`, `src/rendering/shaders/shader.wgsl`)
+- [ ] **Error Handling/Logging**: Add robust error handling and integrate `tracing` throughout. (All modules, especially asset loading and rendering)
+- [ ] **Refactor RenderEngine**: Break into smaller modules for modularity. (See `src/rendering/engine.rs`)
+- [ ] **Cleanup/Optimization**: Remove unused code, optimize, ensure proper resource management. (All modules)
