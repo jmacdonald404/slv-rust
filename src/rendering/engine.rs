@@ -9,7 +9,11 @@ use wgpu::{
     Instance,
     Queue,
     Surface,
+    util::DeviceExt,
 };
+use crate::rendering::camera::{Camera, CameraController};
+use crate::rendering::camera_uniform::CameraUniform;
+use cgmath::prelude::*;
 
 pub struct RenderEngine {
     instance: Instance,
@@ -21,6 +25,10 @@ pub struct RenderEngine {
     size: winit::dpi::PhysicalSize<u32>,
     config: wgpu::SurfaceConfiguration,
     render_pipeline: wgpu::RenderPipeline,
+    camera: Camera,
+    camera_controller: CameraController,
+    uniform_buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
 }
 
 impl RenderEngine {
@@ -84,7 +92,9 @@ impl RenderEngine {
 
         let render_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Render Pipeline Layout"),
-            bind_group_layouts: &[],
+            bind_group_layouts: &[
+                &camera_bind_group_layout
+            ],
             push_constant_ranges: &[],
         });
 
@@ -123,6 +133,40 @@ impl RenderEngine {
             multiview: None,
         });
 
+        let camera = Camera {
+            eye: (0.0, 1.0, 2.0).into(),
+            target: (0.0, 0.0, 0.0).into(),
+            up: cgmath::Vector3::unit_y(),
+            aspect: config.width as f32 / config.height as f32,
+            fovy: 45.0,
+            znear: 0.1,
+            zfar: 100.0,
+        };
+        let camera_controller = CameraController::new(0.2);
+
+        let camera_uniform = CameraUniform {
+            view_proj: camera.build_view_projection_matrix().into(),
+        };
+
+        let uniform_buffer = device.create_buffer_init(
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("Camera Buffer"),
+                contents: bytemuck::cast_slice(&[camera_uniform]),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            }
+        );
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &camera_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform_buffer.as_entire_binding(),
+                }
+            ],
+            label: Some("camera_bind_group"),
+        });
+
         Self {
             instance,
             adapter,
@@ -133,57 +177,35 @@ impl RenderEngine {
             size,
             config,
             render_pipeline,
+            camera,
+            camera_controller,
+            uniform_buffer,
+            bind_group,
         }
     }
 
-    pub fn run(self, event_loop: EventLoop<()>) {
+    pub fn run(mut self, event_loop: EventLoop<()>) {
         event_loop.run(move |event, _, control_flow| {
-            *control_flow = ControlFlow::Wait;
+            *control_flow = ControlFlow::Poll;
 
             match event {
                 Event::WindowEvent { event, window_id } if window_id == self.window.id() => {
-                    match event {
-                        WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
-                        WindowEvent::Resized(physical_size) => {
-                            self.resize(physical_size);
-                        },
-                        _ => {},
+                    if !self.camera_controller.process_events(&event) {
+                        match event {
+                            WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
+                            WindowEvent::Resized(physical_size) => {
+                                self.resize(physical_size);
+                            },
+                            _ => {},
+                        }
                     }
                 },
                 Event::MainEventsCleared => {
+                    self.camera_controller.update_camera(&mut self.camera);
+                    self.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[self.camera.build_view_projection_matrix().into()]));
                     self.window.request_redraw();
                 },
                 Event::RedrawRequested(window_id) if window_id == self.window.id() => {
-                    let output = self.surface.get_current_texture().unwrap();
-                    let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
-                    let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                        label: Some("Render Encoder"),
-                    });
-
-                    {
-                        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                            label: Some("Render Pass"),
-                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                view: &view,
-                                resolve_target: None,
-                                ops: wgpu::Operations {
-                                    load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.1, g: 0.2, b: 0.3, a: 1.0 }),
-                                    store: true,
-                                },
-                            })],
-                            depth_stencil_attachment: None,
-                        });
-                        render_pass.set_pipeline(&self.render_pipeline);
-                        render_pass.draw(0..3, 0..1);
-                    }
-
-                    self.queue.submit(std::iter::once(encoder.finish()));
-                    output.present();
-                },
-                _ => {},
-            }
-        });
-    }
 
     pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
         if new_size.width > 0 && new_size.height > 0 {
