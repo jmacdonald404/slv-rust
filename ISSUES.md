@@ -52,7 +52,7 @@ Basic packet reliability has been implemented. Messages now include a sequence I
 Implement the core rendering pipeline to display basic 3D scenes. This involves setting up the graphics backend, managing rendering passes, and handling basic geometry and materials.
 
 **Sub-tasks:**
-- Initialize a graphics backend (wgpu).
+- [x] Initialize a graphics backend (wgpu).
 - Create a basic rendering loop.
 - Render a simple primitive (e.g., a colored triangle or cube).
 - Set up basic camera controls.
