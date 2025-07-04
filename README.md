@@ -253,7 +253,7 @@ environment_volume = 0.9
 ## Development Roadmap
 
 ### Phase 1: Core Infrastructure
-- [ ] Basic networking layer
+- [x] Basic networking layer
 - [ ] Fundamental rendering pipeline
 - [ ] Asset loading system
 - [ ] Basic UI framework
