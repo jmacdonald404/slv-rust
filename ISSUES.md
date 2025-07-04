@@ -29,3 +29,16 @@ Server received: PacketHeader { sequence_id: 1, flags: 0 }, KeepAlive from 127.0
 Server echoed message back to 127.0.0.1:53432.
 Client received echo: PacketHeader { sequence_id: 1, flags: 0 }, KeepAlive
 ```
+
+## Issue 2: Implement Packet Reliability
+
+**Description:**
+The current networking layer lacks packet reliability, meaning packets can be lost, duplicated, or arrive out of order. This issue tracks the implementation of automatic retransmission and ordering.
+
+**Sub-tasks:**
+- Introduce sequence numbers for all outgoing packets.
+- Implement Acknowledgements (ACKs) for received packets.
+- Implement Retransmission logic for unacknowledged packets.
+- Handle out-of-order packet delivery.
+
+**Priority:** High
