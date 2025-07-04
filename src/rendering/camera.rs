@@ -1,4 +1,4 @@
-use winit::event::{KeyboardInput, VirtualKeyCode, ElementState};
+use winit::{event::{ElementState, KeyEvent, WindowEvent}, keyboard::{KeyCode, PhysicalKey}};
 use cgmath::prelude::*;
 
 pub struct Camera {
@@ -40,29 +40,22 @@ impl CameraController {
 
     pub fn process_events(&mut self, event: &WindowEvent) -> bool {
         match event {
-            WindowEvent::KeyboardInput {
-                input: KeyboardInput {
-                    state,
-                    virtual_keycode: Some(keycode),
-                    ..,
-                },
-                ..,
-            } => {
+            WindowEvent::KeyboardInput { event: KeyEvent { state, physical_key: PhysicalKey::Code(keycode), .. }, .. } => {
                 let is_pressed = *state == ElementState::Pressed;
                 match keycode {
-                    VirtualKeyCode::W | VirtualKeyCode::Up => {
+                    KeyCode::KeyW | KeyCode::ArrowUp => {
                         self.is_forward_pressed = is_pressed;
                         true
                     }
-                    VirtualKeyCode::A | VirtualKeyCode::Left => {
+                    KeyCode::KeyA | KeyCode::ArrowLeft => {
                         self.is_left_pressed = is_pressed;
                         true
                     }
-                    VirtualKeyCode::S | VirtualKeyCode::Down => {
+                    KeyCode::KeyS | KeyCode::ArrowDown => {
                         self.is_backward_pressed = is_pressed;
                         true
                     }
-                    VirtualKeyCode::D | VirtualKeyCode::Right => {
+                    KeyCode::KeyD | KeyCode::ArrowRight => {
                         self.is_right_pressed = is_pressed;
                         true
                     }

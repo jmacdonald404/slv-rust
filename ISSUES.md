@@ -56,5 +56,3 @@ Implement the core asset loading system to handle various asset types (textures,
 - Implement a basic asset loader for a single asset type (e.g., textures).
 - Set up a caching mechanism for loaded assets.
 - Integrate asset loading into the rendering pipeline (e.g., load a texture and apply it to the rendered primitive).
-
-**Priority:** High

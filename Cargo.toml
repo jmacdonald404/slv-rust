@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 # Networking
-tokio = { version = "1.38.0", features = ["full"] }
+tokio = { version = "1.38.0", features = ["full", "fs"] }
 quinn = "0.11.0"
 bytes = "1.6.0"
 
@@ -16,6 +16,8 @@ wgpu = "0.20.1"
 winit = "0.30.3"
 glam = "0.28.0"
 image = "0.25.1"
+bytemuck = { version = "1.15.0", features = ["derive"] }
+cgmath = "0.18.0"
 
 # Asset Processing
 jpeg2k-sandboxed = "0.9.1"
@@ -36,6 +38,8 @@ uuid = { version = "1.9.1", features = ["v4"] }
 tracing = "0.1.40"
 tracing-subscriber = "0.3.18"
 config = "0.14.0"
+anyhow = "1.0"
+async-trait = "0.1.80"
 
 # Optional Dependencies
 # Physics
