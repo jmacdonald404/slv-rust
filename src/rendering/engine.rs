@@ -328,9 +328,86 @@ impl<'a> RenderEngine<'a> {
     }
 
     pub fn run(&mut self) {
-        // TODO: implement run logic
-        // TODO: Integrate error handling and logging (see progress.md)
-        // TODO: Refactor RenderEngine into smaller modules for modularity
+        use winit::event::{Event, WindowEvent};
+        use winit::event_loop::ControlFlow;
+        use winit::event_loop::EventLoop;
+
+        let event_loop = EventLoop::new();
+        let mut last_light_position = self.light.position;
+        event_loop.run(move |event, _, control_flow| {
+            *control_flow = ControlFlow::Poll;
+            match event {
+                Event::WindowEvent { event, window_id } if window_id == self.window.id() => {
+                    if !self.camera_controller.process_events(&event) {
+                        match event {
+                            WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
+                            WindowEvent::Resized(physical_size) => {
+                                self.resize(physical_size);
+                            },
+                            _ => {},
+                        }
+                    }
+                },
+                Event::MainEventsCleared => {
+                    self.camera_controller.update_camera(&mut self.camera);
+                    self.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(&[self.camera.build_view_projection_matrix().into()]));
+                    // Update light position or color if needed
+                    if self.light.position != last_light_position {
+                        let light_uniform = self.light.to_uniform();
+                        self.queue.write_buffer(&self.light_uniform_buffer, 0, bytemuck::cast_slice(&[light_uniform]));
+                        last_light_position = self.light.position;
+                    }
+                    self.window.request_redraw();
+                },
+                Event::RedrawRequested(window_id) if window_id == self.window.id() => {
+                    // Acquire frame
+                    let frame = match self.surface.get_current_texture() {
+                        Ok(frame) => frame,
+                        Err(wgpu::SurfaceError::Lost) => {
+                            self.resize(self.size);
+                            return;
+                        },
+                        Err(wgpu::SurfaceError::OutOfMemory) => {
+                            *control_flow = ControlFlow::Exit;
+                            return;
+                        },
+                        Err(e) => {
+                            eprintln!("Surface error: {:?}", e);
+                            return;
+                        }
+                    };
+                    let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+                    let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("Render Encoder"),
+                    });
+                    {
+                        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: Some("Render Pass"),
+                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                view: &view,
+                                resolve_target: None,
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                    store: true,
+                                },
+                            })],
+                            depth_stencil_attachment: None,
+                        });
+                        render_pass.set_pipeline(&self.render_pipeline);
+                        render_pass.set_bind_group(0, &self.bind_group, &[]); // Camera
+                        render_pass.set_bind_group(1, &self.texture_bind_group, &[]); // Texture
+                        render_pass.set_bind_group(2, &self.light_bind_group, &[]); // Light
+                        // Set vertex/index buffers and draw mesh
+                        render_pass.set_vertex_buffer(0, self.mesh.vertex_buffer.slice(..));
+                        render_pass.set_index_buffer(self.mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                        render_pass.draw_indexed(0..self.mesh.num_indices, 0, 0..1);
+                    }
+                    self.queue.submit(Some(encoder.finish()));
+                    frame.present();
+                },
+                _ => {}
+            }
+        });
     }
 
     pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
