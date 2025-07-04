@@ -12,8 +12,7 @@ use cgmath::prelude::*;
 use wgpu::VertexBufferLayout;
 
 use crate::assets::manager::ResourceManager;
-use crate::assets::texture::TextureLoader;
-use crate::assets::mesh::{Mesh, MeshLoader};
+use crate::assets::mesh::Mesh;
 
 use crate::rendering::light::{Light, LightUniform};
 

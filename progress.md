@@ -1,16 +1,26 @@
-## Feature: Basic Asset Loading System Implemented
+# v0.1.0-alpha Release Notes
+
+## Core Features Implemented
+
+### Basic Networking Layer
+- Implemented UDP transport for low-latency communication (see `src/networking/transport.rs`).
+- Added message serialization/deserialization and basic circuit management for reliable packet delivery.
+- Foundation for SecondLife protocol communication is in place.
+
+### Fundamental Rendering Pipeline
+- Set up wgpu-based rendering engine with window creation and swapchain management (see `src/rendering/engine.rs`).
+- Implemented camera, uniform buffer, and basic render pass.
+- Supports drawing indexed triangle meshes and integrates with asset and scene management.
+
+### Basic Asset Loading System
 
 **Description:**
-The core asset loading system has been implemented, focusing on textures. This includes defining generic asset loading mechanisms, a caching system, and integrating texture loading directly into the rendering pipeline.
-
-**Details of Implementation:**
 - Defined `AssetLoader` trait and `AssetCache` for generic asset management.
 - Implemented `TextureLoader` to load image files into `wgpu::Texture` objects.
 - Integrated the new asset loading and caching into the `RenderEngine`, replacing hardcoded texture loading.
 - Updated `winit` and `wgpu` API usage to resolve compilation errors and ensure compatibility.
 - Added vertex and index buffers for basic rendering of a textured primitive.
 
-**Remaining Work:**
 
     1. Implement other asset types (Mesh, Material, Shader) and their loaders.
        * Define asset types for Mesh, Material, and Shader. (DONE)
@@ -48,7 +58,4 @@ The core asset loading system has been implemented, focusing on textures. This i
 - Lighting: Lighting is now integrated in the render loop and shader. The render loop updates the light uniform buffer and the mesh is rendered with lighting applied. (See `src/rendering/engine.rs` lines ~330-420, `src/rendering/shaders/shader.wgsl` lines 1-31)
 - Error Handling/Logging: Add robust error handling and integrate `tracing` throughout. (All modules, especially asset loading and rendering)
 - Refactor RenderEngine: Asset management and rendering logic have been modularized into ResourceManager and Renderer. (See `src/assets/manager.rs`, `src/rendering/engine.rs`)
-
-### TODOs
-
-- [ ] **Cleanup/Optimization**: Remove unused code, optimize, ensure proper resource management. (All modules)
+- Cleanup/Optimization: Remove unused code, optimize, ensure proper resource management. (All modules)
