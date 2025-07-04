@@ -55,6 +55,6 @@ Implement the core rendering pipeline to display basic 3D scenes. This involves 
 - [x] Initialize a graphics backend (wgpu).
 - [x] Create a basic rendering loop.
 - [x] Render a simple primitive (e.g., a colored triangle or cube).
-- Set up basic camera controls.
+- [x] Set up basic camera controls.
 
 **Priority:** High
