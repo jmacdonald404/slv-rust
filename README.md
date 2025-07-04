@@ -252,25 +252,31 @@ environment_volume = 0.9
 
 ## Development Roadmap
 
-### Phase 1: Core Infrastructure
+### Phase 1: Core Infrastructure [v0.1.0-alpha]
 - [x] Basic networking layer
 - [x] Fundamental rendering pipeline
 - [x] Asset loading system
 - [x] Basic UI framework
 
-### Phase 2: World Integration
+### Phase 2: World Integration [v0.2.0-alpha]
 - [x] Avatar system
 - [x] Object rendering
 - [x] Terrain system
 - [x] Basic physics
 
-### Phase 3: Feature Completeness
+### Phase 3: Stability and Testing [v0.3.0-alpha]
+- [ ] Core UI
+- [ ] Debugging/Release Build Flags
+- [ ] Login/Logout & Base Integration with Secondlife
+- [ ] Build Error and Warning Resolution
+
+### Phase 4: Feature Completeness
 - [ ] LSL scripting support
 - [ ] Advanced lighting
 - [ ] Audio system
 - [ ] Chat and communication
 
-### Phase 4: Optimization
+### Phase 5: Optimization
 - [ ] Performance profiling
 - [ ] Memory optimization
 - [ ] Network optimization

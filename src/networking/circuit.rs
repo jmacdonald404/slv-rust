@@ -155,4 +155,25 @@ impl Circuit {
     pub async fn recv_message(&mut self) -> io::Result<(PacketHeader, Message, SocketAddr)> {
         self.receiver_channel.recv().await.ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "Circuit receive channel closed"))
     }
+
+    pub async fn disconnect_and_logout(&mut self, sim_addr: &SocketAddr) {
+        // Send Logout message
+        let _ = self.send_message(&Message::Logout, sim_addr).await;
+        // TODO: Add any additional cleanup if needed
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::SocketAddr;
+
+    #[tokio::test]
+    async fn test_disconnect_and_logout_sends_logout() {
+        // This is a stub test; in a real test, you would mock UdpTransport and check that a Logout message is sent.
+        // For now, just ensure the function runs without panicking.
+        let addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
+        let mut circuit = Circuit::new("0.0.0.0:0", addr).await.unwrap();
+        circuit.disconnect_and_logout(&addr).await;
+    }
 }

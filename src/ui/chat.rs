@@ -3,8 +3,11 @@
 
 use egui::Context;
 use std::collections::VecDeque;
+use crate::ui::UiState;
+use crate::networking::protocol::messages::Message;
+use std::net::SocketAddr;
 
-pub fn show_chat_panel(ctx: &Context, chat_input: &mut String, chat_messages: &mut VecDeque<String>) {
+pub fn show_chat_panel(ctx: &Context, chat_input: &mut String, chat_messages: &mut VecDeque<String>, ui_state: &mut UiState) {
     egui::Window::new("Chat").show(ctx, |ui| {
         ui.label("Chat messages:");
         for msg in chat_messages.iter() {
@@ -13,11 +16,39 @@ pub fn show_chat_panel(ctx: &Context, chat_input: &mut String, chat_messages: &m
         ui.separator();
         let send = ui.text_edit_singleline(chat_input).lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
         if send && !chat_input.trim().is_empty() {
-            chat_messages.push_back(chat_input.clone());
-            if chat_messages.len() > 10 {
+            // Send chat message over network if possible
+            if let (Some(circuit), Some(session_info)) = (&mut ui_state.udp_circuit, &ui_state.login_state.session_info) {
+                let sim_addr = format!("{}:{}", session_info.sim_ip, session_info.sim_port).parse::<SocketAddr>().ok();
+                if let Some(addr) = sim_addr {
+                    let msg = Message::ChatFromViewer {
+                        message: chat_input.clone(),
+                        channel: "local".to_string(),
+                    };
+                    // Spawn a task to send the message asynchronously
+                    let mut circuit = circuit.clone();
+                    let text = chat_input.clone();
+                    tokio::spawn(async move {
+                        let _ = circuit.send_message(&msg, &addr).await;
+                    });
+                    chat_messages.push_back(format!("You: {}", text));
+                } else {
+                    chat_messages.push_back("[Error: Invalid simulator address]".to_string());
+                }
+            } else {
+                chat_messages.push_back("[Error: Not connected]".to_string());
+            }
+            if chat_messages.len() > 50 {
                 chat_messages.pop_front();
             }
             chat_input.clear();
         }
     });
+}
+
+/// Call this from the network receive loop to append incoming chat messages
+pub fn append_incoming_chat(chat_messages: &mut VecDeque<String>, sender: &str, message: &str) {
+    chat_messages.push_back(format!("{}: {}", sender, message));
+    if chat_messages.len() > 50 {
+        chat_messages.pop_front();
+    }
 }

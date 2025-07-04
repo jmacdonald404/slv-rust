@@ -13,5 +13,24 @@ pub enum Message {
     KeepAlive,
     Logout,
     Ack { sequence_id: u32 },
+    UseCircuitCode {
+        agent_id: String,
+        session_id: String,
+        circuit_code: u32,
+    },
+    UseCircuitCodeReply {
+        success: bool,
+    },
+    // Chat message from the viewer to the simulator
+    ChatFromViewer {
+        message: String,
+        channel: String, // e.g., "local", "IM", "group" (stub for now)
+    },
+    // Chat message from the simulator to the viewer
+    ChatFromSimulator {
+        sender: String,
+        message: String,
+        channel: String, // e.g., "local", "IM", "group" (stub for now)
+    },
     // Add more message types as needed
 }
