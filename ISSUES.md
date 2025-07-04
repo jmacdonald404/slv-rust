@@ -45,3 +45,16 @@ The current networking layer lacks packet reliability, meaning packets can be lo
 Basic packet reliability has been implemented. Messages now include a sequence ID in their header. The receiving end sends an ACK message for each received packet. Messages are stored and retransmitted if an ACK is not received within a defined timeout, up to a maximum number of attempts.
 
 **Priority:** High
+
+## Issue 3: Implement Fundamental Rendering Pipeline
+
+**Description:**
+Implement the core rendering pipeline to display basic 3D scenes. This involves setting up the graphics backend, managing rendering passes, and handling basic geometry and materials.
+
+**Sub-tasks:**
+- Initialize a graphics backend (wgpu).
+- Create a basic rendering loop.
+- Render a simple primitive (e.g., a colored triangle or cube).
+- Set up basic camera controls.
+
+**Priority:** High
