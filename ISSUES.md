@@ -56,3 +56,24 @@ Implement the core asset loading system to handle various asset types (textures,
 - Implement a basic asset loader for a single asset type (e.g., textures).
 - Set up a caching mechanism for loaded assets.
 - Integrate asset loading into the rendering pipeline (e.g., load a texture and apply it to the rendered primitive).
+
+1. Implement other asset types and loaders:
+       * Define asset types for Mesh, Material, and Shader.
+       * Create AssetLoader implementations for Mesh, Material, and Shader.
+   2. Integrate mesh loading into the rendering pipeline:
+       * Load a default mesh using the new asset system.
+       * Pass the loaded mesh to the render pipeline.
+   3. Implement scene graph and object management:
+       * Create a SceneGraph structure to manage hierarchical transformations.
+       * Implement methods to add, remove, and update objects in the scene.
+   4. Basic lighting:
+       * Add a simple directional light or ambient light.
+       * Update shaders to incorporate lighting.
+   5. Error handling and logging:
+       * Improve error handling throughout the engine.
+       * Integrate with the tracing crate for better logging.
+   6. Refactor `RenderEngine` for better modularity:
+       * Break down RenderEngine into smaller, more manageable components (e.g., Renderer, ResourceManager).
+   7. Clean up and optimize:
+       * Remove unused code, optimize performance.
+       * Ensure proper resource management (e.g., dropping WGPU resources).
