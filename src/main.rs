@@ -4,13 +4,18 @@ use winit::event_loop::EventLoop;
 use std::sync::{Arc, Mutex};
 use std::panic;
 use tokio::runtime::Runtime;
-use tracing_subscriber;
 use tracing::info;
 use slv_rust::app::AppState;
+use slv_rust::utils::logging::{init_logging, log_system_info};
 use tokio::signal;
 
 fn main() {
-    tracing_subscriber::fmt::init();
+    // Initialize comprehensive logging
+    init_logging();
+    
+    // Log system information
+    log_system_info();
+    
     info!("slv-rust starting up");
     let event_loop = EventLoop::new().expect("Failed to create event loop");
     let render_state = RenderState {

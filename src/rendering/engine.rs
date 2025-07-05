@@ -8,8 +8,10 @@ use crate::rendering::camera_uniform::CameraUniform;
 use crate::assets::manager::ResourceManager;
 use crate::assets::mesh::{Mesh, Vertex};
 use crate::rendering::light::{Light};
+use crate::utils::logging::{handle_wgpu_result, log_adapter_info, log_device_info};
 use std::sync::Arc;
 use std::fmt;
+use tracing::{info, warn, error, debug};
 
 pub struct State<'a> {
     pub renderer: Option<RenderEngine<'a>>,
@@ -37,18 +39,22 @@ impl Renderer {
         texture_bind_group: &wgpu::BindGroup,
         light_bind_group: &wgpu::BindGroup,
     ) {
+        debug!("Starting frame render");
         let frame = match surface.get_current_texture() {
-            Ok(frame) => frame,
+            Ok(frame) => {
+                debug!("Surface texture acquired successfully");
+                frame
+            },
             Err(wgpu::SurfaceError::Lost) => {
-                // Surface lost, resizing should be handled by caller
+                warn!("Surface lost, skipping frame");
                 return;
             },
             Err(wgpu::SurfaceError::OutOfMemory) => {
-                // Out of memory, exit should be handled by caller
+                error!("Surface out of memory, skipping frame");
                 return;
             },
-            Err(_) => {
-                // Other errors, skip frame
+            Err(e) => {
+                error!("Surface error: {:?}, skipping frame", e);
                 return;
             }
         };
@@ -109,11 +115,22 @@ pub struct RenderEngine<'a> {
 
 impl<'a> RenderEngine<'a> {
     pub async fn new(window: Arc<winit::window::Window>) -> Self {
+        info!("Initializing WGPU render engine");
+        
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
             ..Default::default()
         });
-        let surface = instance.create_surface(window.clone()).expect("Failed to create surface");
+        
+        info!("WGPU instance created successfully");
+        
+        let surface = handle_wgpu_result(
+            instance.create_surface(window.clone()),
+            "create_surface"
+        ).expect("Failed to create surface");
+        
+        info!("WGPU surface created successfully");
+        
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::default(),
@@ -122,6 +139,10 @@ impl<'a> RenderEngine<'a> {
             })
             .await
             .expect("Failed to find an appropriate adapter");
+            
+        info!("WGPU adapter selected");
+        log_adapter_info(&adapter);
+        
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
@@ -134,6 +155,9 @@ impl<'a> RenderEngine<'a> {
             )
             .await
             .expect("Failed to create device");
+            
+        info!("WGPU device and queue created successfully");
+        log_device_info(&device);
         let device = Arc::new(device);
         let queue = Arc::new(queue);
         let size = window.inner_size();
@@ -147,12 +171,16 @@ impl<'a> RenderEngine<'a> {
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
+        info!("Configuring WGPU surface with format: {:?}", config.format);
         surface.configure(&device, &config);
+        info!("WGPU surface configured successfully");
 
+        info!("Creating shader module");
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/shader.wgsl").into()),
         });
+        info!("Shader module created successfully");
 
         let camera = Camera {
             eye: (0.0, 1.0, 2.0).into(),
@@ -252,6 +280,7 @@ impl<'a> RenderEngine<'a> {
             push_constant_ranges: &[],
         });
 
+        info!("Creating render pipeline");
         let render_pipeline = Arc::new(device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Render Pipeline"),
             layout: Some(&render_pipeline_layout),
@@ -289,13 +318,21 @@ impl<'a> RenderEngine<'a> {
             multiview: None,
             cache: None,
         }));
+        info!("Render pipeline created successfully");
 
+        info!("Creating resource manager");
         let resource_manager = ResourceManager::new(Arc::clone(&device), Arc::clone(&queue));
         let texture_path = std::path::Path::new("assets/textures/happy-tree.png");
         let mesh_path = std::path::Path::new("assets/meshes/default.obj");
         let mut resource_manager = resource_manager;
+        
+        info!("Loading texture: {:?}", texture_path);
         resource_manager.load_texture(texture_path).await.unwrap();
+        info!("Texture loaded successfully");
+        
+        info!("Loading mesh: {:?}", mesh_path);
         resource_manager.load_mesh(mesh_path).await.unwrap();
+        info!("Mesh loaded successfully");
         let texture_ref = resource_manager.get_texture(texture_path.to_str().unwrap()).unwrap();
         let mesh_ref = resource_manager.get_mesh(mesh_path.to_str().unwrap()).unwrap().clone();
 
