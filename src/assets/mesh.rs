@@ -63,19 +63,13 @@ impl super::manager::AssetLoader<Mesh> for MeshLoader {
         info!("Loading mesh: {:?}", path);
 
         const VERTICES: &[Vertex] = &[
-            Vertex { position: [-0.0868241, 0.49240386, 0.0], normal: [0.0, 0.0, 1.0], tex_coords: [0.4131759, 0.00759614] },
-            Vertex { position: [-0.49513406, 0.06958647, 0.0], normal: [0.0, 0.0, 1.0], tex_coords: [0.0048659444, 0.43041354] },
-            Vertex { position: [-0.42913406, -0.49240386, 0.0], normal: [0.0, 0.0, 1.0], tex_coords: [0.070865944, 0.99240386] },
-            Vertex { position: [0.49513406, 0.06958647, 0.0], normal: [0.0, 0.0, 1.0], tex_coords: [0.99513406, 0.43041354] },
-            Vertex { position: [0.0868241, -0.49240386, 0.0], normal: [0.0, 0.0, 1.0], tex_coords: [0.5868241, 0.99240386] },
-            Vertex { position: [0.42913406, 0.49240386, 0.0], normal: [0.0, 0.0, 1.0], tex_coords: [0.92913406, 0.00759614] },
+            Vertex { position: [-0.5, -0.5, 0.0], normal: [0.0, 0.0, 1.0], tex_coords: [0.0, 0.0] },
+            Vertex { position: [0.5, -0.5, 0.0], normal: [0.0, 0.0, 1.0], tex_coords: [1.0, 0.0] },
+            Vertex { position: [0.0, 0.5, 0.0], normal: [0.0, 0.0, 1.0], tex_coords: [0.5, 1.0] },
         ];
 
         const INDICES: &[u16] = &[
-            0, 1, 4,
-            0, 4, 5,
-            1, 2, 4,
-            2, 3, 4,
+            0, 1, 2,
         ];
 
         let vertex_buffer = self.device.create_buffer_init(

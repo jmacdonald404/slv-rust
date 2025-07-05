@@ -5,8 +5,9 @@ use winit::{
 use wgpu::util::DeviceExt;
 use crate::rendering::camera::{Camera, CameraController};
 use crate::rendering::camera_uniform::CameraUniform;
-use crate::assets::manager::ResourceManager;
-use crate::assets::mesh::{Mesh, Vertex};
+use crate::assets::manager::{ResourceManager, AssetLoader};
+use crate::assets::mesh::{Mesh, Vertex, MeshLoader};
+use crate::assets::texture::Texture;
 use crate::rendering::light::{Light};
 use crate::utils::logging::{handle_wgpu_result, log_adapter_info, log_device_info};
 use std::sync::Arc;
@@ -104,7 +105,6 @@ pub struct RenderEngine<'a> {
     pub camera_controller: CameraController,
     pub uniform_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
-    resource_manager: ResourceManager,
     texture_bind_group: wgpu::BindGroup,
     mesh: Mesh,
     pub light: Light,
@@ -183,7 +183,7 @@ impl<'a> RenderEngine<'a> {
         info!("Shader module created successfully");
 
         let camera = Camera {
-            eye: (0.0, 1.0, 2.0).into(),
+            eye: (0.0, 0.0, 3.0).into(),
             target: (0.0, 0.0, 0.0).into(),
             up: cgmath::Vector3::unit_y(),
             aspect: config.width as f32 / config.height as f32,
@@ -322,19 +322,79 @@ impl<'a> RenderEngine<'a> {
 
         info!("Creating resource manager");
         let resource_manager = ResourceManager::new(Arc::clone(&device), Arc::clone(&queue));
-        let texture_path = std::path::Path::new("assets/textures/happy-tree.png");
-        let mesh_path = std::path::Path::new("assets/meshes/default.obj");
         let mut resource_manager = resource_manager;
         
-        info!("Loading texture: {:?}", texture_path);
-        resource_manager.load_texture(texture_path).await.unwrap();
-        info!("Texture loaded successfully");
+        // Create a fallback texture since assets don't exist
+        info!("Creating fallback texture");
         
-        info!("Loading mesh: {:?}", mesh_path);
-        resource_manager.load_mesh(mesh_path).await.unwrap();
-        info!("Mesh loaded successfully");
-        let texture_ref = resource_manager.get_texture(texture_path.to_str().unwrap()).unwrap();
-        let mesh_ref = resource_manager.get_mesh(mesh_path.to_str().unwrap()).unwrap().clone();
+        // Create a simple 4x4 checkerboard pattern directly as a texture
+        let texture_size = wgpu::Extent3d {
+            width: 4,
+            height: 4,
+            depth_or_array_layers: 1,
+        };
+        
+        let mut fallback_texture_data = Vec::new();
+        for y in 0..4 {
+            for x in 0..4 {
+                let is_white = (x + y) % 2 == 0;
+                if is_white {
+                    fallback_texture_data.extend_from_slice(&[255, 255, 255, 255]); // White
+                } else {
+                    fallback_texture_data.extend_from_slice(&[128, 128, 128, 255]); // Gray
+                }
+            }
+        }
+        
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("fallback_texture"),
+            size: texture_size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &fallback_texture_data,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * 4), // 4 pixels * 4 bytes per pixel
+                rows_per_image: Some(4),
+            },
+            texture_size,
+        );
+        
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        
+        let fallback_texture = Texture { texture, view, sampler };
+        
+        info!("Fallback texture created successfully");
+        
+        // Create a simple mesh (already handled by the mesh loader)
+        info!("Creating default mesh");
+        let mesh_ref = MeshLoader::new(Arc::clone(&device))
+            .load(std::path::Path::new("default"))
+            .await
+            .expect("Failed to create default mesh");
+        info!("Default mesh created successfully");
 
         let light = Light {
             position: cgmath::Point3::new(0.0, 0.0, 0.0),
@@ -368,11 +428,11 @@ impl<'a> RenderEngine<'a> {
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&texture_ref.view),
+                        resource: wgpu::BindingResource::TextureView(&fallback_texture.view),
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&texture_ref.sampler),
+                        resource: wgpu::BindingResource::Sampler(&fallback_texture.sampler),
                     }
                 ],
                 label: Some("texture_bind_group"),
@@ -395,7 +455,6 @@ impl<'a> RenderEngine<'a> {
             camera_controller,
             uniform_buffer,
             bind_group,
-            resource_manager,
             texture_bind_group,
             mesh: mesh_ref,
             light,
