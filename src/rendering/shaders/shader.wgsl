@@ -42,5 +42,9 @@ fn vs_main(
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return vec4<f32>(1.0, 0.0, 0.0, 1.0); // Solid red
+    let light_dir = normalize(light.position - in.world_position);
+    let diffuse = max(dot(in.normal, light_dir), 0.0);
+    let texture_color = textureSample(t_diffuse, s_diffuse, in.tex_coords);
+    let final_color = texture_color.rgb * (light.color * diffuse);
+    return vec4<f32>(final_color, texture_color.a);
 }

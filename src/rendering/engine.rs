@@ -397,7 +397,7 @@ impl<'a> RenderEngine<'a> {
         info!("Default mesh created successfully");
 
         let light = Light {
-            position: cgmath::Point3::new(0.0, 0.0, 0.0),
+            position: cgmath::Point3::new(0.0, 0.0, 3.0),
             color: cgmath::Vector3::new(1.0, 1.0, 1.0),
         };
 
