@@ -9,6 +9,8 @@ use tracing::info;
 use winit::application::ApplicationHandler;
 use winit::event_loop::ActiveEventLoop;
 use tokio::sync::Mutex;
+use std::time::Instant;
+use cgmath::{Matrix4, Rad, Rotation3, Vector3};
 
 pub struct AppState<'a> {
     pub render_state: RenderState<'a>,
@@ -65,10 +67,21 @@ impl<'a> ApplicationHandler for AppState<'a> {
                     },
                     WindowEvent::RedrawRequested => {
                         renderer.camera_controller.update_camera(&mut renderer.camera);
+                        // --- Begin rotation animation ---
+                        static mut START_TIME: Option<Instant> = None;
+                        let now = Instant::now();
+                        let elapsed = unsafe {
+                            let start = START_TIME.get_or_insert_with(Instant::now);
+                            now.duration_since(*start).as_secs_f32()
+                        };
+                        let rotation = Matrix4::from_angle_y(Rad(elapsed));
+                        let model = rotation;
                         let camera_uniform = crate::rendering::camera_uniform::CameraUniform {
                             view_proj: renderer.camera.build_view_projection_matrix().into(),
+                            model: model.into(),
                         };
                         renderer.queue.write_buffer(&renderer.uniform_buffer, 0, bytemuck::cast_slice(&[camera_uniform]));
+                        // --- End rotation animation ---
                         if renderer.light.position != self.render_state.last_light_position {
                             let light_uniform = renderer.light.to_uniform();
                             renderer.queue.write_buffer(&renderer.light_uniform_buffer, 0, bytemuck::cast_slice(&[light_uniform]));

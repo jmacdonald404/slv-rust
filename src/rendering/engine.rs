@@ -13,6 +13,7 @@ use crate::utils::logging::{handle_wgpu_result, log_adapter_info, log_device_inf
 use std::sync::Arc;
 use std::fmt;
 use tracing::{info, warn, error, debug};
+use cgmath::SquareMatrix;
 
 pub struct State<'a> {
     pub renderer: Option<RenderEngine<'a>>,
@@ -195,6 +196,7 @@ impl<'a> RenderEngine<'a> {
 
         let camera_uniform = CameraUniform {
             view_proj: camera.build_view_projection_matrix().into(),
+            model: cgmath::Matrix4::<f32>::identity().into(),
         };
 
         let uniform_buffer = device.create_buffer_init(
@@ -389,12 +391,12 @@ impl<'a> RenderEngine<'a> {
         info!("Fallback texture created successfully");
         
         // Create a simple mesh (already handled by the mesh loader)
-        info!("Creating default mesh");
+        info!("Creating cube mesh");
         let mesh_ref = MeshLoader::new(Arc::clone(&device))
-            .load(std::path::Path::new("default"))
+            .load(std::path::Path::new("cube"))
             .await
-            .expect("Failed to create default mesh");
-        info!("Default mesh created successfully");
+            .expect("Failed to create cube mesh");
+        info!("Cube mesh created successfully");
 
         let light = Light {
             position: cgmath::Point3::new(0.0, 0.0, 3.0),

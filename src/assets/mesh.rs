@@ -56,11 +56,81 @@ impl MeshLoader {
 #[async_trait]
 impl super::manager::AssetLoader<Mesh> for MeshLoader {
     async fn load(&self, path: &Path) -> Result<Mesh> {
+        info!("Loading mesh: {:?}", path);
+
+        if path.to_str().map(|s| s == "cube").unwrap_or(false) {
+            // Cube vertices (positions, normals, tex_coords)
+            const VERTICES: &[Vertex] = &[
+                // Front face
+                Vertex { position: [-0.5, -0.5,  0.5], normal: [0.0, 0.0, 1.0], tex_coords: [0.0, 0.0] },
+                Vertex { position: [ 0.5, -0.5,  0.5], normal: [0.0, 0.0, 1.0], tex_coords: [1.0, 0.0] },
+                Vertex { position: [ 0.5,  0.5,  0.5], normal: [0.0, 0.0, 1.0], tex_coords: [1.0, 1.0] },
+                Vertex { position: [-0.5,  0.5,  0.5], normal: [0.0, 0.0, 1.0], tex_coords: [0.0, 1.0] },
+                // Back face
+                Vertex { position: [-0.5, -0.5, -0.5], normal: [0.0, 0.0, -1.0], tex_coords: [1.0, 0.0] },
+                Vertex { position: [ 0.5, -0.5, -0.5], normal: [0.0, 0.0, -1.0], tex_coords: [0.0, 0.0] },
+                Vertex { position: [ 0.5,  0.5, -0.5], normal: [0.0, 0.0, -1.0], tex_coords: [0.0, 1.0] },
+                Vertex { position: [-0.5,  0.5, -0.5], normal: [0.0, 0.0, -1.0], tex_coords: [1.0, 1.0] },
+                // Left face
+                Vertex { position: [-0.5, -0.5, -0.5], normal: [-1.0, 0.0, 0.0], tex_coords: [0.0, 0.0] },
+                Vertex { position: [-0.5, -0.5,  0.5], normal: [-1.0, 0.0, 0.0], tex_coords: [1.0, 0.0] },
+                Vertex { position: [-0.5,  0.5,  0.5], normal: [-1.0, 0.0, 0.0], tex_coords: [1.0, 1.0] },
+                Vertex { position: [-0.5,  0.5, -0.5], normal: [-1.0, 0.0, 0.0], tex_coords: [0.0, 1.0] },
+                // Right face
+                Vertex { position: [0.5, -0.5, -0.5], normal: [1.0, 0.0, 0.0], tex_coords: [1.0, 0.0] },
+                Vertex { position: [0.5, -0.5,  0.5], normal: [1.0, 0.0, 0.0], tex_coords: [0.0, 0.0] },
+                Vertex { position: [0.5,  0.5,  0.5], normal: [1.0, 0.0, 0.0], tex_coords: [0.0, 1.0] },
+                Vertex { position: [0.5,  0.5, -0.5], normal: [1.0, 0.0, 0.0], tex_coords: [1.0, 1.0] },
+                // Top face
+                Vertex { position: [-0.5, 0.5, -0.5], normal: [0.0, 1.0, 0.0], tex_coords: [0.0, 1.0] },
+                Vertex { position: [-0.5, 0.5,  0.5], normal: [0.0, 1.0, 0.0], tex_coords: [0.0, 0.0] },
+                Vertex { position: [ 0.5, 0.5,  0.5], normal: [0.0, 1.0, 0.0], tex_coords: [1.0, 0.0] },
+                Vertex { position: [ 0.5, 0.5, -0.5], normal: [0.0, 1.0, 0.0], tex_coords: [1.0, 1.0] },
+                // Bottom face
+                Vertex { position: [-0.5, -0.5, -0.5], normal: [0.0, -1.0, 0.0], tex_coords: [1.0, 1.0] },
+                Vertex { position: [-0.5, -0.5,  0.5], normal: [0.0, -1.0, 0.0], tex_coords: [1.0, 0.0] },
+                Vertex { position: [ 0.5, -0.5,  0.5], normal: [0.0, -1.0, 0.0], tex_coords: [0.0, 0.0] },
+                Vertex { position: [ 0.5, -0.5, -0.5], normal: [0.0, -1.0, 0.0], tex_coords: [0.0, 1.0] },
+            ];
+            const INDICES: &[u16] = &[
+                // Front
+                0, 1, 2, 0, 2, 3,
+                // Back
+                4, 6, 5, 4, 7, 6,
+                // Left
+                8, 9, 10, 8, 10, 11,
+                // Right
+                12, 14, 13, 12, 15, 14,
+                // Top
+                16, 17, 18, 16, 18, 19,
+                // Bottom
+                20, 22, 21, 20, 23, 22,
+            ];
+            let vertex_buffer = self.device.create_buffer_init(
+                &wgpu::util::BufferInitDescriptor {
+                    label: Some(&format!("{:?} Vertex Buffer", path)),
+                    contents: bytemuck::cast_slice(VERTICES),
+                    usage: BufferUsages::VERTEX,
+                }
+            );
+            let index_buffer = self.device.create_buffer_init(
+                &wgpu::util::BufferInitDescriptor {
+                    label: Some(&format!("{:?} Index Buffer", path)),
+                    contents: bytemuck::cast_slice(INDICES),
+                    usage: BufferUsages::INDEX,
+                }
+            );
+            let num_indices = INDICES.len() as u32;
+            return Ok(Mesh {
+                vertex_buffer: Arc::new(vertex_buffer),
+                index_buffer: Arc::new(index_buffer),
+                num_indices,
+            });
+        }
+
         // For now, we'll just create a dummy mesh.
         // In a real scenario, this would parse a mesh file (e.g., .obj, .gltf)
         // and create the appropriate buffers.
-
-        info!("Loading mesh: {:?}", path);
 
         const VERTICES: &[Vertex] = &[
             Vertex { position: [-0.5, -0.5, 0.0], normal: [0.0, 0.0, 1.0], tex_coords: [0.0, 0.0] },

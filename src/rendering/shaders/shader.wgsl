@@ -1,5 +1,6 @@
 struct Uniforms {
     view_proj: mat4x4<f32>,
+    model: mat4x4<f32>,
 };
 
 struct LightUniform {
@@ -33,10 +34,12 @@ fn vs_main(
     @location(2) tex_coords: vec2<f32>
 ) -> VertexOutput {
     var out: VertexOutput;
-    out.world_position = position;
-    out.normal = normal;
+    let world_pos = uniforms.model * vec4(position, 1.0);
+    let world_normal = (uniforms.model * vec4(normal, 0.0)).xyz;
+    out.world_position = world_pos.xyz;
+    out.normal = normalize(world_normal);
     out.tex_coords = tex_coords;
-    out.clip_position = uniforms.view_proj * vec4(position, 1.0);
+    out.clip_position = uniforms.view_proj * world_pos;
     return out;
 }
 
