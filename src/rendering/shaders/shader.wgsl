@@ -25,7 +25,7 @@ var t_diffuse: texture_2d<f32>;
 var s_diffuse: sampler;
 
 @group(2) @binding(0)
-var<uniform> light: LightUniform;
+var<uniform> lights: array<LightUniform, 2>;
 
 @vertex
 fn vs_main(
@@ -45,9 +45,13 @@ fn vs_main(
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let light_dir = normalize(light.position - in.world_position);
-    let diffuse = max(dot(in.normal, light_dir), 0.0);
+    var color = vec3<f32>(0.0);
     let texture_color = textureSample(t_diffuse, s_diffuse, in.tex_coords);
-    let final_color = texture_color.rgb * (light.color * diffuse);
+    for (var i = 0u; i < 2u; i = i + 1u) {
+        let light_dir = normalize(lights[i].position - in.world_position);
+        let diffuse = max(dot(in.normal, light_dir), 0.0);
+        color += lights[i].color * diffuse;
+    }
+    let final_color = texture_color.rgb * color;
     return vec4<f32>(final_color, texture_color.a);
 }

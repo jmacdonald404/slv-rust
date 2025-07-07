@@ -11,6 +11,7 @@ pub struct LightUniform {
     pub _padding2: u32,
 }
 
+#[derive(Clone)]
 pub struct Light {
     pub position: Point3<f32>,
     pub color: Vector3<f32>,

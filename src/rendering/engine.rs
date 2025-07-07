@@ -264,7 +264,7 @@ impl<'a> RenderEngine<'a> {
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
-                        min_binding_size: None,
+                        min_binding_size: Some(std::num::NonZeroU64::new((std::mem::size_of::<crate::rendering::light::LightUniform>() * 2) as u64).unwrap()),
                     },
                     count: None,
                 }
@@ -329,17 +329,16 @@ impl<'a> RenderEngine<'a> {
         // Create a fallback texture since assets don't exist
         info!("Creating fallback texture");
         
-        // Create a simple 4x4 checkerboard pattern directly as a texture
+        // Create a simple 32x32 checkerboard pattern directly as a texture
         let texture_size = wgpu::Extent3d {
-            width: 4,
-            height: 4,
+            width: 32,
+            height: 32,
             depth_or_array_layers: 1,
         };
-        
         let mut fallback_texture_data = Vec::new();
-        for y in 0..4 {
-            for x in 0..4 {
-                let is_white = (x + y) % 2 == 0;
+        for y in 0..32 {
+            for x in 0..32 {
+                let is_white = ((x / 4) + (y / 4)) % 2 == 0;
                 if is_white {
                     fallback_texture_data.extend_from_slice(&[255, 255, 255, 255]); // White
                 } else {
@@ -369,8 +368,8 @@ impl<'a> RenderEngine<'a> {
             &fallback_texture_data,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(4 * 4), // 4 pixels * 4 bytes per pixel
-                rows_per_image: Some(4),
+                bytes_per_row: Some(4 * 32), // 32 pixels * 4 bytes per pixel
+                rows_per_image: Some(32),
             },
             texture_size,
         );
@@ -398,21 +397,25 @@ impl<'a> RenderEngine<'a> {
             .expect("Failed to create cube mesh");
         info!("Cube mesh created successfully");
 
-        let light = Light {
-            position: cgmath::Point3::new(0.0, 0.0, 3.0),
-            color: cgmath::Vector3::new(1.0, 1.0, 1.0),
-        };
-
-        let light_uniform = light.to_uniform();
-
+        // Two lights: blue (back-left) and red (back-right)
+        let lights = [
+            Light {
+                position: cgmath::Point3::new(-2.0, 2.0, 5.0), // back-left
+                color: cgmath::Vector3::new(0.0, 0.0, 1.0),    // blue
+            },
+            Light {
+                position: cgmath::Point3::new(2.0, 2.0, 5.0),  // back-right
+                color: cgmath::Vector3::new(1.0, 0.0, 0.0),    // red
+            },
+        ];
+        let light_uniforms = [lights[0].to_uniform(), lights[1].to_uniform()];
         let light_uniform_buffer = device.create_buffer_init(
             &wgpu::util::BufferInitDescriptor {
                 label: Some("Light Uniform Buffer"),
-                contents: bytemuck::cast_slice(&[light_uniform]),
+                contents: bytemuck::cast_slice(&light_uniforms),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             }
         );
-
         let light_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &light_bind_group_layout,
             entries: &[
@@ -459,7 +462,7 @@ impl<'a> RenderEngine<'a> {
             bind_group,
             texture_bind_group,
             mesh: mesh_ref,
-            light,
+            light: lights[0].clone(),
             light_uniform_buffer,
             light_bind_group,
             renderer,
