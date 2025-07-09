@@ -6,8 +6,10 @@ use std::collections::VecDeque;
 use crate::ui::UiState;
 use crate::networking::protocol::messages::Message;
 use std::net::SocketAddr;
+use crate::networking::session;
+use crate::networking::circuit;
 
-pub fn show_chat_panel(ctx: &eframe::egui::Context, chat_input: &mut String, chat_messages: &mut VecDeque<String>, udp_circuit: &Option<std::sync::Arc<tokio::sync::Mutex<crate::networking::circuit::Circuit>>>, session_info: &Option<crate::networking::session::LoginSessionInfo>) {
+pub fn show_chat_panel(ctx: &eframe::egui::Context, chat_input: &mut String, chat_messages: &mut VecDeque<String>, udp_circuit: &Option<std::sync::Arc<tokio::sync::Mutex<circuit::Circuit>>>, session_info: &Option<session::LoginSessionInfo>) {
     eframe::egui::Window::new("Chat").show(ctx, |ui| {
         ui.label("Chat messages:");
         for msg in chat_messages.iter() {

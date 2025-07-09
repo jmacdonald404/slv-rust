@@ -9,7 +9,7 @@ use winit::window::Window;
 use std::collections::VecDeque;
 use tokio::task::JoinHandle;
 use crossbeam_channel::{unbounded, Sender, Receiver};
-use crate::networking::session::LoginSessionInfo;
+use crate::networking::session;
 use crate::networking::circuit::Circuit;
 use crate::config::settings;
 
@@ -37,7 +37,7 @@ pub struct LoginState {
     pub password: String,
     pub status_message: String,
     pub prefs_modal_open: bool,
-    pub session_info: Option<crate::networking::session::LoginSessionInfo>,
+    pub session_info: Option<session::LoginSessionInfo>,
 }
 
 impl Default for LoginState {
@@ -68,7 +68,7 @@ pub enum LoginProgress {
 }
 
 pub struct LoginResult {
-    pub result: Result<LoginSessionInfo, String>,
+    pub result: Result<session::LoginSessionInfo, String>,
 }
 
 pub enum UdpConnectionProgress {
