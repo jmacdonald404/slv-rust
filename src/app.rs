@@ -1,23 +1,24 @@
-use crate::rendering::engine::State as RenderState;
 use crate::ui::UiState;
-use std::net::SocketAddr;
-use winit::event::{WindowEvent, Event};
-use winit::event_loop::{EventLoop, ControlFlow};
 use std::sync::Arc;
-use tokio::runtime::Runtime;
-use tracing::info;
-use winit::application::ApplicationHandler;
-use winit::event_loop::ActiveEventLoop;
-use tokio::sync::Mutex;
-use std::time::Instant;
-use cgmath::{Matrix4, Rad, Rotation3, Vector3};
+use std::net::SocketAddr;
 
-pub struct AppState<'a> {
-    pub render_state: RenderState<'a>,
-    pub ui_state: UiState,
+// New: Main-thread-only RenderContext for wgpu/winit fields
+pub struct RenderContext<'a> {
+    pub surface: wgpu::Surface<'a>,
+    pub device: Arc<wgpu::Device>,
+    pub queue: Arc<wgpu::Queue>,
+    pub config: wgpu::SurfaceConfiguration,
+    pub window: Arc<winit::window::Window>,
+    pub ui_ctx: Option<crate::ui::UiContext>,
 }
 
-impl<'a> AppState<'a> {
+// Multithreaded shared state for UI/logic
+pub struct AppState {
+    pub ui_state: UiState,
+    // Add other Send + Sync fields as needed
+}
+
+impl AppState {
     pub async fn cleanup(&mut self) {
         let mut should_clear_udp_circuit = false;
         if let Some(circuit_mutex) = self.ui_state.udp_circuit.as_mut() {
@@ -36,70 +37,6 @@ impl<'a> AppState<'a> {
         }
         if should_clear_udp_circuit {
             self.ui_state.udp_circuit = None;
-        }
-    }
-}
-
-impl<'a> ApplicationHandler for AppState<'a> {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.render_state.renderer.is_none() {
-            let window = Arc::new(event_loop.create_window(winit::window::Window::default_attributes().with_title("slv-rust")).expect("Failed to create window"));
-            self.render_state.window = Some(window.clone());
-            let renderer = pollster::block_on(crate::rendering::engine::RenderEngine::new(window));
-            self.render_state.renderer = Some(renderer);
-        }
-    }
-
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, window_id: winit::window::WindowId, event: WindowEvent) {
-        if self.render_state.window.as_ref().map_or(true, |w| w.id() != window_id) {
-            return;
-        }
-        if let Some(renderer) = self.render_state.renderer.as_mut() {
-            if !renderer.camera_controller.process_events(&event) {
-                match event {
-                    WindowEvent::CloseRequested => {
-                        // Call coordinated cleanup before exit
-                        pollster::block_on(self.cleanup());
-                        event_loop.exit();
-                    },
-                    WindowEvent::Resized(physical_size) => {
-                        renderer.resize(physical_size);
-                    },
-                    WindowEvent::RedrawRequested => {
-                        renderer.camera_controller.update_camera(&mut renderer.camera);
-                        // --- Begin rotation animation ---
-                        static mut START_TIME: Option<Instant> = None;
-                        let now = Instant::now();
-                        let elapsed = unsafe {
-                            let start = START_TIME.get_or_insert_with(Instant::now);
-                            now.duration_since(*start).as_secs_f32()
-                        };
-                        let rotation = Matrix4::from_angle_y(Rad(elapsed));
-                        let model = rotation;
-                        let camera_uniform = crate::rendering::camera_uniform::CameraUniform {
-                            view_proj: renderer.camera.build_view_projection_matrix().into(),
-                            model: model.into(),
-                        };
-                        renderer.queue.write_buffer(&renderer.uniform_buffer, 0, bytemuck::cast_slice(&[camera_uniform]));
-                        // --- End rotation animation ---
-                        if renderer.light.position != self.render_state.last_light_position {
-                            let light_uniform = renderer.light.to_uniform();
-                            renderer.queue.write_buffer(&renderer.light_uniform_buffer, 0, bytemuck::cast_slice(&[light_uniform]));
-                            self.render_state.last_light_position = renderer.light.position;
-                        }
-                        renderer.render_frame();
-                        if let Some(window) = self.render_state.window.as_ref() {
-                            window.request_redraw();
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        // After handling the event, check for logout request
-        if self.ui_state.logout_requested {
-            pollster::block_on(self.cleanup());
-            self.ui_state.logout_requested = false;
         }
     }
 }

@@ -13,6 +13,7 @@ use tokio::time::{timeout, Duration};
 use crate::ui::chat;
 use tokio::sync::Mutex;
 use std::sync::Arc;
+use eframe::egui;
 
 pub struct UdpConnectResult {
     pub result: Result<std::sync::Arc<tokio::sync::Mutex<Circuit>>, String>,

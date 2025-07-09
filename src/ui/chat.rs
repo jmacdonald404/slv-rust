@@ -1,20 +1,20 @@
 // TODO: Integrate chat UI with egui
 // TODO: Implement chat window, input box, and message display
 
-use egui::Context;
+use eframe::egui::Context;
 use std::collections::VecDeque;
 use crate::ui::UiState;
 use crate::networking::protocol::messages::Message;
 use std::net::SocketAddr;
 
-pub fn show_chat_panel(ctx: &Context, chat_input: &mut String, chat_messages: &mut VecDeque<String>, udp_circuit: &Option<std::sync::Arc<tokio::sync::Mutex<crate::networking::circuit::Circuit>>>, session_info: &Option<crate::networking::session::LoginSessionInfo>) {
-    egui::Window::new("Chat").show(ctx, |ui| {
+pub fn show_chat_panel(ctx: &eframe::egui::Context, chat_input: &mut String, chat_messages: &mut VecDeque<String>, udp_circuit: &Option<std::sync::Arc<tokio::sync::Mutex<crate::networking::circuit::Circuit>>>, session_info: &Option<crate::networking::session::LoginSessionInfo>) {
+    eframe::egui::Window::new("Chat").show(ctx, |ui| {
         ui.label("Chat messages:");
         for msg in chat_messages.iter() {
             ui.label(msg);
         }
         ui.separator();
-        let send = ui.text_edit_singleline(chat_input).lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        let send = ui.text_edit_singleline(chat_input).lost_focus() && ui.input(|i| i.key_pressed(eframe::egui::Key::Enter));
         if send && !chat_input.trim().is_empty() {
             // Send chat message over network if possible
             if let (Some(circuit_mutex), Some(session_info)) = (udp_circuit, session_info) {

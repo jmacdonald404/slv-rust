@@ -13,7 +13,7 @@ bytes = "1.10.1"
 
 # Rendering
 wgpu = "24.0.5"
-winit = "0.30.11"
+winit = "0.30.7"
 glam = "0.30.4"
 image = "0.25.6"
 bytemuck = { version = "1.23.1", features = ["derive"] }
@@ -25,9 +25,7 @@ collada = "0.16.0"
 hound = "3.5.1"
 
 # UI Framework
-egui = "0.31.1"
-egui-wgpu = "0.31.1"
-egui-winit = "0.31.1"
+eframe = "0.31"
 
 # Serialization
 serde = { version = "1.0.219", features = ["derive"] }

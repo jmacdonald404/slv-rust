@@ -97,10 +97,10 @@ pub struct RenderEngine<'a> {
     adapter: wgpu::Adapter,
     pub device: Arc<wgpu::Device>,
     pub queue: Arc<wgpu::Queue>,
-    surface: wgpu::Surface<'a>,
-    window: Arc<winit::window::Window>,
-    size: winit::dpi::PhysicalSize<u32>,
-    config: wgpu::SurfaceConfiguration,
+    pub surface: wgpu::Surface<'a>,
+    pub window: Arc<winit::window::Window>,
+    pub size: winit::dpi::PhysicalSize<u32>,
+    pub config: wgpu::SurfaceConfiguration,
     render_pipeline: Arc<wgpu::RenderPipeline>,
     pub camera: Camera,
     pub camera_controller: CameraController,
@@ -164,7 +164,7 @@ impl<'a> RenderEngine<'a> {
         let size = window.inner_size();
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: wgpu::TextureFormat::Bgra8UnormSrgb,
+            format: wgpu::TextureFormat::Bgra8Unorm,
             width: size.width,
             height: size.height,
             present_mode: wgpu::PresentMode::Fifo,
