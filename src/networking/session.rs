@@ -28,16 +28,49 @@ pub struct LoginSessionInfo {
     // Add more fields as needed
 }
 
+fn build_login_xml(req: &LoginRequest) -> String {
+    // This builds a minimal XML-RPC login request. Add more fields as needed.
+    format!(r#"<?xml version="1.0" ?>
+<methodCall>
+  <methodName>login_to_simulator</methodName>
+  <params>
+    <param>
+      <value>
+        <struct>
+          <member><name>first</name><value><string>{first}</string></value></member>
+          <member><name>last</name><value><string>{last}</string></value></member>
+          <member><name>passwd</name><value><string>{password}</string></value></member>
+          <member><name>start</name><value><string>{start}</string></value></member>
+          <member><name>channel</name><value><string>{channel}</string></value></member>
+          <member><name>version</name><value><string>{version}</string></value></member>
+          <member><name>platform</name><value><string>{platform}</string></value></member>
+          <member><name>mac</name><value><string>{mac}</string></value></member>
+          <member><name>id0</name><value><string>{id0}</string></value></member>
+        </struct>
+      </value>
+    </param>
+  </params>
+</methodCall>"#,
+        first = req.first,
+        last = req.last,
+        password = req.password,
+        start = req.start,
+        channel = req.channel,
+        version = req.version,
+        platform = req.platform,
+        mac = req.mac,
+        id0 = req.id0,
+    )
+}
+
 pub async fn login_to_secondlife(grid_uri: &str, req: &LoginRequest) -> Result<LoginSessionInfo, String> {
-    // Log the outgoing request as JSON
-    match serde_json::to_string_pretty(req) {
-        Ok(json) => eprintln!("[LOGIN REQUEST] {}", json),
-        Err(e) => eprintln!("[LOGIN REQUEST] Failed to serialize request: {}", e),
-    }
+    let xml_body = build_login_xml(req);
+    eprintln!("[LOGIN XML BODY]\n{}", xml_body);
     let client = Client::new();
     let res = client
         .post(grid_uri)
-        .json(req)
+        .header("Content-Type", "text/xml")
+        .body(xml_body)
         .send()
         .await
         .map_err(|e| format!("HTTP error: {e}"))?;
@@ -64,6 +97,8 @@ fn parse_login_response(xml: &str) -> Result<LoginSessionInfo, String> {
     let mut sim_ip = None;
     let mut sim_port = None;
     let mut circuit_code = None;
+    let mut login_success = None;
+    let mut error_message = None;
     let mut in_struct = false;
     let mut last_name = None;
     let mut last_value = None;
@@ -90,6 +125,8 @@ fn parse_login_response(xml: &str) -> Result<LoginSessionInfo, String> {
                         "sim_ip" => sim_ip = Some(value),
                         "sim_port" => sim_port = value.parse().ok(),
                         "circuit_code" => circuit_code = value.parse().ok(),
+                        "login" => login_success = Some(value.clone()),
+                        "message" => error_message = Some(value.clone()),
                         _ => {}
                     }
                 }
@@ -99,6 +136,16 @@ fn parse_login_response(xml: &str) -> Result<LoginSessionInfo, String> {
             _ => {}
         }
         buf.clear();
+    }
+    if let Some(login) = login_success {
+        if login == "false" {
+            // Login failed, return the error message if present
+            if let Some(msg) = error_message {
+                return Err(msg.to_string());
+            } else {
+                return Err("Login failed (no message)".to_string());
+            }
+        }
     }
     if let (Some(agent_id), Some(session_id), Some(secure_session_id), Some(sim_ip), Some(sim_port), Some(circuit_code)) =
         (agent_id, session_id, secure_session_id, sim_ip, sim_port, circuit_code)

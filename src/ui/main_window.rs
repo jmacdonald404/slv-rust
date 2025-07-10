@@ -189,10 +189,19 @@ pub fn show_main_window(ctx: &egui::Context, ui_state: &mut UiState) {
                     // Login button (disabled until fields are filled)
                     let login_enabled = !ui_state.login_state.username.is_empty() && !ui_state.login_state.password.is_empty() && matches!(ui_state.login_progress, LoginProgress::Idle);
                     if ui.add_enabled(login_enabled, egui::Button::new("Login")).clicked() {
-                        // Parse username into first/last ("First Last")
-                        let mut parts = ui_state.login_state.username.split_whitespace();
-                        let first = parts.next().unwrap_or("").to_string();
-                        let last = parts.next().unwrap_or("").to_string();
+                        // Parse username into first/last ("First Last" or "first.last" or just "First")
+                        let (first, last) = if ui_state.login_state.username.contains('.') {
+                            let mut parts = ui_state.login_state.username.splitn(2, '.');
+                            (
+                                parts.next().unwrap_or("").to_string(),
+                                parts.next().unwrap_or("Resident").to_string(),
+                            )
+                        } else {
+                            let mut parts = ui_state.login_state.username.split_whitespace();
+                            let first = parts.next().unwrap_or("").to_string();
+                            let last = parts.next().unwrap_or("Resident").to_string();
+                            (first, last)
+                        };
                         let password = ui_state.login_state.password.clone();
                         let req = LoginRequest {
                             first,
