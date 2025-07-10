@@ -66,9 +66,7 @@ collada = "0.16.0"   # DAE mesh format
 hound = "3.5.1"     # Audio processing
 
 # UI Framework
-egui = "0.28.1"     # Immediate mode GUI
-egui-wgpu = "0.28.1"
-egui-winit = "0.28.1"
+eframe = "0.31"     # Immediate mode GUI (native windowing, built on egui)
 
 # Serialization
 serde = { version = "1.0.203", features = ["derive"] }
