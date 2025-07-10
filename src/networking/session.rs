@@ -29,6 +29,11 @@ pub struct LoginSessionInfo {
 }
 
 pub async fn login_to_secondlife(grid_uri: &str, req: &LoginRequest) -> Result<LoginSessionInfo, String> {
+    // Log the outgoing request as JSON
+    match serde_json::to_string_pretty(req) {
+        Ok(json) => eprintln!("[LOGIN REQUEST] {}", json),
+        Err(e) => eprintln!("[LOGIN REQUEST] Failed to serialize request: {}", e),
+    }
     let client = Client::new();
     let res = client
         .post(grid_uri)
@@ -36,8 +41,17 @@ pub async fn login_to_secondlife(grid_uri: &str, req: &LoginRequest) -> Result<L
         .send()
         .await
         .map_err(|e| format!("HTTP error: {e}"))?;
+    let status = res.status();
     let text = res.text().await.map_err(|e| format!("HTTP error: {e}"))?;
-    parse_login_response(&text)
+    eprintln!("[LOGIN RESPONSE] HTTP status: {}", status);
+    eprintln!("[LOGIN RESPONSE] Raw body:\n{}", text);
+    match parse_login_response(&text) {
+        Ok(info) => Ok(info),
+        Err(e) => {
+            eprintln!("[ERROR] Failed to parse login response: {}\nRaw body: {}", e, text);
+            Err(format!("Failed to parse login response: {e}"))
+        }
+    }
 }
 
 fn parse_login_response(xml: &str) -> Result<LoginSessionInfo, String> {

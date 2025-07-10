@@ -1,10 +1,4 @@
-use winit::event_loop::EventLoop;
-use winit::event::{Event, WindowEvent};
-use tracing::info;
-use slv_rust::utils::logging::init_logging;
-use wgpu::{Instance, Backends, SurfaceConfiguration, TextureUsages, PresentMode, CompositeAlphaMode};
-use winit::window::Window;
-use std::sync::Arc;
+use tokio; // Add this import for the runtime
 
 mod networking;
 mod config;
@@ -31,9 +25,23 @@ impl eframe::App for MyApp {
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn main() -> eframe::Result<()> {
-    eframe::run_native(
-        &format!("shrekondlyfe rust viewer {}", VERSION),
-        eframe::NativeOptions::default(),
-        Box::new(|_cc| Ok(Box::new(MyApp::default()))),
-    )
+    // test stdout and stderr
+    println!("PRINT TEST: If you see this, stdout works!");
+    eprintln!("EPRINT TEST: If you see this, stderr works!");
+    println!("VERSION: {}", VERSION);
+    
+    // Build a multi-threaded Tokio runtime
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("Failed to create Tokio runtime");
+
+    // Run the eframe app inside the runtime
+    runtime.block_on(async {
+        eframe::run_native(
+            &format!("shrekondlyfe rust viewer {}", VERSION),
+            eframe::NativeOptions::default(),
+            Box::new(|_cc| Ok(Box::new(MyApp::default()))),
+        )
+    })
 }

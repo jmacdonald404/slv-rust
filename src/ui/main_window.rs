@@ -210,7 +210,16 @@ pub fn show_main_window(ctx: &egui::Context, ui_state: &mut UiState) {
                         let tx = ui_state.login_result_tx.clone();
                         // Spawn async login task
                         let handle = tokio::spawn(async move {
+                            eprintln!("[LOGIN TASK] Starting login for: first='{}', last='{}'", req.first, req.last);
                             let result = login_to_secondlife(&grid_uri, &req).await;
+                            match &result {
+                                Ok(session_info) => {
+                                    eprintln!("[LOGIN SUCCESS] agent_id={}, session_id={}", session_info.agent_id, session_info.session_id);
+                                }
+                                Err(err_msg) => {
+                                    eprintln!("[LOGIN ERROR] {}", err_msg);
+                                }
+                            }
                             let login_result = LoginResult { result };
                             let _ = tx.send(login_result);
                         });
@@ -229,7 +238,7 @@ pub fn show_main_window(ctx: &egui::Context, ui_state: &mut UiState) {
                         LoginProgress::Idle => ui.label("Status: Ready"),
                         LoginProgress::InProgress => ui.label("Status: Logging in..."),
                         LoginProgress::Success => ui.label("Status: Login successful!"),
-                        LoginProgress::Error(msg) => ui.label(format!("Status: Error: {}", msg)),
+                        LoginProgress::Error(msg) => ui.colored_label(egui::Color32::RED, format!("Status: Error: {}", msg)),
                     };
                 });
             });
