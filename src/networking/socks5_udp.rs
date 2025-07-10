@@ -14,7 +14,7 @@ pub struct Socks5UdpSocket {
 impl Socks5UdpSocket {
     pub async fn connect(proxy_host: &str, proxy_port: u16) -> io::Result<Self> {
         let proxy_addr = format!("{}:{}", proxy_host, proxy_port);
-        info!("Connecting to SOCKS5 proxy at {}", proxy_addr);
+        info!("[SOCKS5] Connecting to SOCKS5 proxy at {}", proxy_addr);
         let mut tcp_stream = TcpStream::connect(&proxy_addr).await?;
 
         // SOCKS5 handshake (no auth)
@@ -22,18 +22,19 @@ impl Socks5UdpSocket {
         let mut resp = [0u8; 2];
         tcp_stream.read_exact(&mut resp).await?;
         if resp != [0x05, 0x00] {
-            error!("SOCKS5 handshake failed: {:?}", resp);
+            error!("[SOCKS5] SOCKS5 handshake failed: {:?}", resp);
             return Err(io::Error::new(io::ErrorKind::Other, "SOCKS5 handshake failed"));
         }
-        debug!("SOCKS5 handshake succeeded");
+        debug!("[SOCKS5] SOCKS5 handshake succeeded");
 
         // UDP ASSOCIATE
         let local_udp = UdpSocket::bind("0.0.0.0:0").await?;
         let local_addr = local_udp.local_addr()?;
+        info!("[SOCKS5] Local UDP socket bound to {}", local_addr);
         let local_ip = match local_addr.ip() {
             IpAddr::V4(ip) => ip.octets(),
             IpAddr::V6(_) => {
-                error!("IPv6 not supported for SOCKS5 UDP");
+                error!("[SOCKS5] IPv6 not supported for SOCKS5 UDP");
                 return Err(io::Error::new(io::ErrorKind::Other, "IPv6 not supported"));
             }
         };
@@ -47,7 +48,7 @@ impl Socks5UdpSocket {
         let mut resp = [0u8; 4];
         tcp_stream.read_exact(&mut resp).await?;
         if resp[0] != 0x05 || resp[1] != 0x00 {
-            error!("SOCKS5 UDP associate failed: {:?}", resp);
+            error!("[SOCKS5] SOCKS5 UDP associate failed: {:?}", resp);
             return Err(io::Error::new(io::ErrorKind::Other, "SOCKS5 UDP associate failed"));
         }
         let atyp = resp[3];
@@ -60,11 +61,11 @@ impl Socks5UdpSocket {
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::from(ip)), u16::from_be_bytes(port))
             }
             _ => {
-                error!("Unsupported ATYP in UDP associate reply: {}", atyp);
+                error!("[SOCKS5] Unsupported ATYP in UDP associate reply: {}", atyp);
                 return Err(io::Error::new(io::ErrorKind::Other, "Unsupported ATYP in UDP associate reply"));
             }
         };
-        info!("SOCKS5 UDP relay address: {}", relay_addr);
+        info!("[SOCKS5] SOCKS5 UDP relay address: {}", relay_addr);
 
         Ok(Self {
             udp_socket: local_udp,
@@ -145,14 +146,17 @@ impl UdpSocketExt for Socks5UdpSocket {
     fn send<'a>(&'a self, buf: &'a [u8], target: &'a SocketAddr) -> std::pin::Pin<Box<dyn std::future::Future<Output = io::Result<usize>> + Send + 'a>> {
         let relay_addr = self.relay_addr;
         let packet = Self::build_udp_packet(buf, target);
+        let packet_len = packet.len();
+        let real_dest = *target;
         Box::pin(async move {
+            info!("[SOCKS5] Sending UDP packet: {} bytes to relay {} (real dest: {})", packet_len, relay_addr, real_dest);
             match self.udp_socket.send_to(&packet, relay_addr).await {
                 Ok(n) => {
-                    debug!("Sent {} bytes via SOCKS5 UDP proxy to {} (real dest: {})", n, relay_addr, target);
+                    debug!("[SOCKS5] Sent {} bytes via SOCKS5 UDP proxy to {} (real dest: {})", n, relay_addr, real_dest);
                     Ok(n)
                 }
                 Err(e) => {
-                    error!("SOCKS5 UDP send error: {}", e);
+                    error!("[SOCKS5] SOCKS5 UDP send error: {}", e);
                     Err(e)
                 }
             }

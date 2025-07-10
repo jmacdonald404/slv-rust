@@ -12,7 +12,7 @@ const RETRANSMISSION_TIMEOUT_MS: u64 = 200;
 const MAX_RETRANSMISSIONS: u32 = 5;
 
 pub struct Circuit {
-    transport: Box<dyn UdpSocketExt>,
+    transport: std::sync::Arc<Box<dyn UdpSocketExt>>,
     next_sequence_number: u32,
     next_expected_sequence_number: Arc<Mutex<u32>>,
     unacked_messages: Arc<Mutex<HashMap<u32, (Message, Instant, u32, SocketAddr, Vec<u8>)>>>, // sequence_id -> (message, sent_time, retransmission_count, target_addr, encoded_message)
@@ -22,6 +22,8 @@ pub struct Circuit {
 
 impl Circuit {
     pub async fn new_with_socket(socket: Box<dyn UdpSocketExt>) -> std::io::Result<Self> {
+        let socket = std::sync::Arc::new(socket);
+        let socket_bg = socket.clone();
         let (sender_channel_for_task, receiver_channel) = mpsc::channel(100);
 
         let unacked_messages_arc = Arc::new(Mutex::new(HashMap::<u32, (Message, Instant, u32, SocketAddr, Vec<u8>)>::new()));
@@ -32,14 +34,12 @@ impl Circuit {
         let out_of_order_buffer_arc_clone = Arc::clone(&out_of_order_buffer_arc);
 
         // Spawn the UDP receive/retransmit task
-        let socket_clone = socket.as_any().downcast_ref::<crate::networking::transport::UdpTransport>()
-            .map(|s| s.socket.try_clone().expect("Failed to clone UdpSocket"));
         tokio::spawn(async move {
             // Use the trait object for send/recv
             let mut buf = vec![0; 1024];
             loop {
                 tokio::select! {
-                    Ok((len, addr)) = socket.recv(&mut buf) => {
+                    Ok((len, addr)) = socket_bg.recv(&mut buf) => {
                         if let Ok((header, message)) = MessageCodec::decode(&buf[..len]) {
                             match message {
                                 Message::Ack { sequence_id } => {
@@ -69,7 +69,7 @@ impl Circuit {
                                     let ack_message = Message::Ack { sequence_id: header.sequence_id };
                                     let ack_header = PacketHeader { sequence_id: 0, flags: 0 };
                                     if let Ok(encoded_ack) = MessageCodec::encode(&ack_header, &ack_message) {
-                                        let _ = socket.send(&encoded_ack, &addr).await;
+                                        let _ = socket_bg.send(&encoded_ack, &addr).await;
                                     }
                                     for (h, m, a) in messages_to_send {
                                         let _ = sender_channel_for_task.send((h, m, a)).await;
@@ -99,7 +99,7 @@ impl Circuit {
                             });
                         }
                         for (seq_id, target_addr, encoded_message) in messages_to_retransmit {
-                            let _ = socket.send(&encoded_message, &target_addr).await;
+                            let _ = socket_bg.send(&encoded_message, &target_addr).await;
                             tracing::debug!("Retransmitting message {} to {}.", seq_id, target_addr);
                         }
                         for seq_id in lost_messages {

@@ -18,6 +18,7 @@ pub mod main_window;
 pub mod chat;
 pub mod inventory;
 pub mod preferences;
+pub mod proxy;
 
 pub struct UiContext {
     pub egui_ctx: EguiContext,
@@ -131,7 +132,11 @@ impl Default for UiState {
         let (login_result_tx, login_result_rx) = unbounded();
         let (udp_connect_tx, udp_connect_rx) = unbounded();
         let mut preferences = PreferencesState::default();
-        if let Some(loaded) = settings::load_preferences() {
+        let mut proxy_settings = ProxySettings::default();
+        if let Some((prefs, proxy)) = settings::load_general_settings() {
+            preferences = prefs;
+            proxy_settings = proxy;
+        } else if let Some(loaded) = settings::load_preferences() {
             preferences = loaded;
         }
         Self {
@@ -153,7 +158,7 @@ impl Default for UiState {
             logout_requested: false,
             chat_event_tx: None,
             chat_event_rx: None,
-            proxy_settings: ProxySettings::default(),
+            proxy_settings,
         }
     }
 }

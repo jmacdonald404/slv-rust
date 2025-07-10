@@ -16,6 +16,7 @@ use std::sync::Arc;
 use eframe::egui;
 use crate::networking::socks5_udp::Socks5UdpSocket;
 use crate::networking::transport::{UdpTransport, UdpSocketExt};
+use crate::config::settings;
 
 pub struct UdpConnectResult {
     pub result: Result<std::sync::Arc<tokio::sync::Mutex<Circuit>>, String>,
@@ -174,23 +175,27 @@ pub fn show_main_window(ctx: &egui::Context, ui_state: &mut UiState) {
             .resizable(false)
             .open(&mut prefs_open)
             .show(ctx, |ui| {
+                let mut changed = false;
                 ui.heading("Proxy Settings");
                 ui.separator();
-                ui.checkbox(&mut ui_state.proxy_settings.enabled, "Enable Proxy");
+                changed |= ui.checkbox(&mut ui_state.proxy_settings.enabled, "Enable Proxy").changed();
                 if ui_state.proxy_settings.enabled {
                     ui.horizontal(|ui| {
                         ui.label("SOCKS5 Host:");
-                        ui.text_edit_singleline(&mut ui_state.proxy_settings.socks5_host);
+                        changed |= ui.text_edit_singleline(&mut ui_state.proxy_settings.socks5_host).changed();
                         ui.label("Port:");
-                        ui.add(egui::DragValue::new(&mut ui_state.proxy_settings.socks5_port).clamp_range(1..=65535));
+                        changed |= ui.add(egui::DragValue::new(&mut ui_state.proxy_settings.socks5_port).clamp_range(1..=65535)).changed();
                     });
                     ui.horizontal(|ui| {
                         ui.label("HTTP Proxy Host:");
-                        ui.text_edit_singleline(&mut ui_state.proxy_settings.http_host);
+                        changed |= ui.text_edit_singleline(&mut ui_state.proxy_settings.http_host).changed();
                         ui.label("Port:");
-                        ui.add(egui::DragValue::new(&mut ui_state.proxy_settings.http_port).clamp_range(1..=65535));
+                        changed |= ui.add(egui::DragValue::new(&mut ui_state.proxy_settings.http_port).clamp_range(1..=65535)).changed();
                     });
-                    ui.checkbox(&mut ui_state.proxy_settings.disable_cert_validation, "Disable HTTPS Certificate Validation");
+                    changed |= ui.checkbox(&mut ui_state.proxy_settings.disable_cert_validation, "Disable HTTPS Certificate Validation").changed();
+                }
+                if changed {
+                    let _ = settings::save_general_settings(&ui_state.preferences, &ui_state.proxy_settings);
                 }
                 ui.separator();
                 if ui.button("Close").clicked() {

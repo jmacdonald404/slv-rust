@@ -1,4 +1,5 @@
 use crate::ui::PreferencesState;
+use crate::ui::proxy::ProxySettings;
 use std::fs;
 use std::path::PathBuf;
 use directories::ProjectDirs;
@@ -67,6 +68,53 @@ pub fn load_preferences() -> Option<PreferencesState> {
         if let Ok(data) = fs::read_to_string(path) {
             if let Ok(toml) = toml::from_str::<PreferencesToml>(&data) {
                 return Some(toml.into());
+            }
+        }
+    }
+    None
+}
+
+const GENERAL_CONFIG_FILE: &str = "general_settings.toml";
+
+#[derive(Serialize, Deserialize)]
+pub struct GeneralSettingsToml {
+    pub preferences: PreferencesToml,
+    pub proxy: ProxySettings,
+}
+
+impl GeneralSettingsToml {
+    pub fn from_states(prefs: &PreferencesState, proxy: &ProxySettings) -> Self {
+        Self {
+            preferences: PreferencesToml::from(prefs),
+            proxy: proxy.clone(),
+        }
+    }
+    pub fn into_states(self) -> (PreferencesState, ProxySettings) {
+        (self.preferences.into(), self.proxy)
+    }
+}
+
+fn general_config_path() -> Option<PathBuf> {
+    ProjectDirs::from("com", "slv", "slv-rust")
+        .map(|proj| proj.config_dir().join(GENERAL_CONFIG_FILE))
+}
+
+pub fn save_general_settings(prefs: &PreferencesState, proxy: &ProxySettings) -> std::io::Result<()> {
+    if let Some(path) = general_config_path() {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let toml = toml::to_string_pretty(&GeneralSettingsToml::from_states(prefs, proxy)).unwrap();
+        fs::write(path, toml)?;
+    }
+    Ok(())
+}
+
+pub fn load_general_settings() -> Option<(PreferencesState, ProxySettings)> {
+    if let Some(path) = general_config_path() {
+        if let Ok(data) = fs::read_to_string(path) {
+            if let Ok(toml) = toml::from_str::<GeneralSettingsToml>(&data) {
+                return Some(toml.into_states());
             }
         }
     }
