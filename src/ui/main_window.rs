@@ -14,6 +14,8 @@ use crate::ui::chat;
 use tokio::sync::Mutex;
 use std::sync::Arc;
 use eframe::egui;
+use crate::networking::socks5_udp::Socks5UdpSocket;
+use crate::networking::transport::{UdpTransport, UdpSocketExt};
 
 pub struct UdpConnectResult {
     pub result: Result<std::sync::Arc<tokio::sync::Mutex<Circuit>>, String>,
@@ -33,8 +35,29 @@ pub fn show_main_window(ctx: &egui::Context, ui_state: &mut UiState) {
                     ui_state.udp_progress = UdpConnectionProgress::Connecting;
                     let udp_tx = ui_state.udp_connect_tx.clone();
                     let session_info = session_info.clone();
+                    let proxy_settings = ui_state.proxy_settings.clone();
                     let handle = tokio::spawn(async move {
-                        let circuit_result = Circuit::new("0.0.0.0:0", sim_addr).await;
+                        let socket_result: Result<Box<dyn UdpSocketExt>, String> = if proxy_settings.enabled {
+                            match Socks5UdpSocket::connect(&proxy_settings.socks5_host, proxy_settings.socks5_port).await {
+                                Ok(sock) => Ok(Box::new(sock)),
+                                Err(e) => {
+                                    tracing::error!("Failed to connect to SOCKS5 proxy: {}", e);
+                                    Err(format!("Failed to connect to SOCKS5 proxy: {e}"))
+                                }
+                            }
+                        } else {
+                            match UdpTransport::new("0.0.0.0:0").await {
+                                Ok(transport) => Ok(Box::new(transport)),
+                                Err(e) => {
+                                    tracing::error!("Failed to bind UDP socket: {}", e);
+                                    Err(format!("Failed to bind UDP socket: {e}"))
+                                }
+                            }
+                        };
+                        let circuit_result = match socket_result {
+                            Ok(socket) => Circuit::new_with_socket(socket).await.map_err(|e| format!("UDP error: {e}")),
+                            Err(e) => Err(e),
+                        };
                         match circuit_result {
                             Ok(mut circuit) => {
                                 // Send UseCircuitCode handshake
@@ -70,7 +93,7 @@ pub fn show_main_window(ctx: &egui::Context, ui_state: &mut UiState) {
                                 }
                             }
                             Err(e) => {
-                                let _ = udp_tx.send(UdpConnectResult { result: Err(format!("UDP error: {e}")) });
+                                let _ = udp_tx.send(UdpConnectResult { result: Err(e) });
                             }
                         }
                     });
@@ -151,7 +174,25 @@ pub fn show_main_window(ctx: &egui::Context, ui_state: &mut UiState) {
             .resizable(false)
             .open(&mut prefs_open)
             .show(ctx, |ui| {
-                ui.label("Preferences modal (stub)");
+                ui.heading("Proxy Settings");
+                ui.separator();
+                ui.checkbox(&mut ui_state.proxy_settings.enabled, "Enable Proxy");
+                if ui_state.proxy_settings.enabled {
+                    ui.horizontal(|ui| {
+                        ui.label("SOCKS5 Host:");
+                        ui.text_edit_singleline(&mut ui_state.proxy_settings.socks5_host);
+                        ui.label("Port:");
+                        ui.add(egui::DragValue::new(&mut ui_state.proxy_settings.socks5_port).clamp_range(1..=65535));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("HTTP Proxy Host:");
+                        ui.text_edit_singleline(&mut ui_state.proxy_settings.http_host);
+                        ui.label("Port:");
+                        ui.add(egui::DragValue::new(&mut ui_state.proxy_settings.http_port).clamp_range(1..=65535));
+                    });
+                    ui.checkbox(&mut ui_state.proxy_settings.disable_cert_validation, "Disable HTTPS Certificate Validation");
+                }
+                ui.separator();
                 if ui.button("Close").clicked() {
                     should_close = true;
                 }
@@ -217,10 +258,11 @@ pub fn show_main_window(ctx: &egui::Context, ui_state: &mut UiState) {
                         let grid_uri = "https://login.agni.lindenlab.com/cgi-bin/login.cgi".to_string();
                         ui_state.login_progress = LoginProgress::InProgress;
                         let tx = ui_state.login_result_tx.clone();
+                        let proxy_settings = ui_state.proxy_settings.clone();
                         // Spawn async login task
                         let handle = tokio::spawn(async move {
                             eprintln!("[LOGIN TASK] Starting login for: first='{}', last='{}'", req.first, req.last);
-                            let result = login_to_secondlife(&grid_uri, &req).await;
+                            let result = login_to_secondlife(&grid_uri, &req, Some(&proxy_settings)).await;
                             match &result {
                                 Ok(session_info) => {
                                     eprintln!("[LOGIN SUCCESS] agent_id={}, session_id={}", session_info.agent_id, session_info.session_id);

@@ -21,3 +21,31 @@ impl UdpTransport {
         self.socket.recv_from(buf).await
     }
 }
+
+pub trait UdpSocketExt: Send + Sync {
+    fn as_any(&self) -> &dyn std::any::Any;
+    fn local_addr(&self) -> io::Result<SocketAddr>;
+    fn boxed(self) -> Box<dyn UdpSocketExt>
+    where
+        Self: Sized + 'static,
+    {
+        Box::new(self)
+    }
+    fn send<'a>(&'a self, buf: &'a [u8], target: &'a SocketAddr) -> std::pin::Pin<Box<dyn std::future::Future<Output = io::Result<usize>> + Send + 'a>>;
+    fn recv<'a>(&'a self, buf: &'a mut [u8]) -> std::pin::Pin<Box<dyn std::future::Future<Output = io::Result<(usize, SocketAddr)>> + Send + 'a>>;
+}
+
+impl UdpSocketExt for UdpTransport {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.socket.local_addr()
+    }
+    fn send<'a>(&'a self, buf: &'a [u8], target: &'a SocketAddr) -> std::pin::Pin<Box<dyn std::future::Future<Output = io::Result<usize>> + Send + 'a>> {
+        Box::pin(self.socket.send_to(buf, target))
+    }
+    fn recv<'a>(&'a self, buf: &'a mut [u8]) -> std::pin::Pin<Box<dyn std::future::Future<Output = io::Result<(usize, SocketAddr)>> + Send + 'a>> {
+        Box::pin(self.socket.recv_from(buf))
+    }
+}

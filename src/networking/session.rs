@@ -3,6 +3,7 @@ use serde::{Serialize, Deserialize};
 use quick_xml::de::from_str;
 use quick_xml::events::Event;
 use quick_xml::Reader;
+use crate::ui::proxy::ProxySettings;
 
 #[derive(Serialize, Debug)]
 pub struct LoginRequest {
@@ -63,10 +64,20 @@ fn build_login_xml(req: &LoginRequest) -> String {
     )
 }
 
-pub async fn login_to_secondlife(grid_uri: &str, req: &LoginRequest) -> Result<LoginSessionInfo, String> {
+pub async fn login_to_secondlife(grid_uri: &str, req: &LoginRequest, proxy_settings: Option<&ProxySettings>) -> Result<LoginSessionInfo, String> {
     let xml_body = build_login_xml(req);
     eprintln!("[LOGIN XML BODY]\n{}", xml_body);
-    let client = Client::new();
+    let mut client_builder = reqwest::Client::builder();
+    if let Some(proxy) = proxy_settings {
+        if proxy.enabled {
+            let proxy_url = format!("http://{}:{}", proxy.http_host, proxy.http_port);
+            client_builder = client_builder.proxy(reqwest::Proxy::http(&proxy_url).map_err(|e| format!("Proxy URL error: {e}"))?);
+            if proxy.disable_cert_validation {
+                client_builder = client_builder.danger_accept_invalid_certs(true);
+            }
+        }
+    }
+    let client = client_builder.build().map_err(|e| format!("HTTP client build error: {e}"))?;
     let res = client
         .post(grid_uri)
         .header("Content-Type", "text/xml")

@@ -12,6 +12,7 @@ use crossbeam_channel::{unbounded, Sender, Receiver};
 use crate::networking::session;
 use crate::networking::circuit::Circuit;
 use crate::config::settings;
+use crate::ui::proxy::ProxySettings;
 
 pub mod main_window;
 pub mod chat;
@@ -97,6 +98,7 @@ pub struct UiState {
     pub logout_requested: bool,
     pub chat_event_tx: Option<Sender<(String, String)>>,
     pub chat_event_rx: Option<Receiver<(String, String)>>,
+    pub proxy_settings: ProxySettings,
 }
 
 pub struct PreferencesState {
@@ -151,6 +153,7 @@ impl Default for UiState {
             logout_requested: false,
             chat_event_tx: None,
             chat_event_rx: None,
+            proxy_settings: ProxySettings::default(),
         }
     }
 }
