@@ -3,8 +3,12 @@ use serde::{Serialize, Deserialize};
 use quick_xml::de::from_str;
 use quick_xml::events::Event;
 use quick_xml::Reader;
+use quick_xml::name::QName;
 use crate::ui::proxy::ProxySettings;
 use tracing::{info, warn};
+use regex::Regex;
+use roxmltree::Document;
+use std::str::FromStr;
 
 #[derive(Serialize, Debug)]
 pub struct LoginRequest {
@@ -46,13 +50,34 @@ impl LoginRequest {
 
 #[derive(Debug, Clone)]
 pub struct LoginSessionInfo {
+    // Required fields from protocol spec and real responses
+    pub last_name: String,
+    pub first_name: String,
     pub agent_id: String,
     pub session_id: String,
     pub secure_session_id: String,
     pub sim_ip: String,
     pub sim_port: u16,
     pub circuit_code: u32,
-    // Add more fields as needed
+    pub region_x: i32,
+    pub region_y: i32,
+    pub look_at: String,
+    pub start_location: String,
+    pub seconds_since_epoch: i64,
+    pub message: String,
+    pub inventory_host: String,
+    pub seed_capability: String,
+    pub agent_access: String,
+    pub login: String,
+    // New/optional fields
+    pub account_type: Option<String>,
+    pub linden_status_code: Option<String>,
+    pub agent_flags: Option<i32>,
+    pub max_god_level: Option<i32>,
+    pub god_level: Option<i32>,
+    pub inventory_root: Option<String>,
+    pub buddy_list: Option<Vec<String>>,
+    // TODO: Add more fields as needed (inventory-skeleton, gestures, event_categories, etc.)
 }
 
 fn build_login_xml(req: &LoginRequest) -> String {
@@ -160,91 +185,75 @@ pub async fn login_to_secondlife(grid_uri: &str, req: &LoginRequest, proxy_setti
         .map_err(|e| format!("HTTP error: {e}"))?;
     let status = res.status();
     let text = res.text().await.map_err(|e| format!("HTTP error: {e}"))?;
+    // Remove debug file output
+    eprintln!("[LOGIN RESPONSE] Raw body length: {}", text.len());
+    // Filter out large inventory-skel-lib and inventory-skeleton sections from debug print
+    let re = Regex::new(r"(?s)<member>\s*<name>(inventory-skel-lib|inventory-skeleton)</name>\s*<value>\s*<array>.*?</array>\s*</value>\s*</member>").unwrap();
+    let filtered_text = re.replace_all(&text, |caps: &regex::Captures| {
+        format!("<member><name>{}</name><value><array>[...omitted...]</array></value></member>", &caps[1])
+    });
+    // Only print the filtered [LOGIN RESPONSE] log
     eprintln!("[LOGIN RESPONSE] HTTP status: {}", status);
-    eprintln!("[LOGIN RESPONSE] Raw body:\n{}", text);
+    eprintln!("[LOGIN RESPONSE] Raw body:\n{}", filtered_text);
     match parse_login_response(&text) {
         Ok(info) => Ok(info),
         Err(e) => {
-            eprintln!("[ERROR] Failed to parse login response: {}\nRaw body: {}", e, text);
+            // Only return the error, do not print it here
             Err(format!("Failed to parse login response: {e}"))
         }
     }
 }
 
 fn parse_login_response(xml: &str) -> Result<LoginSessionInfo, String> {
-    let mut reader = Reader::from_str(xml);
-    reader.trim_text(true);
-    let mut buf = Vec::new();
-    let mut agent_id = None;
-    let mut session_id = None;
-    let mut secure_session_id = None;
-    let mut sim_ip = None;
-    let mut sim_port = None;
-    let mut circuit_code = None;
-    let mut login_success = None;
-    let mut error_message = None;
-    let mut in_struct = false;
-    let mut last_name = None;
-    let mut last_value = None;
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) if e.name().as_ref() == b"struct" => {
-                in_struct = true;
-            }
-            Ok(Event::End(ref e)) if e.name().as_ref() == b"struct" => {
-                break;
-            }
-            Ok(Event::Start(ref e)) if e.name().as_ref() == b"name" && in_struct => {
-                last_name = Some(reader.read_text(e.name()).unwrap_or_default());
-            }
-            Ok(Event::Start(ref e)) if e.name().as_ref() == b"value" && in_struct => {
-                last_value = Some(reader.read_text(e.name()).unwrap_or_default());
-            }
-            Ok(Event::End(ref e)) if e.name().as_ref() == b"member" && in_struct => {
-                if let (Some(name), Some(value)) = (last_name.take(), last_value.take()) {
-                    match &*name {
-                        "agent_id" => agent_id = Some(value),
-                        "session_id" => session_id = Some(value),
-                        "secure_session_id" => secure_session_id = Some(value),
-                        "sim_ip" => sim_ip = Some(value),
-                        "sim_port" => sim_port = value.parse().ok(),
-                        "circuit_code" => circuit_code = value.parse().ok(),
-                        "login" => login_success = Some(value.clone()),
-                        "message" => error_message = Some(value.clone()),
-                        _ => {}
-                    }
+    use roxmltree::Document;
+    use std::str::FromStr;
+    let doc = Document::parse(xml).map_err(|e| format!("XML parse error: {e}"))?;
+    // Find the first <struct> node under <methodResponse>
+    let struct_node = doc.descendants().find(|n| n.has_tag_name("struct")).ok_or("No <struct> found in login response")?;
+    let mut get_field = |field: &str| -> Option<String> {
+        for member in struct_node.children().filter(|n| n.has_tag_name("member")) {
+            let name = member.children().find(|n| n.has_tag_name("name")).and_then(|n| n.text()).unwrap_or("");
+            if name == field {
+                // Try to get the value as text from <string>, <int>, or directly from <value>
+                let value_node = member.children().find(|n| n.has_tag_name("value"))?;
+                if let Some(s) = value_node.children().find(|n| n.has_tag_name("string")).and_then(|n| n.text()) {
+                    return Some(s.trim_matches('"').to_string());
+                } else if let Some(i) = value_node.children().find(|n| n.has_tag_name("int")).and_then(|n| n.text()) {
+                    return Some(i.to_string());
+                } else if let Some(t) = value_node.text() {
+                    return Some(t.trim_matches('"').to_string());
                 }
             }
-            Ok(Event::Eof) => break,
-            Err(e) => return Err(format!("XML parse error: {e}")),
-            _ => {}
         }
-        buf.clear();
-    }
-    if let Some(login) = login_success {
-        if login == "false" {
-            // Login failed, return the error message if present
-            if let Some(msg) = error_message {
-                return Err(msg.to_string());
-            } else {
-                return Err("Login failed (no message)".to_string());
-            }
-        }
-    }
-    if let (Some(agent_id), Some(session_id), Some(secure_session_id), Some(sim_ip), Some(sim_port), Some(circuit_code)) =
-        (agent_id, session_id, secure_session_id, sim_ip, sim_port, circuit_code)
-    {
-        Ok(LoginSessionInfo {
-            agent_id: agent_id.to_string(),
-            session_id: session_id.to_string(),
-            secure_session_id: secure_session_id.to_string(),
-            sim_ip: sim_ip.to_string(),
-            sim_port,
-            circuit_code,
-        })
-    } else {
-        Err("Missing required login fields in response".to_string())
-    }
+        None
+    };
+    Ok(LoginSessionInfo {
+        last_name: get_field("last_name").or_else(|| get_field("last")).ok_or("missing last_name")?,
+        first_name: get_field("first_name").or_else(|| get_field("first")).ok_or("missing first_name")?,
+        agent_id: get_field("agent_id").ok_or("missing agent_id")?,
+        session_id: get_field("session_id").ok_or("missing session_id")?,
+        secure_session_id: get_field("secure_session_id").ok_or("missing secure_session_id")?,
+        sim_ip: get_field("sim_ip").ok_or("missing sim_ip")?,
+        sim_port: get_field("sim_port").and_then(|v| v.trim().parse::<u16>().ok()).ok_or("missing sim_port")?,
+        circuit_code: get_field("circuit_code").and_then(|v| v.trim().parse::<u32>().ok()).ok_or("missing circuit_code")?,
+        region_x: get_field("region_x").and_then(|v| v.trim().parse::<i32>().ok()).ok_or("missing region_x")?,
+        region_y: get_field("region_y").and_then(|v| v.trim().parse::<i32>().ok()).ok_or("missing region_y")?,
+        look_at: get_field("look_at").ok_or("missing look_at")?,
+        start_location: get_field("start_location").or_else(|| get_field("start")).ok_or("missing start_location")?,
+        seconds_since_epoch: get_field("seconds_since_epoch").and_then(|v| v.trim().parse::<i64>().ok()).ok_or("missing seconds_since_epoch")?,
+        message: get_field("message").unwrap_or_default(),
+        inventory_host: get_field("inventory_host").unwrap_or_default(),
+        seed_capability: get_field("seed_capability").unwrap_or_default(),
+        agent_access: get_field("agent_access").unwrap_or_default(),
+        login: get_field("login").unwrap_or_default(),
+        account_type: get_field("account_type"),
+        linden_status_code: get_field("Linden_Status_Code"),
+        agent_flags: get_field("agent_flags").and_then(|v| v.trim().parse::<i32>().ok()),
+        max_god_level: get_field("max_god_level").and_then(|v| v.trim().parse::<i32>().ok()),
+        god_level: get_field("god_level").and_then(|v| v.trim().parse::<i32>().ok()),
+        inventory_root: get_field("inventory-root"),
+        buddy_list: None, // TODO: parse buddy-list if needed
+    })
 }
 
 pub async fn fetch_tos_html(

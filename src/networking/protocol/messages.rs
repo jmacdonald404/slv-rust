@@ -31,4 +31,24 @@ pub enum Message {
         channel: String, // e.g., "local", "IM", "group" (stub for now)
     },
     // Add more message types as needed
+    CompleteAgentMovement {
+        agent_id: String,
+        session_id: String,
+        circuit_code: u32,
+        position: (f32, f32, f32),
+        look_at: (f32, f32, f32),
+    },
+    AgentUpdate {
+        agent_id: String,
+        session_id: String,
+        position: (f32, f32, f32),
+        camera_at: (f32, f32, f32),
+        camera_eye: (f32, f32, f32),
+        controls: u32,
+    },
+    AgentMovementComplete {
+        agent_id: String,
+        session_id: String,
+        // TODO: Add position, region info, etc.
+    },
 }

@@ -41,6 +41,7 @@ pub struct LoginState {
     pub prefs_modal_open: bool,
     pub session_info: Option<session::LoginSessionInfo>,
     pub agree_to_tos_next_login: bool,
+    pub read_critical_next_login: bool, // Track if user must accept critical message
 }
 
 impl Default for LoginState {
@@ -52,6 +53,7 @@ impl Default for LoginState {
             prefs_modal_open: false,
             session_info: None,
             agree_to_tos_next_login: false,
+            read_critical_next_login: false,
         }
     }
 }

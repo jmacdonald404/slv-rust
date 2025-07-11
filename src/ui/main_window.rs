@@ -144,6 +144,33 @@ pub fn show_main_window(ctx: &egui::Context, ui_state: &mut UiState) {
                                 let handshake_result = timeout(Duration::from_secs(5), circuit.recv_message()).await;
                                 match handshake_result {
                                     Ok(Ok((_header, Message::UseCircuitCodeReply(success), _addr))) if success => {
+                                        // Send CompleteAgentMovement after successful handshake
+                                        let complete_agent_movement = Message::CompleteAgentMovement {
+                                            agent_id: session_info.agent_id.clone(),
+                                            session_id: session_info.session_id.clone(),
+                                            circuit_code: session_info.circuit_code,
+                                            position: (
+                                                (session_info.region_x as f32) + 128.0,
+                                                (session_info.region_y as f32) + 128.0,
+                                                25.0,
+                                            ),
+                                            look_at: parse_look_at(&session_info.look_at),
+                                        };
+                                        let _ = circuit.send_message(&complete_agent_movement, &sim_addr).await;
+                                        // Send AgentUpdate after CompleteAgentMovement
+                                        let agent_update = Message::AgentUpdate {
+                                            agent_id: session_info.agent_id.clone(),
+                                            session_id: session_info.session_id.clone(),
+                                            position: (
+                                                (session_info.region_x as f32) + 128.0,
+                                                (session_info.region_y as f32) + 128.0,
+                                                25.0,
+                                            ),
+                                            camera_at: (0.0, 0.0, 1.0),
+                                            camera_eye: (0.0, 0.0, 0.0),
+                                            controls: 0,
+                                        };
+                                        let _ = circuit.send_message(&agent_update, &sim_addr).await;
                                         let _ = udp_tx.send(UdpConnectResult { result: Ok(std::sync::Arc::new(tokio::sync::Mutex::new(circuit))) });
                                     }
                                     Ok(Ok((_header, Message::UseCircuitCodeReply(success), _addr))) if !success => {
@@ -170,8 +197,30 @@ pub fn show_main_window(ctx: &egui::Context, ui_state: &mut UiState) {
                     ui_state.udp_progress = UdpConnectionProgress::Error("Invalid sim IP/port".to_string());
                 }
             }
-            Err(msg) => {
-                ui_state.login_progress = LoginProgress::Error(msg);
+            Err(err_msg) => {
+                // Robust ToS/critical message detection
+                if err_msg.starts_with("TOS_REQUIRED::") {
+                    let message = err_msg.trim_start_matches("TOS_REQUIRED::").to_string();
+                    ui_state.tos_required = true;
+                    ui_state.tos_html = Some(message.clone()); // TODO: fetch real ToS HTML if available
+                    ui_state.tos_message = Some(message);
+                    // Block login until user accepts
+                    ui_state.login_progress = LoginProgress::Idle;
+                    ui_state.login_state.agree_to_tos_next_login = true;
+                    ui_state.login_state.status_message = "You must accept the Terms of Service to continue.".to_string();
+                    // TODO: Extract and store tos_id if available
+                } else if err_msg.starts_with("CRITICAL_REQUIRED::") {
+                    let message = err_msg.trim_start_matches("CRITICAL_REQUIRED::").to_string();
+                    ui_state.tos_required = true;
+                    ui_state.tos_html = Some(message.clone()); // TODO: fetch real critical message HTML if available
+                    ui_state.tos_message = Some(message);
+                    // Block login until user accepts
+                    ui_state.login_progress = LoginProgress::Idle;
+                    ui_state.login_state.read_critical_next_login = true; // Set read_critical for next login
+                    ui_state.login_state.status_message = "You must read and accept a critical message to continue.".to_string();
+                } else {
+                    ui_state.login_progress = LoginProgress::Error(err_msg);
+                }
             }
         }
     }
@@ -187,16 +236,19 @@ pub fn show_main_window(ctx: &egui::Context, ui_state: &mut UiState) {
                 let world_entry_tx = ui_state.udp_connect_tx.clone();
                 let circuit_mutex_clone = circuit_mutex.clone();
                 let handle = tokio::spawn(async move {
-                    // Wait for first message from sim (stub: just receive one message)
+                    // Wait for first message from sim (now: look for AgentMovementComplete)
                     let entry_result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
                         let mut circuit = circuit_mutex_clone.lock().await;
                         circuit.recv_message().await
                     }).await;
                     match entry_result {
-                        Ok(Ok((_header, _msg, _addr))) => {
-                            // World entry success (stub)
-                            // Send a dummy result to trigger UI transition
+                        Ok(Ok((_header, Message::AgentMovementComplete { agent_id: _, session_id: _ /* TODO: extract more fields */ }, _addr))) => {
+                            // World entry success
                             let _ = world_entry_tx.send(UdpConnectResult { result: Ok(circuit_mutex_clone) });
+                        }
+                        Ok(Ok((_header, _msg, _addr))) => {
+                            // Unexpected message, treat as error or ignore
+                            let _ = world_entry_tx.send(UdpConnectResult { result: Err("Unexpected message instead of AgentMovementComplete".to_string()) });
                         }
                         Ok(Err(e)) => {
                             let _ = world_entry_tx.send(UdpConnectResult { result: Err(format!("UDP receive error: {e}")) });
@@ -404,7 +456,7 @@ pub fn show_main_window(ctx: &egui::Context, ui_state: &mut UiState) {
                             last_exec_session_id: "00000000-0000-0000-0000-000000000000".to_string(),
                             mfa_hash: String::new(),
                             token: String::new(),
-                            read_critical: 0,
+                            read_critical: if ui_state.login_state.read_critical_next_login { 1 } else { 0 },
                             options: LoginRequest::default_options(),
                         };
                         let grid_uri = "https://login.agni.lindenlab.com/cgi-bin/login.cgi".to_string();
@@ -511,4 +563,18 @@ pub fn show_main_window(ctx: &egui::Context, ui_state: &mut UiState) {
 pub fn udp_connect_task(sim_addr: SocketAddr, session_info: &LoginSessionInfo, _ctx: egui::Context) {
     // TODO: Actually spawn a tokio task, create Circuit, perform handshake, and update UI state via channel/interior mutability
     println!("Would connect UDP to {} with session info: {:?}", sim_addr, session_info);
+}
+
+// Helper function to parse look_at string
+fn parse_look_at(s: &str) -> (f32, f32, f32) {
+    let s = s.trim_matches(['[', ']'].as_ref());
+    let parts: Vec<&str> = s.split(',').collect();
+    if parts.len() == 3 {
+        let x = parts[0].trim_start_matches('r').parse().unwrap_or(0.0);
+        let y = parts[1].trim_start_matches('r').parse().unwrap_or(0.0);
+        let z = parts[2].trim_start_matches('r').parse().unwrap_or(0.0);
+        (x, y, z)
+    } else {
+        (0.0, 1.0, 0.0)
+    }
 }
