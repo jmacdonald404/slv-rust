@@ -17,6 +17,73 @@ use eframe::egui;
 use crate::networking::socks5_udp::Socks5UdpSocket;
 use crate::networking::transport::{UdpTransport, UdpSocketExt};
 use crate::config::settings;
+use crate::networking::session::fetch_tos_html;
+use scraper::{Html, Selector, ElementRef};
+use egui::{RichText, Ui};
+
+fn render_tos_html(ui: &mut Ui, html: &str) {
+    let document = Html::parse_document(html);
+
+    // Render headings
+    for heading in document.select(&Selector::parse("h1, h2, h3, h4").unwrap()) {
+        let text = heading.text().collect::<String>();
+        ui.heading(text.trim());
+    }
+
+    // Render paragraphs (with bold/strong/italic detection)
+    for para in document.select(&Selector::parse("p").unwrap()) {
+        let mut text = String::new();
+        let mut rich = RichText::new("");
+        let mut is_bold = false;
+        let mut is_italic = false;
+
+        for node in para.children() {
+            if let Some(elem) = node.value().as_element() {
+                match elem.name() {
+                    "strong" | "b" => {
+                        is_bold = true;
+                        text.push_str(&ElementRef::wrap(node).unwrap().text().collect::<String>());
+                    }
+                    "em" | "i" => {
+                        is_italic = true;
+                        text.push_str(&ElementRef::wrap(node).unwrap().text().collect::<String>());
+                    }
+                    "a" => {
+                        // Render links as hyperlinks
+                        let link = ElementRef::wrap(node).unwrap();
+                        let href = link.value().attr("href").unwrap_or("#");
+                        let link_text = link.text().collect::<String>();
+                        ui.hyperlink_to(link_text.trim(), href);
+                    }
+                    _ => {
+                        text.push_str(&ElementRef::wrap(node).unwrap().text().collect::<String>());
+                    }
+                }
+            } else if let Some(txt) = node.value().as_text() {
+                text.push_str(txt);
+            }
+        }
+
+        if !text.trim().is_empty() {
+            rich = RichText::new(text.trim());
+            if is_bold {
+                rich = rich.strong();
+            }
+            if is_italic {
+                rich = rich.italics();
+            }
+            ui.label(rich);
+        }
+        ui.add_space(4.0);
+    }
+
+    // Render standalone links outside paragraphs
+    for link in document.select(&Selector::parse("a").unwrap()) {
+        let href = link.value().attr("href").unwrap_or("#");
+        let link_text = link.text().collect::<String>();
+        ui.hyperlink_to(link_text.trim(), href);
+    }
+}
 
 pub struct UdpConnectResult {
     pub result: Result<std::sync::Arc<tokio::sync::Mutex<Circuit>>, String>,
@@ -166,6 +233,19 @@ pub fn show_main_window(ctx: &egui::Context, ui_state: &mut UiState) {
         }
     }
 
+    // Poll for UI events from async tasks
+    while let Ok(event) = ui_state.ui_event_rx.try_recv() {
+        match event {
+            crate::ui::UiEvent::ShowTos { tos_id, tos_html, message } => {
+                ui_state.tos_required = true;
+                ui_state.tos_id = Some(tos_id);
+                ui_state.tos_html = Some(tos_html);
+                ui_state.tos_message = Some(message);
+            }
+            // Handle other events as needed
+        }
+    }
+
     // Preferences modal stub
     let mut prefs_open = ui_state.login_state.prefs_modal_open;
     let mut should_close = false;
@@ -201,11 +281,64 @@ pub fn show_main_window(ctx: &egui::Context, ui_state: &mut UiState) {
                 if ui.button("Close").clicked() {
                     should_close = true;
                 }
+                // A. Add a Test ToS Modal button for manual testing
+                if ui.button("Test ToS Modal").clicked() {
+                    let ui_event_tx = ui_state.ui_event_tx.clone();
+                    tokio::spawn(async move {
+                        let tos_id = "5f4c3d82d7f18c19a1a2d23331c9ac36";
+                        match fetch_tos_html(tos_id, None, None).await {
+                            Ok(tos_html) => {
+                                let _ = ui_event_tx.send(crate::ui::UiEvent::ShowTos {
+                                    tos_id: tos_id.to_string(),
+                                    tos_html,
+                                    message: "Test ToS".to_string(),
+                                });
+                            }
+                            Err(e) => {
+                                eprintln!("[TOS TEST] Failed to fetch ToS: {}", e);
+                            }
+                        }
+                    });
+                }
             });
         if should_close {
             prefs_open = false;
         }
         ui_state.login_state.prefs_modal_open = prefs_open;
+    }
+
+    // ToS modal
+    if ui_state.tos_required {
+        egui::Window::new("Terms of Service")
+            .collapsible(false)
+            .resizable(true)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .fixed_size([600.0, 500.0])
+            .show(ctx, |ui| {
+                if let Some(html) = &ui_state.tos_html {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        render_tos_html(ui, html);
+                    });
+                } else {
+                    ui.label("Loading ToS...");
+                }
+                ui.add_space(16.0);
+                ui.horizontal(|ui| {
+                    if ui.button("I Agree").clicked() {
+                        ui_state.tos_required = false;
+                        ui_state.tos_html = None;
+                        ui_state.tos_id = None;
+                        ui_state.tos_message = None;
+                        ui_state.login_state.agree_to_tos_next_login = true;
+                    }
+                    if ui.button("Decline").clicked() {
+                        ui_state.tos_required = false;
+                        ui_state.tos_html = None;
+                        ui_state.tos_id = None;
+                        ui_state.tos_message = None;
+                    }
+                });
+            });
     }
 
     // In show_main_window, poll chat_event_rx and append to chat_messages:
@@ -234,7 +367,7 @@ pub fn show_main_window(ctx: &egui::Context, ui_state: &mut UiState) {
 
                     // Login button (disabled until fields are filled)
                     let login_enabled = !ui_state.login_state.username.is_empty() && !ui_state.login_state.password.is_empty() && matches!(ui_state.login_progress, LoginProgress::Idle);
-                    if ui.add_enabled(login_enabled, egui::Button::new("Login")).clicked() {
+                    if ui.add_enabled(login_enabled, egui::Button::new("Login")).clicked() || ui_state.login_state.agree_to_tos_next_login {
                         // Parse username into first/last ("First Last" or "first.last" or just "First")
                         let (first, last) = if ui_state.login_state.username.contains('.') {
                             let mut parts = ui_state.login_state.username.splitn(2, '.');
@@ -249,6 +382,7 @@ pub fn show_main_window(ctx: &egui::Context, ui_state: &mut UiState) {
                             (first, last)
                         };
                         let password = ui_state.login_state.password.clone();
+                        let agree_to_tos = if ui_state.login_state.agree_to_tos_next_login { 1 } else { 0 };
                         let req = LoginRequest {
                             first,
                             last,
@@ -257,13 +391,28 @@ pub fn show_main_window(ctx: &egui::Context, ui_state: &mut UiState) {
                             channel: "slv-rust".to_string(),
                             version: "0.3.0-alpha".to_string(),
                             platform: "linux".to_string(), // TODO: detect platform
+                            platform_string: "macOS 12.7.4".to_string(), // TODO: real platform string
+                            platform_version: "12.7.4".to_string(), // TODO: real version
                             mac: "00:00:00:00:00:00".to_string(), // TODO: real MAC
                             id0: "00000000-0000-0000-0000-000000000000".to_string(), // TODO: real id0
+                            agree_to_tos,
+                            address_size: 64,
+                            extended_errors: 1,
+                            host_id: String::new(),
+                            last_exec_duration: 30,
+                            last_exec_event: 0,
+                            last_exec_session_id: "00000000-0000-0000-0000-000000000000".to_string(),
+                            mfa_hash: String::new(),
+                            token: String::new(),
+                            read_critical: 0,
+                            options: LoginRequest::default_options(),
                         };
                         let grid_uri = "https://login.agni.lindenlab.com/cgi-bin/login.cgi".to_string();
                         ui_state.login_progress = LoginProgress::InProgress;
                         let tx = ui_state.login_result_tx.clone();
                         let proxy_settings = ui_state.proxy_settings.clone();
+                        let ui_event_tx = ui_state.ui_event_tx.clone();
+                        ui_state.login_state.agree_to_tos_next_login = false;
                         // Spawn async login task
                         let handle = tokio::spawn(async move {
                             eprintln!("[LOGIN TASK] Starting login for: first='{}', last='{}'", req.first, req.last);
@@ -273,7 +422,29 @@ pub fn show_main_window(ctx: &egui::Context, ui_state: &mut UiState) {
                                     eprintln!("[LOGIN SUCCESS] agent_id={}, session_id={}", session_info.agent_id, session_info.session_id);
                                 }
                                 Err(err_msg) => {
-                                    eprintln!("[LOGIN ERROR] {}", err_msg);
+                                    // Check for TOS_REQUIRED error
+                                    if let Some(rest) = err_msg.strip_prefix("TOS_REQUIRED:") {
+                                        let mut parts = rest.splitn(2, ':');
+                                        let tos_id = parts.next().unwrap_or("").to_string();
+                                        let message = parts.next().unwrap_or("").to_string();
+                                        // B. If no tos_id, use a random/test one
+                                        let tos_id = if tos_id.is_empty() { "5f4c3d82d7f18c19a1a2d23331c9ac36".to_string() } else { tos_id };
+                                        // C. Log fetch errors
+                                        match fetch_tos_html(&tos_id, None, Some(&proxy_settings)).await {
+                                            Ok(tos_html) => {
+                                                let _ = ui_event_tx.send(crate::ui::UiEvent::ShowTos {
+                                                    tos_id,
+                                                    tos_html,
+                                                    message,
+                                                });
+                                            }
+                                            Err(e) => {
+                                                eprintln!("[TOS] Failed to fetch ToS: {}", e);
+                                            }
+                                        }
+                                    } else {
+                                        eprintln!("[LOGIN ERROR] {}", err_msg);
+                                    }
                                 }
                             }
                             let login_result = LoginResult { result };

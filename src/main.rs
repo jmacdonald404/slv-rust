@@ -25,6 +25,7 @@ impl eframe::App for MyApp {
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn main() -> eframe::Result<()> {
+    slv_rust::utils::logging::init_logging();
     // test stdout and stderr
     println!("PRINT TEST: If you see this, stdout works!");
     eprintln!("EPRINT TEST: If you see this, stderr works!");

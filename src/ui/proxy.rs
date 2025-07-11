@@ -1,6 +1,6 @@
 use serde::{Serialize, Deserialize};
 /// Stores proxy configuration for UDP and HTTP(S) traffic.
-#[derive(Default, Clone, Serialize, Deserialize)]
+#[derive(Default, Clone, Serialize, Deserialize, Debug)]
 pub struct ProxySettings {
     pub enabled: bool,
     pub socks5_host: String,

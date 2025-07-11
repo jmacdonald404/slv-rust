@@ -40,6 +40,7 @@ pub struct LoginState {
     pub status_message: String,
     pub prefs_modal_open: bool,
     pub session_info: Option<session::LoginSessionInfo>,
+    pub agree_to_tos_next_login: bool,
 }
 
 impl Default for LoginState {
@@ -50,6 +51,7 @@ impl Default for LoginState {
             status_message: String::new(),
             prefs_modal_open: false,
             session_info: None,
+            agree_to_tos_next_login: false,
         }
     }
 }
@@ -80,6 +82,15 @@ pub enum UdpConnectionProgress {
     Error(String),
 }
 
+pub enum UiEvent {
+    ShowTos {
+        tos_id: String,
+        tos_html: String,
+        message: String,
+    },
+    // Add more events as needed
+}
+
 pub struct UiState {
     pub chat_input: String,
     pub chat_messages: VecDeque<String>,
@@ -100,6 +111,12 @@ pub struct UiState {
     pub chat_event_tx: Option<Sender<(String, String)>>,
     pub chat_event_rx: Option<Receiver<(String, String)>>,
     pub proxy_settings: ProxySettings,
+    pub tos_required: bool,
+    pub tos_html: Option<String>,
+    pub tos_id: Option<String>,
+    pub tos_message: Option<String>,
+    pub ui_event_rx: crossbeam_channel::Receiver<UiEvent>,
+    pub ui_event_tx: crossbeam_channel::Sender<UiEvent>,
 }
 
 pub struct PreferencesState {
@@ -131,6 +148,7 @@ impl Default for UiState {
     fn default() -> Self {
         let (login_result_tx, login_result_rx) = unbounded();
         let (udp_connect_tx, udp_connect_rx) = unbounded();
+        let (ui_event_tx, ui_event_rx) = unbounded();
         let mut preferences = PreferencesState::default();
         let mut proxy_settings = ProxySettings::default();
         if let Some((prefs, proxy)) = settings::load_general_settings() {
@@ -159,6 +177,12 @@ impl Default for UiState {
             chat_event_tx: None,
             chat_event_rx: None,
             proxy_settings,
+            tos_required: false,
+            tos_html: None,
+            tos_id: None,
+            tos_message: None,
+            ui_event_rx,
+            ui_event_tx,
         }
     }
 }
