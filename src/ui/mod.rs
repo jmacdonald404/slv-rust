@@ -13,12 +13,26 @@ use crate::networking::session;
 use crate::networking::circuit::Circuit;
 use crate::config::settings;
 use crate::ui::proxy::ProxySettings;
+use crate::ui::udp_port::pick_random_udp_port;
+
+#[derive(Debug, Clone, Default)]
+pub struct AgentState {
+    pub can_modify_navmesh: bool,
+    pub has_modified_navmesh: bool,
+    pub god_level: i32,
+    pub hover_height: f32,
+    pub language: String,
+    pub language_is_public: bool,
+    pub access_prefs_max: String,
+    pub default_object_perm_masks: (i32, i32, i32), // (Everyone, Group, NextOwner)
+}
 
 pub mod main_window;
 pub mod chat;
 pub mod inventory;
 pub mod preferences;
 pub mod proxy;
+pub mod udp_port;
 
 pub struct UiContext {
     pub egui_ctx: EguiContext,
@@ -90,6 +104,7 @@ pub enum UiEvent {
         tos_html: String,
         message: String,
     },
+    AgentStateUpdate(String),
     // Add more events as needed
 }
 
@@ -119,6 +134,8 @@ pub struct UiState {
     pub tos_message: Option<String>,
     pub ui_event_rx: crossbeam_channel::Receiver<UiEvent>,
     pub ui_event_tx: crossbeam_channel::Sender<UiEvent>,
+    pub agent_state: Option<AgentState>,
+    pub session_udp_port: u16,
 }
 
 pub struct PreferencesState {
@@ -129,6 +146,9 @@ pub struct PreferencesState {
     pub render_distance: u32,
     pub max_bandwidth: u32,
     pub timeout: u32,
+    // UDP test fields
+    pub udp_test_result: Option<String>,
+    pub udp_test_in_progress: bool,
     // TODO: Add more settings as needed
 }
 
@@ -142,6 +162,8 @@ impl Default for PreferencesState {
             render_distance: 256,
             max_bandwidth: 1500,
             timeout: 30,
+            udp_test_result: None,
+            udp_test_in_progress: false,
         }
     }
 }
@@ -159,6 +181,8 @@ impl Default for UiState {
         } else if let Some(loaded) = settings::load_preferences() {
             preferences = loaded;
         }
+        // Generate a random free 5-digit UDP port for the session
+        let session_udp_port = pick_random_udp_port();
         Self {
             chat_input: String::new(),
             chat_messages: VecDeque::from(vec!["Welcome to slv-rust!".to_string()]),
@@ -185,6 +209,8 @@ impl Default for UiState {
             tos_message: None,
             ui_event_rx,
             ui_event_tx,
+            agent_state: None,
+            session_udp_port,
         }
     }
 }

@@ -4,6 +4,7 @@ use std::net::{SocketAddr, IpAddr, Ipv4Addr};
 use std::io;
 use tracing::{info, error, debug};
 use crate::networking::transport::UdpSocketExt;
+use async_trait::async_trait;
 
 pub struct Socks5UdpSocket {
     pub udp_socket: UdpSocket,
@@ -12,7 +13,7 @@ pub struct Socks5UdpSocket {
 }
 
 impl Socks5UdpSocket {
-    pub async fn connect(proxy_host: &str, proxy_port: u16) -> io::Result<Self> {
+    pub async fn connect(proxy_host: &str, proxy_port: u16, local_port: Option<u16>) -> io::Result<Self> {
         let proxy_addr = format!("{}:{}", proxy_host, proxy_port);
         info!("[SOCKS5] Connecting to SOCKS5 proxy at {}", proxy_addr);
         let mut tcp_stream = TcpStream::connect(&proxy_addr).await?;
@@ -28,7 +29,11 @@ impl Socks5UdpSocket {
         debug!("[SOCKS5] SOCKS5 handshake succeeded");
 
         // UDP ASSOCIATE
-        let local_udp = UdpSocket::bind("0.0.0.0:0").await?;
+        let bind_addr = match local_port {
+            Some(port) => format!("0.0.0.0:{}", port),
+            None => "0.0.0.0:0".to_string(),
+        };
+        let local_udp = UdpSocket::bind(&bind_addr).await?;
         let local_addr = local_udp.local_addr()?;
         info!("[SOCKS5] Local UDP socket bound to {}", local_addr);
         let local_ip = match local_addr.ip() {
@@ -74,7 +79,7 @@ impl Socks5UdpSocket {
         })
     }
 
-    fn build_udp_packet(data: &[u8], dest: &SocketAddr) -> Vec<u8> {
+    pub fn build_udp_packet(data: &[u8], dest: &SocketAddr) -> Vec<u8> {
         let mut packet = Vec::with_capacity(10 + data.len());
         packet.extend_from_slice(&[0x00, 0x00, 0x00]); // RSV, FRAG
         match dest.ip() {
@@ -136,52 +141,21 @@ impl Socks5UdpSocket {
     }
 }
 
+#[async_trait]
 impl UdpSocketExt for Socks5UdpSocket {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-    fn local_addr(&self) -> io::Result<SocketAddr> {
-        self.udp_socket.local_addr()
-    }
-    fn send<'a>(&'a self, buf: &'a [u8], target: &'a SocketAddr) -> std::pin::Pin<Box<dyn std::future::Future<Output = io::Result<usize>> + Send + 'a>> {
-        let relay_addr = self.relay_addr;
+    async fn send_to(&self, buf: &[u8], target: &SocketAddr) -> std::io::Result<usize> {
+        info!("[SOCKS5] Actually sending UDP packet to relay {} (real dest: {})", self.relay_addr, target);
         let packet = Self::build_udp_packet(buf, target);
-        let packet_len = packet.len();
-        let real_dest = *target;
-        Box::pin(async move {
-            info!("[SOCKS5] Sending UDP packet: {} bytes to relay {} (real dest: {})", packet_len, relay_addr, real_dest);
-            match self.udp_socket.send_to(&packet, relay_addr).await {
-                Ok(n) => {
-                    debug!("[SOCKS5] Sent {} bytes via SOCKS5 UDP proxy to {} (real dest: {})", n, relay_addr, real_dest);
-                    Ok(n)
-                }
-                Err(e) => {
-                    error!("[SOCKS5] SOCKS5 UDP send error: {}", e);
-                    Err(e)
-                }
-            }
-        })
+        self.udp_socket.send_to(&packet, self.relay_addr).await
     }
-    fn recv<'a>(&'a self, buf: &'a mut [u8]) -> std::pin::Pin<Box<dyn std::future::Future<Output = io::Result<(usize, SocketAddr)>> + Send + 'a>> {
-        Box::pin(async move {
-            match self.udp_socket.recv_from(buf).await {
-                Ok((n, _src)) => {
-                    match Self::parse_udp_packet(buf, n) {
-                        Ok((data_len, addr)) => {
-                            debug!("Received {} bytes via SOCKS5 UDP proxy from {}", data_len, addr);
-                            Ok((data_len, addr))
-                        }
-                        Err(e) => {
-                            error!("SOCKS5 UDP parse error: {}", e);
-                            Err(e)
-                        }
-                    }
-                }
-                Err(e) => {
-                    error!("SOCKS5 UDP recv error: {}", e);
-                    Err(e)
-                }
-            }
-        })
+    async fn recv_from(&self, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
+        let (n, _src) = self.udp_socket.recv_from(buf).await?;
+        match Self::parse_udp_packet(buf, n) {
+            Ok((data_len, addr)) => Ok((data_len, addr)),
+            Err(e) => Err(e),
+        }
+    }
+    fn local_addr(&self) -> std::io::Result<SocketAddr> {
+        self.udp_socket.local_addr()
     }
 } 

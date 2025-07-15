@@ -43,6 +43,8 @@ impl Into<PreferencesState> for PreferencesToml {
             render_distance: self.render_distance,
             max_bandwidth: self.max_bandwidth,
             timeout: self.timeout,
+            udp_test_result: None,
+            udp_test_in_progress: false,
         }
     }
 }

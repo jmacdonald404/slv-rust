@@ -6,63 +6,61 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-# Networking
-tokio = { version = "1.46.0", features = ["full", "fs"] }
-quinn = "0.11.8"
+# --- Networking ---
 bytes = "1.10.1"
+quinn = "0.11.8"
+tokio = { version = "1.46.0", features = ["full", "fs"] }
 
-# Rendering
-wgpu = "24.0.5"
-winit = "0.30.7"
-glam = "0.30.4"
-image = "0.25.6"
+# --- Rendering ---
 bytemuck = { version = "1.23.1", features = ["derive"] }
 cgmath = "0.18.0"
+glam = "0.30.4"
+image = "0.25.6"
+wgpu = "24.0.5"
+winit = "0.30.7"
 
-# Asset Processing
-jpeg2k-sandboxed = "0.9.1"
+# --- Asset Processing ---
 collada = "0.16.0"
+jpeg2k-sandboxed = "0.9.1"
 hound = "3.5.1"
 
-# UI Framework
+# --- UI Framework ---
 eframe = "0.31"
 
-# Serialization
-serde = { version = "1.0.219", features = ["derive"] }
+# --- Serialization ---
 bincode = "2.0.1"
+serde = { version = "1.0.219", features = ["derive"] }
 uuid = { version = "1.17.0", features = ["v4"] }
 
-# Utilities
-tracing = "0.1.41"
-tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
-config = "0.15.11"
+# --- Utilities ---
 anyhow = "1.0"
 async-trait = "0.1.88"
+bitflags = "2.9.1"
+config = "0.15.11"
+crossbeam-channel = "0.5.15"
+directories = "5.0"
 pollster = "0.4.0"
+rand = "0.9.1"
+regex = "1"
+scraper = "0.23.1"
+serde_json = "1.0.140"
 thiserror = "2.0"
+toml = "0.8"
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 
-# Optional Dependencies
+# --- HTTP & XML ---
+quick-xml = { version = "0.31", features = ["serialize"] }
+reqwest = { version = "0.12", features = ["json", "gzip", "deflate"] }
+roxmltree = "0.20"
+
+# --- Optional Dependencies ---
 # Physics
 rapier3d = { version = "0.26.1", optional = true }
-
 # Audio
-rodio = { version = "0.20.1", optional = true }
 cpal = { version = "0.16.0", optional = true }
-
+rodio = { version = "0.20.1", optional = true }
 # Compression
 flate2 = { version = "1.1.2", optional = true }
 lz4 = { version = "1.28.1", optional = true }
-
-# HTTP Requests
-reqwest = { version = "0.12", features = ["json"] }
-
-# XML Parsing
-quick-xml = { version = "0.31", features = ["serialize"] }
-roxmltree = "0.20"
-
-toml = "0.8"
-directories = "5.0"
-crossbeam-channel = "0.5.15"
-serde_json = "1.0.140"
-scraper = "0.23.1"
-regex = "1"
+md5 = "0.8.0"

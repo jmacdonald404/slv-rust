@@ -51,34 +51,52 @@ A modern SecondLife viewer implementation built with Rust, focusing on performan
 ### Core Dependencies
 ```toml
 [dependencies]
-# Networking
-tokio = { version = "1.38.0", features = ["full"] }
-quinn = "0.11.0"
-bytes = "1.6.0"
+# --- Networking ---
+bytes = "1.10.1"
+quinn = "0.11.8"
+tokio = { version = "1.46.0", features = ["full", "fs"] }
 
-# Rendering
-wgpu = "0.20.1"  # Cross-platform graphics
-winit = "0.30.3"  # Window management
-glam = "0.28.0"   # Linear algebra
-image = "0.25.1"  # Image processing
+# --- Rendering ---
+bytemuck = { version = "1.23.1", features = ["derive"] }
+cgmath = "0.18.0"
+glam = "0.30.4"
+image = "0.25.6"
+wgpu = "24.0.5"
+winit = "0.30.7"
 
-# Asset Processing
-jpeg2k-sandboxed = "0.9.1"  # JPEG2000 decoder
-collada = "0.16.0"   # DAE mesh format
-hound = "3.5.1"     # Audio processing
+# --- Asset Processing ---
+collada = "0.16.0"
+jpeg2k-sandboxed = "0.9.1"
+hound = "3.5.1"
 
-# UI Framework
-eframe = "0.31"     # Immediate mode GUI (native windowing, built on egui)
+# --- UI Framework ---
+eframe = "0.31"
 
-# Serialization
-serde = { version = "1.0.203", features = ["derive"] }
-bincode = "1.3.3"   # Binary serialization
-uuid = { version = "1.9.1", features = ["v4"] }
+# --- Serialization ---
+bincode = "2.0.1"
+serde = { version = "1.0.219", features = ["derive"] }
+uuid = { version = "1.17.0", features = ["v4"] }
 
-# Utilities
-tracing = "0.1.40"   # Logging
-tracing-subscriber = "0.3.18"
-config = "0.14.0"   # Configuration management
+# --- Utilities ---
+anyhow = "1.0"
+async-trait = "0.1.88"
+bitflags = "2.9.1"
+config = "0.15.11"
+crossbeam-channel = "0.5.15"
+pollster = "0.4.0"
+rand = "0.9.1"
+regex = "1"
+scraper = "0.23.1"
+serde_json = "1.0.140"
+thiserror = "2.0"
+toml = "0.8"
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+
+# --- HTTP & XML ---
+quick-xml = { version = "0.31", features = ["serialize"] }
+reqwest = { version = "0.12", features = ["json", "gzip", "deflate"] }
+roxmltree = "0.20"
 ```
 
 ### Optional Dependencies

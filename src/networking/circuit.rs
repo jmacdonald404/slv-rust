@@ -1,4 +1,3 @@
-use crate::networking::transport::{UdpSocketExt};
 use crate::networking::protocol::messages::{PacketHeader, Message};
 use crate::networking::protocol::codecs::MessageCodec;
 use std::net::SocketAddr;
@@ -7,12 +6,14 @@ use std::collections::HashMap;
 use tokio::time::{self, Instant, Duration};
 use tokio::sync::mpsc;
 use std::sync::{Arc, Mutex};
+use crate::networking::transport::UdpTransport;
 
 const RETRANSMISSION_TIMEOUT_MS: u64 = 200;
 const MAX_RETRANSMISSIONS: u32 = 5;
 
+// TODO: Refactor for proxy support. UdpSocketExt removed.
 pub struct Circuit {
-    transport: std::sync::Arc<Box<dyn UdpSocketExt>>,
+    transport: Arc<UdpTransport>,
     next_sequence_number: u32,
     next_expected_sequence_number: Arc<Mutex<u32>>,
     unacked_messages: Arc<Mutex<HashMap<u32, (Message, Instant, u32, SocketAddr, Vec<u8>)>>>, // sequence_id -> (message, sent_time, retransmission_count, target_addr, encoded_message)
@@ -21,9 +22,7 @@ pub struct Circuit {
 }
 
 impl Circuit {
-    pub async fn new_with_socket(socket: Box<dyn UdpSocketExt>) -> std::io::Result<Self> {
-        let socket = std::sync::Arc::new(socket);
-        let socket_bg = socket.clone();
+    pub async fn new_with_transport(transport: Arc<UdpTransport>) -> std::io::Result<Self> {
         let (sender_channel_for_task, receiver_channel) = mpsc::channel(100);
 
         let unacked_messages_arc = Arc::new(Mutex::new(HashMap::<u32, (Message, Instant, u32, SocketAddr, Vec<u8>)>::new()));
@@ -32,6 +31,7 @@ impl Circuit {
         let next_expected_sequence_number_arc_clone = Arc::clone(&next_expected_sequence_number_arc);
         let out_of_order_buffer_arc = Arc::new(Mutex::new(HashMap::<u32, (PacketHeader, Message, SocketAddr)>::new()));
         let out_of_order_buffer_arc_clone = Arc::clone(&out_of_order_buffer_arc);
+        let transport_bg = Arc::clone(&transport);
 
         // Spawn the UDP receive/retransmit task
         tokio::spawn(async move {
@@ -39,8 +39,19 @@ impl Circuit {
             let mut buf = vec![0; 1024];
             loop {
                 tokio::select! {
-                    Ok((len, addr)) = socket_bg.recv(&mut buf) => {
+                    Ok((len, addr)) = transport_bg.recv_from(&mut buf) => {
+                        println!("[UDP RX] Received {} bytes from {}: {:02X?}", len, addr, &buf[..len]);
                         if let Ok((header, message)) = MessageCodec::decode(&buf[..len]) {
+                            println!("[UDP RX] Decoded message: {:?} (seq: {}) from {}", message, header.sequence_id, addr);
+                            match &message {
+                                Message::UseCircuitCodeReply(success) => {
+                                    println!("[HANDSHAKE] Received UseCircuitCodeReply: success={}", success);
+                                }
+                                Message::AgentMovementComplete { .. } => {
+                                    println!("[HANDSHAKE] Received AgentMovementComplete!");
+                                }
+                                _ => {}
+                            }
                             match message {
                                 Message::Ack { sequence_id } => {
                                     if let Ok(mut unacked_messages) = unacked_messages_arc_clone.lock() {
@@ -69,13 +80,15 @@ impl Circuit {
                                     let ack_message = Message::Ack { sequence_id: header.sequence_id };
                                     let ack_header = PacketHeader { sequence_id: 0, flags: 0 };
                                     if let Ok(encoded_ack) = MessageCodec::encode(&ack_header, &ack_message) {
-                                        let _ = socket_bg.send(&encoded_ack, &addr).await;
+                                        let _ = transport_bg.send_to(&encoded_ack, &addr).await;
                                     }
                                     for (h, m, a) in messages_to_send {
                                         let _ = sender_channel_for_task.send((h, m, a)).await;
                                     }
                                 }
                             }
+                        } else {
+                            println!("[UDP RX] Failed to decode UDP packet from {}: {:02X?}", addr, &buf[..len]);
                         }
                     },
                     _ = time::sleep(Duration::from_millis(RETRANSMISSION_TIMEOUT_MS)) => {
@@ -99,7 +112,7 @@ impl Circuit {
                             });
                         }
                         for (seq_id, target_addr, encoded_message) in messages_to_retransmit {
-                            let _ = socket_bg.send(&encoded_message, &target_addr).await;
+                            let _ = transport_bg.send_to(&encoded_message, &target_addr).await;
                             tracing::debug!("Retransmitting message {} to {}.", seq_id, target_addr);
                         }
                         for seq_id in lost_messages {
@@ -111,7 +124,7 @@ impl Circuit {
         });
 
         Ok(Self {
-            transport: socket,
+            transport,
             next_sequence_number: 1,
             next_expected_sequence_number: Arc::new(Mutex::new(1)),
             unacked_messages: unacked_messages_arc,
@@ -136,7 +149,7 @@ impl Circuit {
             );
         }
 
-        self.transport.send(&encoded, target).await
+        self.transport.send_to(&encoded, target).await
     }
 
     pub async fn recv_message(&mut self) -> io::Result<(PacketHeader, Message, SocketAddr)> {
@@ -160,7 +173,10 @@ mod tests {
         // This is a stub test; in a real test, you would mock UdpTransport and check that a Logout message is sent.
         // For now, just ensure the function runs without panicking.
         let addr: SocketAddr = "127.0.0.1:9000".parse().unwrap();
-        let mut circuit = Circuit::new_with_socket(Box::new(crate::networking::transport::UdpTransport::new("0.0.0.0:0").await.unwrap().socket)).await.unwrap();
+        let proxy_settings: Option<&crate::ui::proxy::ProxySettings> = None;
+        let transport = crate::networking::transport::UdpTransport::new(0, addr, proxy_settings).await.unwrap();
+        let transport_arc = Arc::new(transport);
+        let mut circuit = Circuit::new_with_transport(transport_arc).await.unwrap();
         circuit.disconnect_and_logout(&addr).await;
     }
 }
