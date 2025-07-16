@@ -1,8 +1,15 @@
 use tokio; // Add this import for the runtime
+use crate::utils::lludp::{LluPacket, LluPacketFlags, build_use_circuit_code_packet};
+use crate::utils::logging;
 
+mod utils;
 mod networking;
-mod config;
 mod ui;
+mod assets;
+mod rendering;
+mod config;
+mod world;
+mod app;
 
 struct MyApp {
     ui_state: ui::UiState,
@@ -25,7 +32,7 @@ impl eframe::App for MyApp {
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn main() -> eframe::Result<()> {
-    slv_rust::utils::logging::init_logging();
+    logging::init_logging();
     // test stdout and stderr
     println!("PRINT TEST: If you see this, stdout works!");
     eprintln!("EPRINT TEST: If you see this, stderr works!");

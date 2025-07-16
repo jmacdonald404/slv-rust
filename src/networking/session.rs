@@ -1,4 +1,5 @@
 use reqwest::Client;
+use reqwest::Url;
 use serde::{Serialize, Deserialize};
 use quick_xml::de::from_str;
 use quick_xml::events::Event;
@@ -281,62 +282,13 @@ pub async fn login_to_secondlife(grid_uri: &str, req: &LoginRequest, proxy_setti
     );
     eprintln!("[LOGIN XML BODY]\n{}", xml_body);
     let client = build_proxied_client(proxy_settings);
-    println!("[HTTP DEBUG] Client pointer (before test requests): {:p}", &client);
-    // --- TEST HTTP/HTTPS REQUESTS ---
-    // HTTP
-    match client.get("http://example.com/").build() {
-        Ok(request) => {
-            log_http_request("GET", "http://example.com/", proxy_settings, request.headers(), None);
-            match client.execute(request).await {
-                Ok(resp) => {
-                    let status = resp.status();
-                    let headers = resp.headers().clone();
-                    let text = resp.text().await.unwrap_or_else(|_| "<body read error>".to_string());
-                    log_http_response(status, &headers, &text);
-                },
-                Err(e) => println!("[HTTP DEBUG] HTTP test request error: {}", e),
-            }
-        },
-        Err(e) => println!("[HTTP DEBUG] HTTP test request build error: {}", e),
-    }
-    // HTTPS
-    match client.get("https://example.com/").build() {
-        Ok(request) => {
-            log_http_request("GET", "https://example.com/", proxy_settings, request.headers(), None);
-            match client.execute(request).await {
-                Ok(resp) => {
-                    let status = resp.status();
-                    let headers = resp.headers().clone();
-                    let text = resp.text().await.unwrap_or_else(|_| "<body read error>".to_string());
-                    log_http_response(status, &headers, &text);
-                },
-                Err(e) => println!("[HTTP DEBUG] HTTPS test request error: {}", e),
-            }
-        },
-        Err(e) => println!("[HTTP DEBUG] HTTPS test request build error: {}", e),
-    }
-    // --- END TEST HTTP/HTTPS REQUESTS ---
     println!("[HTTP DEBUG] Client pointer (before login POST): {:p}", &client);
-    // --- Optionally, test POST to example.com instead of grid_uri ---
-    // let test_post_url = "https://example.com/";
-    // let mut req_builder = client
-    //     .post(test_post_url)
-    //     .header("Content-Type", "text/xml")
-    //     .header("User-Agent", "SecondLife/6.6.14.581961 (Second Life Release; default)");
-    // let request = req_builder.body(xml_body.clone()).build().map_err(|e| format!("Request build error: {e}"))?;
-    // log_http_request("POST", test_post_url, proxy_settings, request.headers(), Some(&xml_body));
-    // let res = client.execute(request).await.map_err(|e| format!("HTTP error: {e}"))?;
-    // let status = res.status();
-    // let headers = res.headers().clone();
-    // let text = res.text().await.map_err(|e| format!("HTTP error: {e}"))?;
-    // log_http_response(status, &headers, &text);
-    // return Err("Test POST to example.com complete".to_string());
-    // --- END test POST block ---
     // --- Actual login POST ---
     let mut req_builder = client
         .post(grid_uri)
         .header("Content-Type", "text/xml")
-        .header("User-Agent", "Second Life Release 7.1.15 (15596336374)")
+        // .header("User-Agent", "Second Life Release 7.1.15 (15596336374)")
+        .header("User-Agent", "SecondLife/7.1.15.15596336374 (Second Life Release; default skin)")
         .header("Accept", "*/*")
         .header("Accept-Encoding", "deflate, gzip")
         .header("Connection", "keep-alive")
@@ -362,75 +314,56 @@ pub async fn login_to_secondlife(grid_uri: &str, req: &LoginRequest, proxy_setti
     // eprintln!("[DEBUG] Full login response XML:\n{}", text);
     match parse_login_response(&text) {
         Ok(info) => {
-            eprintln!("[DEBUG] Checking for openid_token in login response...");
-            // Send OpenID POST with openid_token if present
+            // Immediately attempt UDP connection and UseCircuitCode send
+            let sim_addr = format!("{}:{}", info.sim_ip, info.sim_port).parse().unwrap();
+            let session_id = uuid::Uuid::parse_str(&info.session_id).unwrap();
+            let agent_id = uuid::Uuid::parse_str(&info.agent_id).unwrap();
+            let circuit_code = info.circuit_code;
+            // Use a default local port (0 = OS assigns)
+            let udp_port = 0;
+            // Spawn a task to send UseCircuitCode (tokio context assumed)
+            tokio::spawn(async move {
+                match crate::networking::transport::UdpTransport::new(udp_port, sim_addr, None).await {
+                    Ok(udp) => {
+                        let _ = udp.send_usecircuitcode_packet_lludp(circuit_code, session_id, agent_id, 1).await;
+                        println!("[LOGIN] UseCircuitCode packet sent to simulator at {}", sim_addr);
+                    }
+                    Err(e) => {
+                        eprintln!("[LOGIN ERROR] Failed to create UDP transport or send UseCircuitCode: {}", e);
+                    }
+                }
+            });
+            // --- OpenID/capabilities step is now non-blocking and errors are only logged ---
             if let Some(openid_token) = extract_openid_token(&text) {
                 eprintln!("[DEBUG] Found openid_token: {}", openid_token);
                 let openid_token = openid_token.replace("&amp;", "&");
+                let openid_url = extract_openid_url(&text).unwrap_or_else(|| "https://id.secondlife.com/openid/webkit".to_string());
                 let client = build_proxied_client(proxy_settings);
-                // Second request: OpenID POST
                 let res = client
-                    .post("https://id.secondlife.com/openid/webkit")
+                    .post(&openid_url)
                     .header("Content-Type", "application/x-www-form-urlencoded")
                     .header("X-SecondLife-UDP-Listen-Port", udp_port.to_string())
-                    .header("User-Agent", "SecondLife/6.6.14.581961 (Second Life Release; default)")
+                    .header("Connection", "keep-alive")
+                    .header("Keep-alive", "300")
                     .body(openid_token.clone())
                     .send()
                     .await;
-                let mut openid_cookie: Option<String> = None;
                 match res {
                     Ok(resp) => {
                         eprintln!("[DEBUG] OpenID POST status: {}", resp.status());
-                        if let Some(cookie) = resp.headers().get(reqwest::header::SET_COOKIE) {
-                            eprintln!("[DEBUG] OpenID Set-Cookie: {:?}", cookie);
-                            openid_cookie = Some(cookie.to_str().unwrap_or("").to_string());
+                        let headers = resp.headers().clone();
+                        for (k, v) in headers.iter() {
+                            eprintln!("[DEBUG] OpenID POST header: {}: {:?}", k, v);
                         }
+                        let _ = resp.text().await;
                     }
                     Err(e) => {
-                        eprintln!("[DEBUG] OpenID POST error: {}", e);
+                        eprintln!("[DEBUG] OpenID POST error (non-blocking): {}", e);
                     }
                 }
-                // Third request: Capabilities POST (as in progress.md)
-                let client = build_proxied_client(proxy_settings);
-                    let mut req_builder = client
-                    .post(&info.seed_capability)
-                        .header("Accept", "application/llsd+xml")
-                        .header("Content-Type", "application/llsd+xml")
-                        .header("X-SecondLife-UDP-Listen-Port", udp_port.to_string())
-                        .header("User-Agent", "SecondLife/6.6.14.581961 (Second Life Release; default)");
-                    // Forward OpenID cookie if present
-                    if let Some(ref cookie) = openid_cookie {
-                        req_builder = req_builder.header("Cookie", cookie);
-                    }
-                    let res3 = req_builder.send().await;
-                    let mut capabilities: Option<Capabilities> = None;
-                    match res3 {
-                        Ok(resp) => {
-                            eprintln!("[DEBUG] Capabilities POST status: {}", resp.status());
-                            if let Ok(text) = resp.text().await {
-                                if let Ok(caps) = parse_capabilities_response(&text) {
-                                    eprintln!("[DEBUG] Parsed {} capabilities", caps.map.len());
-                                    capabilities = Some(caps);
-                                } else {
-                                    eprintln!("[DEBUG] Could not parse capabilities response");
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("[DEBUG] Capabilities POST error: {}", e);
-                        }
-                    }
-                    // Attach capabilities to session info
-                    let mut info = info;
-                    info.capabilities = capabilities;
-                    // Store session cookie if present
-                    if let Some(ref cookie) = openid_cookie {
-                        info.session_cookie = Some(cookie.clone());
-                }
-                Ok(info)
-            } else {
-                Ok(info)
+                // Capabilities POST and my.secondlife.com GET are also non-blocking/skipped for now
             }
+            Ok(info)
         }
         Err(e) => Err(e),
     }
@@ -519,6 +452,40 @@ fn extract_openid_token(xml: &str) -> Option<String> {
     None
 }
 
+// New: Extract openid_url from the login response XML
+fn extract_openid_url(xml: &str) -> Option<String> {
+    let doc = roxmltree::Document::parse(xml).ok()?;
+    for member in doc.descendants().filter(|n| n.has_tag_name("member")) {
+        let mut name = None;
+        let mut value = None;
+        for child in member.children() {
+            if child.has_tag_name("name") {
+                name = child.text();
+            }
+            if child.has_tag_name("value") {
+                // Look for <string> child or direct text
+                for vchild in child.children() {
+                    if vchild.has_tag_name("string") {
+                        value = vchild.text();
+                    }
+                }
+                if value.is_none() {
+                    value = child.text();
+                }
+            }
+        }
+        if name == Some("openid_url") {
+            return value.map(|s| s.to_string());
+        }
+    }
+    None
+}
+
+// Helper: Extract only the cookie name and value from a Set-Cookie header
+fn extract_cookie_kv(set_cookie: &str) -> String {
+    set_cookie.split(';').next().unwrap_or("").trim().to_string()
+}
+
 // Parse LLSD XML capabilities response into Capabilities struct
 fn parse_capabilities_response(xml: &str) -> Result<Capabilities, String> {
     let doc = roxmltree::Document::parse(xml).map_err(|e| e.to_string())?;
@@ -560,9 +527,9 @@ where
     let mut ack: Option<i32> = None;
     loop {
         let payload = if let Some(ack_val) = ack {
-            format!(r#"<?xml version=\"1.0\"?><llsd><map><key>ack</key><integer>{}</integer><key>done</key><boolean>false</boolean></map></llsd>"#, ack_val)
+            format!(r#"<?xml version="1.0" ?><llsd><map><key>ack</key><integer>{}</integer><key>done</key><boolean>false</boolean></map></llsd>"#, ack_val)
         } else {
-            r#"<?xml version=\"1.0\"?><llsd><map><key>done</key><boolean>false</boolean></map></llsd>"#.to_string()
+            r#"<?xml version="1.0" ?><llsd><map><key>done</key><boolean>false</boolean></map></llsd>"#.to_string()
         };
         let resp = client
             .post(eq_url)
@@ -595,14 +562,146 @@ pub async fn fetch_seed_capabilities(
     proxy_settings: Option<&ProxySettings>,
     openid_cookie: Option<&str>,
 ) -> Result<Capabilities, String> {
-    let llsd_body = r#"<?xml version=\"1.0\" ?>\n<llsd>\n<array>\n    <string>AbuseCategories</string>\n    <string>AcceptFriendship</string>\n    <string>AcceptGroupInvite</string>\n    <string>AgentPreferences</string>\n    <string>AgentProfile</string>\n    <string>AgentState</string>\n    <string>AttachmentResources</string>\n    <string>AvatarPickerSearch</string>\n    <string>AvatarRenderInfo</string>\n    <string>CharacterProperties</string>\n    <string>ChatSessionRequest</string>\n    <string>CopyInventoryFromNotecard</string>\n    <string>CreateInventoryCategory</string>\n    <string>DeclineFriendship</string>\n    <string>DeclineGroupInvite</string>\n    <string>DispatchRegionInfo</string>\n    <string>DirectDelivery</string>\n    <string>EnvironmentSettings</string>\n    <string>EstateAccess</string>\n    <string>EstateChangeInfo</string>\n    <string>EventQueueGet</string>\n    <string>ExtEnvironment</string>\n    <string>FetchLib2</string>\n    <string>FetchLibDescendents2</string>\n    <string>FetchInventory2</string>\n    <string>FetchInventoryDescendents2</string>\n    <string>IncrementCOFVersion</string>\n    <string>RequestTaskInventory</string>\n    <string>InventoryAPIv3</string>\n    <string>LibraryAPIv3</string>\n    <string>InterestList</string>\n    <string>InventoryThumbnailUpload</string>\n    <string>GetDisplayNames</string>\n    <string>GetExperiences</string>\n    <string>AgentExperiences</string>\n    <string>FindExperienceByName</string>\n    <string>GetExperienceInfo</string>\n    <string>GetAdminExperiences</string>\n    <string>GetCreatorExperiences</string>\n    <string>ExperiencePreferences</string>\n    <string>GroupExperiences</string>\n    <string>UpdateExperience</string>\n    <string>IsExperienceAdmin</string>\n    <string>IsExperienceContributor</string>\n    <string>RegionExperiences</string>\n    <string>ExperienceQuery</string>\n    <string>GetMetadata</string>\n    <string>GetObjectCost</string>\n    <string>GetObjectPhysicsData</string>\n    <string>GroupAPIv1</string>\n    <string>GroupMemberData</string>\n    <string>GroupProposalBallot</string>\n    <string>HomeLocation</string>\n    <string>LandResources</string>\n    <string>LSLSyntax</string>\n    <string>MapLayer</string>\n    <string>MapLayerGod</string>\n    <string>MeshUploadFlag</string>\n    <string>ModifyMaterialParams</string>\n    <string>ModifyRegion</string>\n    <string>NavMeshGenerationStatus</string>\n    <string>NewFileAgentInventory</string>\n    <string>ObjectAnimation</string>\n    <string>ObjectMedia</string>\n    <string>ObjectMediaNavigate</string>\n    <string>ObjectNavMeshProperties</string>\n    <string>ParcelPropertiesUpdate</string>\n    <string>ParcelVoiceInfoRequest</string>\n    <string>ProductInfoRequest</string>\n    <string>ProvisionVoiceAccountRequest</string>\n    <string>VoiceSignalingRequest</string>\n    <string>ReadOfflineMsgs</string>\n    <string>RegionObjects</string>\n    <string>RegionSchedule</string>\n    <string>RemoteParcelRequest</string>\n    <string>RenderMaterials</string>\n    <string>RequestTextureDownload</string>\n    <string>ResourceCostSelected</string>\n    <string>RetrieveNavMeshSrc</string>\n    <string>SearchStatRequest</string>\n    <string>SearchStatTracking</string>\n    <string>SendPostcard</string>\n    <string>SendUserReport</string>\n    <string>SendUserReportWithScreenshot</string>\n    <string>ServerReleaseNotes</string>\n    <string>SetDisplayName</string>\n    <string>SimConsoleAsync</string>\n    <string>SimulatorFeatures</string>\n    <string>StartGroupProposal</string>\n    <string>TerrainNavMeshProperties</string>\n    <string>TextureStats</string>\n    <string>UntrustedSimulatorMessage</string>\n    <string>UpdateAgentInformation</string>\n    <string>UpdateAgentLanguage</string>\n    <string>UpdateAvatarAppearance</string>\n    <string>UpdateGestureAgentInventory</string>\n    <string>UpdateGestureTaskInventory</string>\n    <string>UpdateNotecardAgentInventory</string>\n    <string>UpdateNotecardTaskInventory</string>\n    <string>UpdateScriptAgent</string>\n    <string>UpdateScriptTask</string>\n    <string>UpdateSettingsAgentInventory</string>\n    <string>UpdateSettingsTaskInventory</string>\n    <string>UploadAgentProfileImage</string>\n    <string>UpdateMaterialAgentInventory</string>\n    <string>UpdateMaterialTaskInventory</string>\n    <string>UploadBakedTexture</string>\n    <string>UserInfo</string>\n    <string>ViewerAsset</string>\n    <string>ViewerBenefits</string>\n    <string>ViewerMetrics</string>\n    <string>ViewerStartAuction</string>\n    <string>ViewerStats</string>\n  </array>\n</llsd>\n"#;
+    let llsd_body = r#"<?xml version="1.0" ?>
+<llsd>
+  <array>
+    <string>AbuseCategories</string>
+    <string>AcceptFriendship</string>
+    <string>AcceptGroupInvite</string>
+    <string>AgentPreferences</string>
+    <string>AgentProfile</string>
+    <string>AgentState</string>
+    <string>AttachmentResources</string>
+    <string>AvatarPickerSearch</string>
+    <string>AvatarRenderInfo</string>
+    <string>CharacterProperties</string>
+    <string>ChatSessionRequest</string>
+    <string>CopyInventoryFromNotecard</string>
+    <string>CreateInventoryCategory</string>
+    <string>DeclineFriendship</string>
+    <string>DeclineGroupInvite</string>
+    <string>DispatchRegionInfo</string>
+    <string>DirectDelivery</string>
+    <string>EnvironmentSettings</string>
+    <string>EstateAccess</string>
+    <string>EstateChangeInfo</string>
+    <string>EventQueueGet</string>
+    <string>ExtEnvironment</string>
+    <string>FetchLib2</string>
+    <string>FetchLibDescendents2</string>
+    <string>FetchInventory2</string>
+    <string>FetchInventoryDescendents2</string>
+    <string>IncrementCOFVersion</string>
+    <string>RequestTaskInventory</string>
+    <string>InventoryAPIv3</string>
+    <string>LibraryAPIv3</string>
+    <string>InterestList</string>
+    <string>InventoryThumbnailUpload</string>
+    <string>GetDisplayNames</string>
+    <string>GetExperiences</string>
+    <string>AgentExperiences</string>
+    <string>FindExperienceByName</string>
+    <string>GetExperienceInfo</string>
+    <string>GetAdminExperiences</string>
+    <string>GetCreatorExperiences</string>
+    <string>ExperiencePreferences</string>
+    <string>GroupExperiences</string>
+    <string>UpdateExperience</string>
+    <string>IsExperienceAdmin</string>
+    <string>IsExperienceContributor</string>
+    <string>RegionExperiences</string>
+    <string>ExperienceQuery</string>
+    <string>GetMetadata</string>
+    <string>GetObjectCost</string>
+    <string>GetObjectPhysicsData</string>
+    <string>GroupAPIv1</string>
+    <string>GroupMemberData</string>
+    <string>GroupProposalBallot</string>
+    <string>HomeLocation</string>
+    <string>LandResources</string>
+    <string>LSLSyntax</string>
+    <string>MapLayer</string>
+    <string>MapLayerGod</string>
+    <string>MeshUploadFlag</string>
+    <string>ModifyMaterialParams</string>
+    <string>ModifyRegion</string>
+    <string>NavMeshGenerationStatus</string>
+    <string>NewFileAgentInventory</string>
+    <string>ObjectAnimation</string>
+    <string>ObjectMedia</string>
+    <string>ObjectMediaNavigate</string>
+    <string>ObjectNavMeshProperties</string>
+    <string>ParcelPropertiesUpdate</string>
+    <string>ParcelVoiceInfoRequest</string>
+    <string>ProductInfoRequest</string>
+    <string>ProvisionVoiceAccountRequest</string>
+    <string>VoiceSignalingRequest</string>
+    <string>ReadOfflineMsgs</string>
+    <string>RegionObjects</string>
+    <string>RegionSchedule</string>
+    <string>RemoteParcelRequest</string>
+    <string>RenderMaterials</string>
+    <string>RequestTextureDownload</string>
+    <string>ResourceCostSelected</string>
+    <string>RetrieveNavMeshSrc</string>
+    <string>SearchStatRequest</string>
+    <string>SearchStatTracking</string>
+    <string>SendPostcard</string>
+    <string>SendUserReport</string>
+    <string>SendUserReportWithScreenshot</string>
+    <string>ServerReleaseNotes</string>
+    <string>SetDisplayName</string>
+    <string>SimConsoleAsync</string>
+    <string>SimulatorFeatures</string>
+    <string>StartGroupProposal</string>
+    <string>TerrainNavMeshProperties</string>
+    <string>TextureStats</string>
+    <string>UntrustedSimulatorMessage</string>
+    <string>UpdateAgentInformation</string>
+    <string>UpdateAgentLanguage</string>
+    <string>UpdateAvatarAppearance</string>
+    <string>UpdateGestureAgentInventory</string>
+    <string>UpdateGestureTaskInventory</string>
+    <string>UpdateNotecardAgentInventory</string>
+    <string>UpdateNotecardTaskInventory</string>
+    <string>UpdateScriptAgent</string>
+    <string>UpdateScriptTask</string>
+    <string>UpdateSettingsAgentInventory</string>
+    <string>UpdateSettingsTaskInventory</string>
+    <string>UploadAgentProfileImage</string>
+    <string>UpdateMaterialAgentInventory</string>
+    <string>UpdateMaterialTaskInventory</string>
+    <string>UploadBakedTexture</string>
+    <string>UserInfo</string>
+    <string>ViewerAsset</string>
+    <string>ViewerBenefits</string>
+    <string>ViewerMetrics</string>
+    <string>ViewerStartAuction</string>
+    <string>ViewerStats</string>
+  </array>
+</llsd>
+"#;
     let client = build_proxied_client(proxy_settings);
+    let url = Url::parse(seed_capability).ok();
+    let host_header = url.as_ref().and_then(|u| {
+        if let Some(port) = u.port() {
+            Some(format!("{}:{}", u.host_str().unwrap_or(""), port))
+        } else {
+            Some(u.host_str().unwrap_or("").to_string())
+        }
+    });
     let mut req_builder = client
         .post(seed_capability)
         .header("Accept", "application/llsd+xml")
         .header("Content-Type", "application/llsd+xml")
         .header("X-SecondLife-UDP-Listen-Port", udp_port.to_string())
-        .header("User-Agent", "SecondLife/6.6.14.581961 (Second Life Release; default)");
+        .header("User-Agent", "SecondLife/7.1.15.15596336374 (Second Life Release; default skin)")
+        .header("Accept-Encoding", "deflate, gzip")
+        .header("Connection", "keep-alive")
+        .header("Keep-alive", "300");
+    if let Some(ref host) = host_header {
+        req_builder = req_builder.header("Host", host);
+    }
     if let Some(cookie) = openid_cookie {
         req_builder = req_builder.header("Cookie", cookie);
     }
@@ -685,6 +784,7 @@ pub async fn fetch_my_secondlife_homepage(
         .header("User-Agent", "SecondLife/7.1.15.15596336374 (Second Life Release; default skin)")
         .header("Content-Type", "application/llsd+xml")
         .header("X-SecondLife-UDP-Listen-Port", udp_port.to_string())
+        .header("Host", "my.secondlife.com")
         .send()
         .await
         .map_err(|e| format!("my.secondlife.com GET error: {e}"))?;
@@ -840,28 +940,5 @@ pub async fn fetch_my_secondlife_openid_redirect(
 
 #[cfg(test)]
 mod proxy_tests {
-    use super::*;
-    #[tokio::test]
-    async fn test_plain_http_proxy() {
-        let client = reqwest::Client::builder()
-            .proxy(reqwest::Proxy::http("http://127.0.0.1:9062").unwrap())
-            .build()
-            .unwrap();
-        let resp = client.get("http://example.com/").send().await.unwrap();
-        println!("[PROXY TEST] HTTP Status: {}", resp.status());
-        let body = resp.text().await.unwrap();
-        println!("[PROXY TEST] HTTP Body (first 256 chars): {}", &body.chars().take(256).collect::<String>());
-    }
-    #[tokio::test]
-    async fn test_https_proxy() {
-        let client = reqwest::Client::builder()
-            .proxy(reqwest::Proxy::http("http://127.0.0.1:9062").unwrap())
-            .danger_accept_invalid_certs(true)
-            .build()
-            .unwrap();
-        let resp = client.get("https://example.com/").send().await.unwrap();
-        println!("[PROXY TEST] HTTPS Status: {}", resp.status());
-        let body = resp.text().await.unwrap();
-        println!("[PROXY TEST] HTTPS Body (first 256 chars): {}", &body.chars().take(256).collect::<String>());
-    }
+    // ... removed example.com proxy test functions ...
 }

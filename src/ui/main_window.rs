@@ -25,6 +25,7 @@ use crate::ui::AgentState;
 use roxmltree::Document;
 use rand::Rng;
 use std::net::UdpSocket as StdUdpSocket;
+use crate::utils::lludp::{LluPacket, LluPacketFlags};
 
 fn render_tos_html(ui: &mut Ui, html: &str) {
     let document = Html::parse_document(html);
@@ -195,7 +196,7 @@ pub fn show_main_window(ctx: &egui::Context, ui_state: &mut UiState) {
                                                 if pkt.message_id == 0x000A /* CircuitAssigned */ {
                                                     // Ack the sequence if present
                                                     if let Some(seq_num) = pkt.sequence {
-                                                        let ack_packet = crate::networking::protocol::lludp::LluPacket::build_outgoing(0x0000, crate::networking::protocol::lludp::LluPacketFlags::empty(), None, &seq_num.to_le_bytes());
+                                                        let ack_packet = LluPacket::build_outgoing(0x0000, LluPacketFlags::empty(), None, &seq_num.to_le_bytes());
                                                         let _ = udp.send_to(&ack_packet, &sim_addr).await;
                                                         println!("[LLUDP OUT] Sent PacketAck for seq {}", seq_num);
                                                     }
@@ -452,13 +453,13 @@ pub fn show_main_window(ctx: &egui::Context, ui_state: &mut UiState) {
                         ui.label("SOCKS5 Host:");
                         changed |= ui.text_edit_singleline(&mut ui_state.proxy_settings.socks5_host).changed();
                         ui.label("Port:");
-                        changed |= ui.add(egui::DragValue::new(&mut ui_state.proxy_settings.socks5_port).clamp_range(1..=65535)).changed();
+                        changed |= ui.add(egui::DragValue::new(&mut ui_state.proxy_settings.socks5_port).range(1..=65535)).changed();
                     });
                     ui.horizontal(|ui| {
                         ui.label("HTTP Proxy Host:");
                         changed |= ui.text_edit_singleline(&mut ui_state.proxy_settings.http_host).changed();
                         ui.label("Port:");
-                        changed |= ui.add(egui::DragValue::new(&mut ui_state.proxy_settings.http_port).clamp_range(1..=65535)).changed();
+                        changed |= ui.add(egui::DragValue::new(&mut ui_state.proxy_settings.http_port).range(1..=65535)).changed();
                     });
                     changed |= ui.checkbox(&mut ui_state.proxy_settings.disable_cert_validation, "Disable HTTPS Certificate Validation").changed();
                 }

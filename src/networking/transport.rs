@@ -4,7 +4,7 @@ use uuid::Uuid;
 use bytes::{BytesMut, BufMut, Buf};
 use std::net::SocketAddr;
 use std::io;
-use crate::networking::protocol::lludp::{build_usecircuitcode_packet_lludp, LluPacket, LluPacketFlags};
+use crate::utils::lludp::{build_use_circuit_code_packet, LluPacket, LluPacketFlags};
 use async_trait::async_trait;
 use crate::ui::proxy::ProxySettings;
 use crate::networking::socks5_udp::Socks5UdpSocket;
@@ -74,20 +74,29 @@ impl UdpTransport {
     }
 
     /// Send a UseCircuitCode packet using the LLUDP binary format (message_template.msg)
-    pub async fn send_usecircuitcode_packet_lludp(&self, circuit_code: u32, session_id: uuid::Uuid, agent_id: uuid::Uuid, sequence_number: u32) -> std::io::Result<usize> {
-        let packet = crate::networking::protocol::lludp::build_usecircuitcode_packet_lludp(circuit_code, session_id, agent_id, sequence_number);
-        println!("[LLUDP OUT] UseCircuitCode (LLUDP) seq={} to {}: {:02X?}", sequence_number, self.sim_addr, &packet);
+    pub async fn send_usecircuitcode_packet_lludp(&self, circuit_code: u32, session_id: uuid::Uuid, agent_id: uuid::Uuid, packet_id: u32) -> std::io::Result<usize> {
+        let packet = build_use_circuit_code_packet(packet_id, circuit_code, session_id, agent_id);
+        // Debug print for troubleshooting (matches udp_test)
+        println!("[LLUDP OUT] UseCircuitCode (Low frequency) seq={} to {}:", packet_id, self.sim_addr);
+        println!("  flags:        {:02X}", packet[0]);
+        println!("  packet_id:    {:02X?}", &packet[1..5]);
+        println!("  offset:       {:02X}", packet[5]);
+        println!("  msg_num:      {:02X?}", &packet[6..10]);
+        println!("  circuit_code: {:02X?}", &packet[10..14]);
+        println!("  session_id:   {:02X?}", &packet[14..30]);
+        println!("  agent_id:     {:02X?}", &packet[30..46]);
+        println!("  full:         {:02X?}", packet);
         self.send_to(&packet, &self.sim_addr).await
     }
 
     /// Log incoming LLUDP packets (for UseCircuitCode response and others)
-    pub async fn recv_lludp_packet(&self, timeout_ms: u64) -> std::io::Result<Option<(crate::networking::protocol::lludp::LluPacket, std::net::SocketAddr)>> {
+    pub async fn recv_lludp_packet(&self, timeout_ms: u64) -> std::io::Result<Option<(LluPacket, std::net::SocketAddr)>> {
         let mut buf = BytesMut::with_capacity(1500);
         buf.resize(1500, 0);
         match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), self.socket.recv_from(&mut buf)).await {
             Ok(Ok((len, addr))) => {
                 buf.truncate(len);
-                if let Some(pkt) = crate::networking::protocol::lludp::LluPacket::parse_incoming(&buf) {
+                if let Some(pkt) = LluPacket::parse_incoming(&buf) {
                     println!("[LLUDP IN] msg_id=0x{:04X} seq={:?} from {}: {:02X?}", pkt.message_id, pkt.sequence, addr, &buf);
                     Ok(Some((pkt, addr)))
                 } else {
