@@ -75,9 +75,21 @@ impl UdpTransport {
 
     /// Send a UseCircuitCode packet using the LLUDP binary format (message_template.msg)
     pub async fn send_usecircuitcode_packet_lludp(&self, circuit_code: u32, session_id: uuid::Uuid, agent_id: uuid::Uuid, packet_id: u32) -> std::io::Result<usize> {
-        let packet = build_use_circuit_code_packet(packet_id, circuit_code, session_id, agent_id);
+        // Build the original (uncompressed) payload
+        let mut original_buf = Vec::new();
+        let mut flags: u8 = 0x01; // RELIABLE | Low frequency
+        original_buf.push(flags); // 1 byte flags (will be updated if zerocoding is used)
+        original_buf.extend_from_slice(&packet_id.to_be_bytes()); // 4 bytes packet id
+        let offset: u8 = 0x00; // no extra header
+        original_buf.push(offset); // 1 byte offset
+        original_buf.extend_from_slice(&[0xFF, 0xFF, 0x00, 0x03]); // 4 bytes message number
+        original_buf.extend_from_slice(&circuit_code.to_be_bytes()); // 4 bytes circuit code
+        original_buf.extend_from_slice(session_id.as_bytes()); // 16 bytes session id
+        original_buf.extend_from_slice(agent_id.as_bytes()); // 16 bytes agent id
+        // Build the zerocoded packet
+        let packet = build_use_circuit_code_packet(circuit_code, session_id, agent_id, false); // zerocode_enabled = false for UseCircuitCode
         // Debug print for troubleshooting (matches udp_test)
-        println!("[LLUDP OUT] UseCircuitCode (Low frequency) seq={} to {}:", packet_id, self.sim_addr);
+        println!("[LLUDP OUT] UseCircuitCode (Low frequency, zerocoded) seq={} to {}:", packet_id, self.sim_addr);
         println!("  flags:        {:02X}", packet[0]);
         println!("  packet_id:    {:02X?}", &packet[1..5]);
         println!("  offset:       {:02X}", packet[5]);
@@ -86,6 +98,10 @@ impl UdpTransport {
         println!("  session_id:   {:02X?}", &packet[14..30]);
         println!("  agent_id:     {:02X?}", &packet[30..46]);
         println!("  full:         {:02X?}", packet);
+        // Decode the zerocoded payload (excluding the flags byte)
+        let decoded = crate::utils::lludp::zerodecode(&packet[1..]);
+        println!("[DEBUG] Decoded zerocoded payload: {:02X?}", decoded);
+        println!("[DEBUG] Original payload:         {:02X?}", &original_buf[1..]);
         self.send_to(&packet, &self.sim_addr).await
     }
 
