@@ -175,18 +175,22 @@ pub fn show_main_window(ctx: &egui::Context, ui_state: &mut UiState) {
                     let session_info = session_info.clone();
                     let ui_event_tx = ui_state.ui_event_tx.clone();
                     // --- Coordination channels ---
-                    let (udp_handshake_tx, mut udp_handshake_rx) = oneshot::channel();
-                    let (eq_ready_tx, mut eq_ready_rx) = oneshot::channel();
+                    let (udp_handshake_tx, mut udp_handshake_rx) = oneshot::channel::<()>();
+                    let (eq_ready_tx, mut eq_ready_rx) = oneshot::channel::<()>();
                     // --- Start EQ polling ---
                     let eq_caps_info = session_info.clone();
                     let eq_proxy_settings = proxy_settings.clone();
                     let eq_ui_event_tx = ui_event_tx.clone();
+                    let udp_connect_tx2 = udp_connect_tx.clone();
+                    let session_udp_port2 = session_udp_port;
+                    let proxy_settings2 = proxy_settings.clone();
+                    let session_info2 = session_info.clone();
                     tokio::spawn(async move {
                         let mut capabilities = eq_caps_info.capabilities.clone();
                         if capabilities.is_none() {
                             match crate::networking::session::fetch_seed_capabilities(
                                 &eq_caps_info.seed_capability,
-                                session_udp_port,
+                                session_udp_port2,
                                 Some(&eq_proxy_settings),
                                 eq_caps_info.session_cookie.as_deref(),
                             ).await {
@@ -201,44 +205,66 @@ pub fn show_main_window(ctx: &egui::Context, ui_state: &mut UiState) {
                         if let Some(caps) = capabilities {
                             let mut eq_ready_tx = Some(eq_ready_tx);
                             let eq_ui_event_tx = eq_ui_event_tx.clone();
-                            let _ = crate::networking::session::poll_event_queue(&caps, session_udp_port, Some(&eq_proxy_settings), move |event_xml| {
+                            let udp_connect_tx2 = udp_connect_tx2.clone();
+                            let proxy_settings2 = proxy_settings2.clone();
+                            let session_info2 = session_info2.clone();
+                            let mut udp_socket_opened = false;
+                            let mut udp_circuit_mutex: Option<std::sync::Arc<tokio::sync::Mutex<Circuit>>> = None;
+                            let _ = crate::networking::session::poll_event_queue(&caps, session_udp_port2, Some(&eq_proxy_settings), move |event_xml| {
+                                // Forward all events to UI as before
                                 let _ = eq_ui_event_tx.send(crate::ui::UiEvent::AgentStateUpdate(event_xml.clone()));
-                                if (event_xml.contains("EnableSimulator") || event_xml.contains("RegionHandshake")) {
+                                // Look for sim address messages
+                                if !udp_socket_opened {
+                                    if let Some((ip, port)) = parse_sim_address_from_event(&event_xml) {
+                                        // Open UDP socket and start handshake
+                                        let sim_addr = match ip.parse() {
+                                            Ok(ip) => std::net::SocketAddr::new(ip, port),
+                                            Err(_) => return,
+                                        };
+                                        let udp_tx = udp_connect_tx2.clone();
+                                        let proxy_settings = proxy_settings2.clone();
+                                        let session_info = session_info2.clone();
+                                        let session_udp_port = session_udp_port2;
+                                        tokio::spawn(async move {
+                                            match crate::networking::transport::UdpTransport::new(session_udp_port, sim_addr, Some(&proxy_settings)).await {
+                                                Ok(mut udp) => {
+                                                    let session_id = uuid::Uuid::parse_str(&session_info.session_id).unwrap_or_default();
+                                                    let agent_id = uuid::Uuid::parse_str(&session_info.agent_id).unwrap_or_default();
+                                                    let circuit_code = session_info.circuit_code;
+                                                    // Create Circuit and start handshake as before
+                                                    let agent_state = std::sync::Arc::new(tokio::sync::Mutex::new(crate::networking::circuit::AgentState {
+                                                        position: (0.0, 0.0, 0.0),
+                                                        camera_at: (0.0, 0.0, 0.0),
+                                                        camera_eye: (0.0, 0.0, 0.0),
+                                                        controls: 0,
+                                                    }));
+                                                    let mut circuit = crate::networking::circuit::Circuit::new_with_transport(
+                                                        std::sync::Arc::new(tokio::sync::Mutex::new(udp)),
+                                                        agent_state
+                                                    ).await.unwrap();
+                                                    // Start handshake
+                                                    circuit.advance_handshake(agent_id, session_id, circuit_code, (0.0,0.0,0.0), (0.0,0.0,0.0), [207360.0, 165376.0, 33075.19921875, 33075.19921875, 682700.75, 682700.75, 269312.0], 0, 0, (0.0,0.0,0.0), (0.0,0.0,0.0)).await;
+                                                    circuit.advance_handshake(agent_id, session_id, circuit_code, (0.0,0.0,0.0), (0.0,0.0,0.0), [207360.0, 165376.0, 33075.19921875, 33075.19921875, 682700.75, 682700.75, 269312.0], 0, 0, (0.0,0.0,0.0), (0.0,0.0,0.0)).await;
+                                                    // Start receive loop
+                                                    let circuit_mutex = std::sync::Arc::new(tokio::sync::Mutex::new(circuit));
+                                                    let _ = udp_tx.send(UdpConnectResult { result: Ok(circuit_mutex.clone()) });
+                                                }
+                                                Err(e) => {
+                                                    let _ = udp_tx.send(UdpConnectResult { result: Err(format!("Failed to bind UDP socket: {e}")) });
+                                                }
+                                            }
+                                        });
+                                        udp_socket_opened = true;
+                                    }
+                                }
+                                // Optionally, signal EQ ready if region handshake or enable simulator
+                                if event_xml.contains("EnableSimulator") || event_xml.contains("RegionHandshake") {
                                     if let Some(tx) = eq_ready_tx.take() {
                                         let _ = tx.send(());
                                     }
                                 }
                             }).await;
                         }
-                    });
-                    // --- Start UDP handshake ---
-                    let udp_connect_tx2 = udp_connect_tx.clone();
-                    let udp_handshake_tx2: tokio::sync::oneshot::Sender<()> = udp_handshake_tx;
-                    tokio::spawn(async move {
-                        let sim_addr = SocketAddr::new(session_info.sim_ip.parse().unwrap(), session_info.sim_port);
-                        let local_udp_port = session_udp_port;
-                        let udp_tx = udp_connect_tx2;
-                        let proxy_settings = proxy_settings;
-                        let session_info = session_info;
-                            match crate::networking::transport::UdpTransport::new(local_udp_port, sim_addr, Some(&proxy_settings)).await {
-                            Ok(mut udp) => {
-                                    // --- Begin handshake: strictly follow message_template.msg protocol ---
-                                    let session_id = uuid::Uuid::parse_str(&session_info.session_id).unwrap_or_default();
-                                    let agent_id = uuid::Uuid::parse_str(&session_info.agent_id).unwrap_or_default();
-                                    let circuit_code = session_info.circuit_code;
-                                // Handshake is now managed by Circuit state machine
-                                }
-                                Err(e) => {
-                                    let _ = udp_tx.send(UdpConnectResult { result: Err(format!("Failed to bind UDP socket: {e}")) });
-                            }
-                        }
-                    });
-                    // --- Wait for both handshake and EQ ready, then set InWorld ---
-                    let ui_event_tx2 = ui_state.ui_event_tx.clone();
-                    tokio::spawn(async move {
-                        let _ = udp_handshake_rx.await;
-                        let _ = eq_ready_rx.await;
-                        let _ = ui_event_tx2.send(crate::ui::UiEvent::InWorldReady);
                     });
                 } else {
                     ui_state.udp_progress = UdpConnectionProgress::Error("Invalid sim IP/port".to_string());
@@ -709,4 +735,54 @@ pub async fn connect_leap_bridge(host: &str, port: u16) -> std::io::Result<tokio
     // Example: let stream = tokio::net::TcpStream::connect((host, port)).await?;
     // For now, just connect and return the stream
     tokio::net::TcpStream::connect((host, port)).await
+}
+
+// Helper function to parse sim address from event XML
+fn parse_sim_address_from_event(xml: &str) -> Option<(String, u16)> {
+    if let Ok(doc) = roxmltree::Document::parse(xml) {
+        // Find the event type
+        let mut event_type = None;
+        let mut sim_ip = None;
+        let mut sim_port = None;
+        // Look for <key>message</key><string>...</string>
+        let mut last_key = None;
+        for node in doc.descendants() {
+            if node.has_tag_name("key") {
+                last_key = node.text();
+            } else if let Some(key) = last_key {
+                if key == "message" && node.has_tag_name("string") {
+                    event_type = node.text();
+                }
+                if key == "body" && node.has_tag_name("map") {
+                    // Entering the body map
+                    // For EstablishAgentCommunication: look for sim-ip-and-port
+                    for (k, v) in node.children().collect::<Vec<_>>().chunks(2).filter(|c| c.len() == 2).map(|c| (c[0].text(), &c[1])) {
+                        if let Some("sim-ip-and-port") = k {
+                            if let Some(addr) = v.text() {
+                                let mut parts = addr.split(':');
+                                if let (Some(ip), Some(port)) = (parts.next(), parts.next()) {
+                                    if let Ok(port) = port.parse() {
+                                        return Some((ip.to_string(), port));
+                                    }
+                                }
+                            }
+                        }
+                        // For TeleportFinish/CrossedRegion: look for SimIP and SimPort
+                        if let Some("SimIP") = k {
+                            sim_ip = v.text().map(|s| s.to_string());
+                        }
+                        if let Some("SimPort") = k {
+                            sim_port = v.text().and_then(|s| s.parse().ok());
+                        }
+                    }
+                }
+                last_key = None;
+            }
+        }
+        // If we found SimIP and SimPort, return them
+        if let (Some(ip), Some(port)) = (sim_ip, sim_port) {
+            return Some((ip, port));
+        }
+    }
+    None
 }
