@@ -233,7 +233,7 @@ pub fn build_complete_agent_movement_packet(
     buf.extend_from_slice(&[0xFF, 0xFF, 0x00, 0xF9]); // 4 bytes message number (CompleteAgentMovement)
     buf.extend_from_slice(agent_id.as_bytes()); // 16 bytes agent id
     buf.extend_from_slice(session_id.as_bytes()); // 16 bytes session id
-    buf.extend_from_slice(&circuit_code.to_be_bytes()); // 4 bytes circuit code (big-endian)
+    buf.extend_from_slice(&circuit_code.to_le_bytes()); // 4 bytes circuit code (big-endian)
     // No position/look_at or extra fields
     if cfg!(debug_assertions) {
         let id = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]);
