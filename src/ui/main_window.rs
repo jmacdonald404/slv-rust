@@ -324,16 +324,23 @@ pub fn show_main_window(ctx: &egui::Context, ui_state: &mut UiState) {
                             let _ = world_entry_tx.send(UdpConnectResult { result: Ok(circuit_mutex_clone.clone()) });
                             // --- Region Handshake sequence ---
                             let mut circuit = circuit_mutex_clone.lock().await;
-                            // Wait for RegionHandshake
-                            if let Ok((_header, msg, addr)) = circuit.recv_message().await {
-                                if let Message::RegionHandshake { .. } = msg {
+                            // Wait for RegionHandshake (loop until received)
+                            let mut region_handshake_received = false;
+                            while !region_handshake_received {
+                                match circuit.recv_message().await {
+                                    Ok((_header, msg, addr)) => {
+                                        match msg {
+                                            Message::RegionHandshake { .. } => {
                                     // Send RegionHandshakeReply
                                     let reply = Message::RegionHandshakeReply {
                                         agent_id: session_info.as_ref().map(|s| s.agent_id.clone()).unwrap_or_default(),
                                         session_id: session_info.as_ref().map(|s| s.session_id.clone()).unwrap_or_default(),
                                         flags: 0x07, // SUPPORTS_SELF_APPEARANCE | VOCACHE_CULLING_ENABLED (example)
                                     };
-                                    let _ = circuit.send_message(&reply, &addr).await;
+                                                match circuit.send_message(&reply, &addr).await {
+                                                    Ok(_) => println!("[DEBUG] Sent RegionHandshakeReply"),
+                                                    Err(e) => eprintln!("[ERROR] Failed to send RegionHandshakeReply: {e}"),
+                                                }
                                     // Send AgentThrottle
                                     let throttle = Message::AgentThrottle {
                                         agent_id: session_info.as_ref().map(|s| s.agent_id.clone()).unwrap_or_default(),
@@ -352,6 +359,17 @@ pub fn show_main_window(ctx: &egui::Context, ui_state: &mut UiState) {
                                         controls: 0,
                                     };
                                     let _ = circuit.send_message(&update, &addr).await;
+                                                region_handshake_received = true;
+                                            }
+                                            other => {
+                                                println!("[DEBUG] Received message before RegionHandshake: {:?}", other);
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("[ERROR] UDP receive error while waiting for RegionHandshake: {e}");
+                                        break;
+                                    }
                                 }
                             }
                             // --- Fetch seed capabilities and start event queue polling ---

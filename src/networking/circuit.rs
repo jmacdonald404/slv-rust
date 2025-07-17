@@ -125,12 +125,18 @@ impl Circuit {
                                     if !matches!(received_message, Message::KeepAlive) {
                                         let ack_message = Message::Ack { sequence_id: header.sequence_id };
                                         let ack_header = PacketHeader { sequence_id: 0, flags: 0 };
-                                        if let Ok(encoded_ack) = MessageCodec::encode(&ack_header, &ack_message) {
-                                            if encoded_ack.len() < 7 {
-                                                tracing::warn!("[BUG] Would send ACK packet < 7 bytes ({} bytes): {:02X?}. Skipping.", encoded_ack.len(), encoded_ack);
-                                            } else {
-                                                let _ = transport_locked.send_to(&encoded_ack, &addr).await;
-                                            }
+                                        // Manual encoding for ACK message
+                                        let mut ack_packet = Vec::new();
+                                        let flags: u8 = 0x00; // Not reliable, not zerocoded
+                                        ack_packet.push(flags);
+                                        ack_packet.extend_from_slice(&ack_header.sequence_id.to_be_bytes());
+                                        ack_packet.push(0x00); // offset
+                                        ack_packet.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]); // message number for ACK
+                                        ack_packet.extend_from_slice(&header.sequence_id.to_be_bytes()); // ACKed sequence id
+                                        if ack_packet.len() < 7 {
+                                            tracing::warn!("[BUG] Would send ACK packet < 7 bytes ({} bytes): {:02X?}. Skipping.", ack_packet.len(), ack_packet);
+                                        } else {
+                                            let _ = transport_locked.send_to(&ack_packet, &addr).await;
                                         }
                                     }
                                     for (h, m, a) in messages_to_send {
@@ -213,15 +219,29 @@ impl Circuit {
             flags: 0, // TODO: Define flags for ACKs, etc.
         };
         self.next_sequence_number += 1;
-        let encoded = MessageCodec::encode(&header, message)?;
-
+        // Manual encoding for each message type
+        let encoded = match message {
+            Message::Ack { sequence_id } => {
+                let mut ack_packet = Vec::new();
+                let flags: u8 = 0x00;
+                ack_packet.push(flags);
+                ack_packet.extend_from_slice(&header.sequence_id.to_be_bytes());
+                ack_packet.push(0x00);
+                ack_packet.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+                ack_packet.extend_from_slice(&sequence_id.to_be_bytes());
+                ack_packet
+            },
+            // TODO: Add manual encoding for other message types as needed
+            _ => {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "send_message: unsupported message type for manual encoding"));
+            }
+        };
         // Store message for retransmission
         let mut unacked_messages = self.unacked_messages.lock().await;
         unacked_messages.insert(
             header.sequence_id,
             (message.clone(), Instant::now(), 0, target.clone(), encoded.clone()),
         );
-
         let mut transport = self.transport.lock().await;
         transport.send_to(&encoded, target).await
     }

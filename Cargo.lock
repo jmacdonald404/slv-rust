@@ -5537,6 +5537,7 @@ dependencies = [
  "bincode 2.0.1",
  "bitflags 2.9.1",
  "bytemuck",
+ "byteorder",
  "bytes",
  "cgmath",
  "collada",
