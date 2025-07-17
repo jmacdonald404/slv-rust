@@ -589,7 +589,7 @@ where
         None => return Err("EventQueueGet capability not found".to_string()),
     };
     let client = build_proxied_client(proxy_settings);
-    let mut ack: Option<i32> = None;
+    let mut ack: Option<i32> = Some(0); // Always send <ack>0> in first request for Hippolyzer compatibility
     loop {
         let payload = if let Some(ack_val) = ack {
             format!(r#"<?xml version="1.0" ?><llsd><map><key>ack</key><integer>{}</integer><key>done</key><boolean>false</boolean></map></llsd>"#, ack_val)
@@ -610,11 +610,25 @@ where
         if !status.is_success() {
             return Err(format!("EventQueueGet failed: HTTP {}", status));
         }
-        // For now, just pass the raw XML to the callback
+        // Parse <ack> from the response XML, if present
+        let mut new_ack: Option<i32> = None;
+        if let Ok(doc) = roxmltree::Document::parse(&text) {
+            for node in doc.descendants() {
+                if node.has_tag_name("key") && node.text() == Some("ack") {
+                    if let Some(val_node) = node.next_sibling_element() {
+                        if val_node.has_tag_name("integer") {
+                            if let Some(val_text) = val_node.text() {
+                                if let Ok(val) = val_text.parse::<i32>() {
+                                    new_ack = Some(val);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        ack = new_ack;
         on_event(text.clone());
-        // TODO: Parse LLSD XML, extract ack if present, and handle events
-        // For now, break if done (should loop forever in real client)
-        // break;
         // Simulate long-polling delay
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
