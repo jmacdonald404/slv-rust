@@ -31,6 +31,12 @@ pub enum Message {
     KeepAlive,
     Logout,
     Ack { sequence_id: u32 },
+    // IMPORTANT NOTE: UseCircuitCode Packet Structure
+    // This message variant defines the canonical structure for the UseCircuitCode packet.
+    // It includes agent_id (String, derived from Uuid), session_id (String, derived from Uuid),
+    // and circuit_code (u32). This structure is a critical source of truth for how
+    // new circuit codes are communicated and should be referenced for any related
+    // encoding/decoding or message additions.
     UseCircuitCode {
         agent_id: String,
         session_id: String,
@@ -49,6 +55,12 @@ pub enum Message {
         channel: String, // e.g., "local", "IM", "group" (stub for now)
     },
     // Add more message types as needed
+    // IMPORTANT NOTE: CompleteAgentMovement Packet Structure
+    // This message variant defines the canonical structure for the CompleteAgentMovement packet.
+    // It includes agent_id (String, derived from Uuid), session_id (String, derived from Uuid),
+    // circuit_code (u32), position ((f32, f32, f32)), and look_at ((f32, f32, f32)).
+    // This structure is a critical source of truth for agent position and orientation updates
+    // and should be referenced for any related encoding/decoding or message additions.
     CompleteAgentMovement {
         agent_id: String,
         session_id: String,
@@ -80,5 +92,12 @@ pub enum Message {
         session_id: String,
         circuit_code: u32,
         throttle: [f32; 7],
+    },
+    AgentDataUpdate {
+        agent_id: String,
+        // Placeholder for actual fields
+    },
+    HealthMessage {
+        // Placeholder for actual fields
     },
 }

@@ -426,6 +426,14 @@ impl Circuit {
                 // Only log receipt for debugging.
                 info!("[UDP] Received KeepAlive from {} (no response sent)", addr);
             }
+            Message::AgentDataUpdate { .. } => {
+                info!("[UDP] Received AgentDataUpdate from {}", addr);
+                // ACK would be handled by the main loop, but specific logic could go here.
+            }
+            Message::HealthMessage { .. } => {
+                info!("[UDP] Received HealthMessage from {}", addr);
+                // ACK would be handled by the main loop.
+            }
             _ => {}
         }
     }

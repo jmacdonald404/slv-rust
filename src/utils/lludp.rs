@@ -228,18 +228,17 @@ pub fn build_complete_agent_movement_packet(
     let mut buf = Vec::new();
     let flags: u8 = 0x40; // RELIABLE, unencoded
     buf.push(flags); // 1 byte flags
-    buf.extend_from_slice(&packet_id.to_be_bytes()); // 4 bytes packet id, big-endian
+    buf.extend_from_slice(&packet_id.to_be_bytes()); // 4 bytes packet id
     buf.push(0x00); // 1 byte offset, always 0
-    buf.extend_from_slice(&[0xFF, 0xFF, 0x00, 0xF9]); // 4 bytes message number (CompleteAgentMovement)
+    buf.extend_from_slice(&[0xFF, 0xFF, 0x00, 0xF9]); // 4 bytes message number (CompleteAgentMovement is Low 249)
     buf.extend_from_slice(agent_id.as_bytes()); // 16 bytes agent id
     buf.extend_from_slice(session_id.as_bytes()); // 16 bytes session id
-    buf.extend_from_slice(&circuit_code.to_le_bytes()); // 4 bytes circuit code (big-endian)
-    // No position/look_at or extra fields
+    buf.extend_from_slice(&circuit_code.to_le_bytes()); // 4 bytes circuit code
     if cfg!(debug_assertions) {
-        let id = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]);
+        let id = u32::from_le_bytes([buf[1], buf[2], buf[3], buf[4]]);
         println!("[DEBUG] CompleteAgentMovement Packet:");
         println!("  flags:        {:02X}", buf[0]);
-        println!("  packet_id:    {} (be: {:02X?})", id, &buf[1..5]);
+        println!("  packet_id:    {} (le: {:02X?})", id, &buf[1..5]);
         println!("  offset:       {:02X}", buf[5]);
         println!("  msg_num:      {:02X?}", &buf[6..10]);
         println!("  agent_id:     {:02X?}", &buf[10..26]);
@@ -250,7 +249,7 @@ pub fn build_complete_agent_movement_packet(
     buf
 }
 
-/// Build a RegionHandshakeReply LLUDP packet (Low frequency, ID 149) as RELIABLE and unencoded
+/// Build a RegionHandshakeReply LLUDP packet (High frequency, ID 6) as RELIABLE and unencoded
 pub fn build_region_handshake_reply_packet(
     agent_id: Uuid,
     session_id: Uuid,
@@ -262,15 +261,15 @@ pub fn build_region_handshake_reply_packet(
     buf.push(flags_byte);
     buf.extend_from_slice(&packet_id.to_be_bytes());
     buf.push(0x00);
-    buf.extend_from_slice(&[0xFF, 0xFF, 0x00, 0x95]); // message number
+    buf.extend_from_slice(&[0x00, 0x00, 0x00, 0x06]); // message number (High Freq 6)
     buf.extend_from_slice(agent_id.as_bytes());
     buf.extend_from_slice(session_id.as_bytes());
-    buf.extend_from_slice(&flags.to_be_bytes());
+    buf.extend_from_slice(&flags.to_le_bytes());
     if cfg!(debug_assertions) {
-        let id = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]);
+        let id = u32::from_le_bytes([buf[1], buf[2], buf[3], buf[4]]);
         println!("[DEBUG] RegionHandshakeReply Packet:");
         println!("  flags:        {:02X}", buf[0]);
-        println!("  packet_id:    {} (be: {:02X?})", id, &buf[1..5]);
+        println!("  packet_id:    {} (le: {:02X?})", id, &buf[1..5]);
         println!("  offset:       {:02X}", buf[5]);
         println!("  msg_num:      {:02X?}", &buf[6..10]);
         println!("  agent_id:     {:02X?}", &buf[10..26]);
