@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use md5;
 use std::fs;
 use reqwest::Certificate;
+use std::sync::Arc;
 
 #[derive(Serialize, Debug)]
 pub struct LoginRequest {
@@ -92,6 +93,18 @@ pub struct LoginSessionInfo {
     pub capabilities: Option<Capabilities>,
     // TODO: Add more fields as needed (inventory-skeleton, gestures, event_categories, etc.)
     pub session_cookie: Option<String>, // Stores agni_sl_session_id for later use
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandshakeState {
+    NotStarted,
+    SentUseCircuitCode,
+    SentCompleteAgentMovement,
+    ReceivedRegionHandshake,
+    SentRegionHandshakeReply,
+    SentAgentThrottle,
+    SentFirstAgentUpdate,
+    HandshakeComplete,
 }
 
 fn build_login_xml(req: &LoginRequest) -> String {
@@ -282,7 +295,8 @@ pub async fn login_to_secondlife(grid_uri: &str, req: &LoginRequest, proxy_setti
     );
     eprintln!("[LOGIN XML BODY]\n{}", xml_body);
     let client = build_proxied_client(proxy_settings);
-    println!("[HTTP DEBUG] Client pointer (before login POST): {:p}", &client);
+    println!("[DEBUG] Login POST will use proxy: {:?}", proxy_settings);
+    println!("[DEBUG] Login POST URL: {}", grid_uri);
     // --- Actual login POST ---
     let mut req_builder = client
         .post(grid_uri)
@@ -294,6 +308,10 @@ pub async fn login_to_secondlife(grid_uri: &str, req: &LoginRequest, proxy_setti
         .header("Connection", "keep-alive")
         .header("Keep-alive", "300");
     let request = req_builder.body(xml_body.clone()).build().map_err(|e| format!("Request build error: {e}"))?;
+    println!("[DEBUG] Login POST headers:");
+    for (k, v) in request.headers().iter() {
+        println!("  {}: {:?}", k, v);
+    }
     log_http_request("POST", grid_uri, proxy_settings, request.headers(), Some(&xml_body));
     let res = client.execute(request).await.map_err(|e| format!("HTTP error: {e}"))?;
     let status = res.status();
@@ -314,26 +332,7 @@ pub async fn login_to_secondlife(grid_uri: &str, req: &LoginRequest, proxy_setti
     // eprintln!("[DEBUG] Full login response XML:\n{}", text);
     match parse_login_response(&text) {
         Ok(info) => {
-            // Immediately attempt UDP connection and UseCircuitCode send
-            let sim_addr = format!("{}:{}", info.sim_ip, info.sim_port).parse().unwrap();
-            let session_id = uuid::Uuid::parse_str(&info.session_id).unwrap();
-            let agent_id = uuid::Uuid::parse_str(&info.agent_id).unwrap();
-            let circuit_code = info.circuit_code;
-            // Use a default local port (0 = OS assigns)
-            let udp_port = 0;
-            // Spawn a task to send UseCircuitCode (tokio context assumed)
-            tokio::spawn(async move {
-                match crate::networking::transport::UdpTransport::new(udp_port, sim_addr, None).await {
-                    Ok(udp) => {
-                        let _ = udp.send_usecircuitcode_packet_lludp(circuit_code, session_id, agent_id, 1).await;
-                        println!("[LOGIN] UseCircuitCode packet sent to simulator at {}", sim_addr);
-                    }
-                    Err(e) => {
-                        eprintln!("[LOGIN ERROR] Failed to create UDP transport or send UseCircuitCode: {}", e);
-                    }
-                }
-            });
-            // --- OpenID/capabilities step is now non-blocking and errors are only logged ---
+            // --- OpenID/capabilities step: MUST complete OpenID POST before UDP handshake ---
             if let Some(openid_token) = extract_openid_token(&text) {
                 eprintln!("[DEBUG] Found openid_token: {}", openid_token);
                 let openid_token = openid_token.replace("&amp;", "&");
@@ -363,6 +362,72 @@ pub async fn login_to_secondlife(grid_uri: &str, req: &LoginRequest, proxy_setti
                 }
                 // Capabilities POST and my.secondlife.com GET are also non-blocking/skipped for now
             }
+            // After parsing login response and extracting seed_capability
+            // Fetch seed capabilities if not present
+            let mut capabilities = info.capabilities.clone();
+            if capabilities.is_none() {
+                match fetch_seed_capabilities(
+                    &info.seed_capability,
+                    udp_port,
+                    proxy_settings,
+                    info.session_cookie.as_deref(),
+                ).await {
+                    Ok(caps) => {
+                        capabilities = Some(caps);
+                    }
+                    Err(e) => {
+                        eprintln!("[CAPS] Failed to fetch seed capabilities: {}", e);
+                    }
+                }
+            }
+            // (Event queue polling should be started from the UI code after login succeeds)
+            // --- Now start UDP handshake (after OpenID POST is done) ---
+            let sim_addr = format!("{}:{}", info.sim_ip, info.sim_port).parse().unwrap();
+            let session_id = uuid::Uuid::parse_str(&info.session_id).unwrap();
+            let agent_id = uuid::Uuid::parse_str(&info.agent_id).unwrap();
+            let circuit_code = info.circuit_code;
+            // Use a default local port (0 = OS assigns)
+            let udp_port = 0;
+            let mut udp_transport = crate::networking::transport::UdpTransport::new(udp_port, sim_addr, proxy_settings).await.map_err(|e| format!("Failed to create UDP transport: {}", e))?;
+
+            // Create agent_state for dynamic updates
+            let agent_state = Arc::new(tokio::sync::Mutex::new(crate::networking::circuit::AgentState {
+                position: (0.0, 0.0, 0.0),
+                camera_at: (0.0, 0.0, 0.0),
+                camera_eye: (0.0, 0.0, 0.0),
+                controls: 0,
+            }));
+            // Create a Circuit for handshake management
+            let mut circuit = crate::networking::circuit::Circuit::new_with_transport(
+                Arc::new(tokio::sync::Mutex::new(udp_transport)),
+                agent_state
+            ).await.map_err(|e| e.to_string())?;
+            let position = (0.0, 0.0, 0.0);
+            let look_at = (0.0, 0.0, 0.0);
+            let throttle = [207360.0, 165376.0, 33075.19921875, 33075.19921875, 682700.75, 682700.75, 269312.0];
+            let flags = 0; // Default flags
+            let controls = 0; // Default controls
+            let camera_at = (0.0, 0.0, 0.0);
+            let camera_eye = (0.0, 0.0, 0.0);
+
+            tokio::spawn(async move {
+                // Progress through handshake states
+                circuit.advance_handshake(agent_id, session_id, circuit_code, position, look_at, throttle, flags, controls, camera_at, camera_eye).await;
+                circuit.advance_handshake(agent_id, session_id, circuit_code, position, look_at, throttle, flags, controls, camera_at, camera_eye).await;
+                // Start the receive loop to handle all incoming messages and handshake progression
+                circuit.run_receive_loop(
+                    agent_id,
+                    session_id,
+                    circuit_code,
+                    position,
+                    look_at,
+                    throttle,
+                    flags,
+                    controls,
+                    camera_at,
+                    camera_eye
+                ).await;
+            });
             Ok(info)
         }
         Err(e) => Err(e),

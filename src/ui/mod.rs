@@ -105,6 +105,7 @@ pub enum UiEvent {
         message: String,
     },
     AgentStateUpdate(String),
+    InWorldReady, // <-- Add this
     // Add more events as needed
 }
 

@@ -26,6 +26,7 @@ use roxmltree::Document;
 use rand::Rng;
 use std::net::UdpSocket as StdUdpSocket;
 use crate::utils::lludp::{LluPacket, LluPacketFlags};
+use tokio::sync::oneshot;
 
 fn render_tos_html(ui: &mut Ui, html: &str) {
     let document = Html::parse_document(html);
@@ -159,6 +160,11 @@ pub fn show_main_window(ctx: &egui::Context, ui_state: &mut UiState) {
                 ui_state.login_progress = LoginProgress::Success;
                 ui_state.login_ui_state = LoginUiState::MainApp;
                 ui_state.login_state.session_info = Some(session_info.clone());
+                // --- Wait for login HTTP and OpenID POST to complete before UDP/EQ ---
+                println!("[DEBUG] Login HTTP and OpenID POST complete. Preparing to start UDP handshake and EQ polling...");
+                // Add a small delay to ensure proxy can process login
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                println!("[DEBUG] Starting UDP handshake and EQ polling now.");
                 // Start UDP connection
                 if let (Ok(ip), port) = (session_info.sim_ip.parse(), session_info.sim_port) {
                     let sim_addr = SocketAddr::new(ip, port);
@@ -167,98 +173,73 @@ pub fn show_main_window(ctx: &egui::Context, ui_state: &mut UiState) {
                     let session_udp_port = ui_state.session_udp_port;
                     let proxy_settings = ui_state.proxy_settings.clone();
                     let session_info = session_info.clone();
-                    let handle = tokio::spawn(async move {
+                    let ui_event_tx = ui_state.ui_event_tx.clone();
+                    // --- Coordination channels ---
+                    let (udp_handshake_tx, mut udp_handshake_rx) = oneshot::channel();
+                    let (eq_ready_tx, mut eq_ready_rx) = oneshot::channel();
+                    // --- Start EQ polling ---
+                    let eq_caps_info = session_info.clone();
+                    let eq_proxy_settings = proxy_settings.clone();
+                    let eq_ui_event_tx = ui_event_tx.clone();
+                    tokio::spawn(async move {
+                        let mut capabilities = eq_caps_info.capabilities.clone();
+                        if capabilities.is_none() {
+                            match crate::networking::session::fetch_seed_capabilities(
+                                &eq_caps_info.seed_capability,
+                                session_udp_port,
+                                Some(&eq_proxy_settings),
+                                eq_caps_info.session_cookie.as_deref(),
+                            ).await {
+                                Ok(caps) => {
+                                    capabilities = Some(caps);
+                                }
+                                Err(e) => {
+                                    eprintln!("[CAPS] Failed to fetch seed capabilities: {}", e);
+                                }
+                            }
+                        }
+                        if let Some(caps) = capabilities {
+                            let mut eq_ready_tx = Some(eq_ready_tx);
+                            let eq_ui_event_tx = eq_ui_event_tx.clone();
+                            let _ = crate::networking::session::poll_event_queue(&caps, session_udp_port, Some(&eq_proxy_settings), move |event_xml| {
+                                let _ = eq_ui_event_tx.send(crate::ui::UiEvent::AgentStateUpdate(event_xml.clone()));
+                                if (event_xml.contains("EnableSimulator") || event_xml.contains("RegionHandshake")) {
+                                    if let Some(tx) = eq_ready_tx.take() {
+                                        let _ = tx.send(());
+                                    }
+                                }
+                            }).await;
+                        }
+                    });
+                    // --- Start UDP handshake ---
+                    let udp_connect_tx2 = udp_connect_tx.clone();
+                    let udp_handshake_tx2: tokio::sync::oneshot::Sender<()> = udp_handshake_tx;
+                    tokio::spawn(async move {
                         let sim_addr = SocketAddr::new(session_info.sim_ip.parse().unwrap(), session_info.sim_port);
                         let local_udp_port = session_udp_port;
-                        let udp_tx = udp_connect_tx;
+                        let udp_tx = udp_connect_tx2;
                         let proxy_settings = proxy_settings;
                         let session_info = session_info;
-                        // Use the session's UDP port for the socket
-                        let socket_result: Result<(), String> = {
                             match crate::networking::transport::UdpTransport::new(local_udp_port, sim_addr, Some(&proxy_settings)).await {
-                                Ok(udp) => {
+                            Ok(mut udp) => {
                                     // --- Begin handshake: strictly follow message_template.msg protocol ---
-                                    // 1. UseCircuitCode (LLUDP binary format) FIRST
-                                    let mut sequence_number = 1u32;
                                     let session_id = uuid::Uuid::parse_str(&session_info.session_id).unwrap_or_default();
                                     let agent_id = uuid::Uuid::parse_str(&session_info.agent_id).unwrap_or_default();
                                     let circuit_code = session_info.circuit_code;
-                                    let _ = udp.send_usecircuitcode_packet_lludp(circuit_code, session_id, agent_id, sequence_number).await;
-                                    println!("[DEBUG] Sent UseCircuitCode (LLUDP) seq={} to {}", sequence_number, sim_addr);
-                                    sequence_number += 1;
-                                    // 2. Wait for CircuitAssigned (0x000A) or UseCircuitCodeReply
-                                    let mut handshake_complete = false;
-                                    let mut attempts = 0;
-                                    while !handshake_complete && attempts < 3 {
-                                        match udp.recv_lludp_packet(200).await {
-                                            Ok(Some((pkt, addr))) => {
-                                                println!("[LLUDP IN] msg_id=0x{:04X} seq={:?} from {}", pkt.message_id, pkt.sequence, addr);
-                                                if pkt.message_id == 0x000A /* CircuitAssigned */ {
-                                                    // Ack the sequence if present
-                                                    if let Some(seq_num) = pkt.sequence {
-                                                        let ack_packet = LluPacket::build_outgoing(0x0000, LluPacketFlags::empty(), None, &seq_num.to_le_bytes());
-                                                        let _ = udp.send_to(&ack_packet, &sim_addr).await;
-                                                        println!("[LLUDP OUT] Sent PacketAck for seq {}", seq_num);
-                                                    }
-                                                    handshake_complete = true;
-                                                    break;
-                                                } else {
-                                                    println!("[LLUDP IN] Unexpected message id 0x{:04X} during handshake", pkt.message_id);
-                                                }
-                                            }
-                                            Ok(None) => {
-                                                // No response, try again
-                                            }
-                                            Err(e) => {
-                                                let _ = udp_tx.send(UdpConnectResult { result: Err(format!("UDP receive error: {e}")) });
-                                                return;
-                                            }
-                                        }
-                                        attempts += 1;
-                                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                                    }
-                                    if handshake_complete {
-                                        // 3. Now send StartPingCheck (0x0040)
-                                        let mut start_ping = bytes::BytesMut::with_capacity(44);
-                                        start_ping.put_u16_le(0x0040); // Message ID
-                                        start_ping.put_u8(0x00); // Flags
-                                        start_ping.put_u32_le(sequence_number); // Sequence
-                                        start_ping.put_u32_le(circuit_code); // circuit_code
-                                        start_ping.put_slice(session_id.as_bytes()); // session_id
-                                        start_ping.put_slice(agent_id.as_bytes()); // agent_id
-                                        println!("[DEBUG] Sending StartPingCheck (0x0040): {:02X?}", &start_ping);
-                                        let result = udp.send_to(&start_ping, &sim_addr).await;
-                                        println!("[DEBUG] Send result for StartPingCheck: {:?}", result);
-                                        // 4. Send PacketAck for StartPingCheck
-                                        let mut packet_ack = bytes::BytesMut::with_capacity(12);
-                                        packet_ack.put_u16_le(0x0000); // Message ID
-                                        packet_ack.put_u8(0x00); // Flags
-                                        packet_ack.put_u32_le(sequence_number); // Sequence
-                                        packet_ack.put_u32_le(sequence_number - 1); // Ack for previous seq
-                                        println!("[DEBUG] Sending PacketAck (0x0000): {:02X?}", &packet_ack);
-                                        let result = udp.send_to(&packet_ack, &sim_addr).await;
-                                        println!("[DEBUG] Send result for PacketAck: {:?}", result);
-                                        // Continue with handshake state machine as before...
-                                        let transport_arc = std::sync::Arc::new(udp);
-                                        let circuit = Circuit::new_with_transport(transport_arc.clone()).await.unwrap();
-                                        let circuit_arc = std::sync::Arc::new(tokio::sync::Mutex::new(circuit));
-                                        let _ = udp_tx.send(UdpConnectResult { result: Ok(circuit_arc) });
-                                    } else {
-                                        let _ = udp_tx.send(UdpConnectResult { result: Err("Handshake timed out after 3 attempts".to_string()) });
-                                    }
-                                    return;
+                                // Handshake is now managed by Circuit state machine
                                 }
                                 Err(e) => {
                                     let _ = udp_tx.send(UdpConnectResult { result: Err(format!("Failed to bind UDP socket: {e}")) });
-                                    Err(format!("Failed to bind UDP socket: {e}"))
-                                }
                             }
-                        };
-                        if let Err(e) = socket_result {
-                            let _ = udp_tx.send(UdpConnectResult { result: Err(e) });
                         }
                     });
-                    ui_state.udp_connect_task = Some(handle);
+                    // --- Wait for both handshake and EQ ready, then set InWorld ---
+                    let ui_event_tx2 = ui_state.ui_event_tx.clone();
+                    tokio::spawn(async move {
+                        let _ = udp_handshake_rx.await;
+                        let _ = eq_ready_rx.await;
+                        let _ = ui_event_tx2.send(crate::ui::UiEvent::InWorldReady);
+                    });
                 } else {
                     ui_state.udp_progress = UdpConnectionProgress::Error("Invalid sim IP/port".to_string());
                 }
@@ -428,6 +409,9 @@ pub fn show_main_window(ctx: &egui::Context, ui_state: &mut UiState) {
             }
             crate::ui::UiEvent::AgentStateUpdate(llsd_xml) => {
                 handle_agent_state_update_event(&llsd_xml, ui_state);
+            }
+            crate::ui::UiEvent::InWorldReady => {
+                ui_state.login_ui_state = LoginUiState::InWorld;
             }
             // Handle other events as needed
         }

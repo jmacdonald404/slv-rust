@@ -47,7 +47,7 @@ fn main() -> eframe::Result<()> {
     // Run the eframe app inside the runtime
     runtime.block_on(async {
         eframe::run_native(
-            &format!("shrekondlyfe rust viewer {}", VERSION),
+            &format!("holy f*ckles it's sonic and knuckles {}", VERSION),
             eframe::NativeOptions::default(),
             Box::new(|_cc| Ok(Box::new(MyApp::default()))),
         )

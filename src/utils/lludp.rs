@@ -138,27 +138,221 @@ pub fn build_use_circuit_code_packet(
     circuit_code: u32,
     session_id: Uuid,
     agent_id: Uuid,
-    _zerocode_enabled: bool, // ignored for UseCircuitCode
+    packet_id: u32,
 ) -> Vec<u8> {
     let mut buf = Vec::new();
     let flags: u8 = 0x40; // RELIABLE, unencoded
     buf.push(flags); // 1 byte flags
-    buf.extend_from_slice(&1u32.to_be_bytes()); // 4 bytes packet id, always 1
+    buf.extend_from_slice(&packet_id.to_be_bytes()); // 4 bytes packet id, big-endian for proxy compatibility
     buf.push(0x00); // 1 byte offset, always 0
     buf.extend_from_slice(&[0xFF, 0xFF, 0x00, 0x03]); // 4 bytes message number (UseCircuitCode)
     buf.extend_from_slice(&circuit_code.to_le_bytes()); // 4 bytes circuit code
     buf.extend_from_slice(session_id.as_bytes()); // 16 bytes session id
     buf.extend_from_slice(agent_id.as_bytes()); // 16 bytes agent id
+    // Debug print for field breakdown
+    if cfg!(debug_assertions) {
+        let id = u32::from_le_bytes([buf[1], buf[2], buf[3], buf[4]]);
+        println!("[DEBUG] UseCircuitCode Packet:");
+        println!("  flags:        {:02X}", buf[0]);
+        println!("  packet_id:    {} (le: {:02X?})", id, &buf[1..5]);
+        println!("  offset:       {:02X}", buf[5]);
+        println!("  msg_num:      {:02X?}", &buf[6..10]);
+        println!("  circuit_code: {:02X?}", &buf[10..14]);
+        println!("  session_id:   {:02X?}", &buf[14..30]);
+        println!("  agent_id:     {:02X?}", &buf[30..46]);
+        println!("  full:         {:02X?}", buf);
+    }
     buf
 }
 
-/// Stub for a generic LLUDP message builder (to be implemented for other message types)
-pub fn build_lludp_packet_stub(
-    _frequency: LLUDPFrequency,
-    _msg_id: u8,
-    _packet_id: u32,
-    _body: &[u8],
+/// Build a generic LLUDP packet.
+pub fn build_lludp_packet(
+    message_id: u16,
+    frequency: LLUDPFrequency,
+    packet_id: u32,
+    reliable: bool,
+    zerocoded: bool,
+    body: &[u8],
 ) -> Vec<u8> {
-    // TODO: Implement frequency encoding and message body packing for arbitrary messages
-    unimplemented!("Generic LLUDP message builder not yet implemented");
+    let mut buf = Vec::new();
+
+    let mut flags: u8 = 0x00;
+    if reliable {
+        flags |= LluPacketFlags::RELIABLE.bits();
+    }
+    if zerocoded {
+        flags |= LluPacketFlags::ZEROCODED.bits();
+    }
+
+    buf.push(flags); // 1 byte flags
+    buf.extend_from_slice(&packet_id.to_le_bytes()); // 4 bytes packet id
+    buf.push(0x00); // 1 byte offset, always 0 for now
+
+    // Message number based on frequency
+    match frequency {
+        LLUDPFrequency::High => {
+            buf.extend_from_slice(&[0x00, 0x00, 0x00]);
+        }
+        LLUDPFrequency::Medium => {
+            buf.extend_from_slice(&[0xFF, 0x00, 0x00]);
+        }
+        LLUDPFrequency::Low => {
+            buf.extend_from_slice(&[0xFF, 0xFF, 0x00]);
+        }
+        LLUDPFrequency::Fixed => {
+            buf.extend_from_slice(&[0xFF, 0xFF, 0xFF]);
+        }
+    }
+    buf.push(message_id as u8); // Last byte of message number
+
+    let mut final_body = body.to_vec();
+    if zerocoded {
+        final_body = zerocode(body);
+    }
+
+    buf.extend_from_slice(&final_body);
+    buf
+}
+
+/// Build a CompleteAgentMovement LLUDP packet (Low frequency, ID 249) as RELIABLE and unencoded (flags = 0x40, no zerocoding)
+/// Per SL protocol and Hippolyzer, only AgentID, SessionID, CircuitCode are included in the AgentData block.
+/// No extra fields or padding.
+pub fn build_complete_agent_movement_packet(
+    agent_id: Uuid,
+    session_id: Uuid,
+    circuit_code: u32,
+    packet_id: u32,
+    _position: (f32, f32, f32), // Ignored for protocol compliance
+    _look_at: (f32, f32, f32),  // Ignored for protocol compliance
+) -> Vec<u8> {
+    let mut buf = Vec::new();
+    let flags: u8 = 0x40; // RELIABLE, unencoded
+    buf.push(flags); // 1 byte flags
+    buf.extend_from_slice(&packet_id.to_be_bytes()); // 4 bytes packet id, big-endian
+    buf.push(0x00); // 1 byte offset, always 0
+    buf.extend_from_slice(&[0xFF, 0xFF, 0x00, 0xF9]); // 4 bytes message number (CompleteAgentMovement)
+    buf.extend_from_slice(agent_id.as_bytes()); // 16 bytes agent id
+    buf.extend_from_slice(session_id.as_bytes()); // 16 bytes session id
+    buf.extend_from_slice(&circuit_code.to_be_bytes()); // 4 bytes circuit code (big-endian)
+    // No position/look_at or extra fields
+    if cfg!(debug_assertions) {
+        let id = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]);
+        println!("[DEBUG] CompleteAgentMovement Packet:");
+        println!("  flags:        {:02X}", buf[0]);
+        println!("  packet_id:    {} (be: {:02X?})", id, &buf[1..5]);
+        println!("  offset:       {:02X}", buf[5]);
+        println!("  msg_num:      {:02X?}", &buf[6..10]);
+        println!("  agent_id:     {:02X?}", &buf[10..26]);
+        println!("  session_id:   {:02X?}", &buf[26..42]);
+        println!("  circuit_code: {:02X?}", &buf[42..46]);
+        println!("  full:         {:02X?}", buf);
+    }
+    buf
+}
+
+/// Build a RegionHandshakeReply LLUDP packet (Low frequency, ID 149) as RELIABLE and unencoded
+pub fn build_region_handshake_reply_packet(
+    agent_id: Uuid,
+    session_id: Uuid,
+    flags: u32,
+    packet_id: u32,
+) -> Vec<u8> {
+    let mut buf = Vec::new();
+    let flags_byte: u8 = 0x40; // RELIABLE, unencoded
+    buf.push(flags_byte);
+    buf.extend_from_slice(&packet_id.to_be_bytes());
+    buf.push(0x00);
+    buf.extend_from_slice(&[0xFF, 0xFF, 0x00, 0x95]); // message number
+    buf.extend_from_slice(agent_id.as_bytes());
+    buf.extend_from_slice(session_id.as_bytes());
+    buf.extend_from_slice(&flags.to_be_bytes());
+    if cfg!(debug_assertions) {
+        let id = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]);
+        println!("[DEBUG] RegionHandshakeReply Packet:");
+        println!("  flags:        {:02X}", buf[0]);
+        println!("  packet_id:    {} (be: {:02X?})", id, &buf[1..5]);
+        println!("  offset:       {:02X}", buf[5]);
+        println!("  msg_num:      {:02X?}", &buf[6..10]);
+        println!("  agent_id:     {:02X?}", &buf[10..26]);
+        println!("  session_id:   {:02X?}", &buf[26..42]);
+        println!("  flags:        {:02X?}", &buf[42..46]);
+        println!("  full:         {:02X?}", buf);
+    }
+    buf
+}
+
+/// Build an AgentThrottle LLUDP packet (Low frequency, ID 81) as RELIABLE and unencoded
+pub fn build_agent_throttle_packet(
+    agent_id: Uuid,
+    session_id: Uuid,
+    circuit_code: u32,
+    throttle: [f32; 7],
+    packet_id: u32,
+) -> Vec<u8> {
+    let mut buf = Vec::new();
+    let flags: u8 = 0x40;
+    buf.push(flags);
+    buf.extend_from_slice(&packet_id.to_be_bytes());
+    buf.push(0x00);
+    buf.extend_from_slice(&[0xFF, 0xFF, 0x00, 0x51]);
+    buf.extend_from_slice(agent_id.as_bytes());
+    buf.extend_from_slice(session_id.as_bytes());
+    buf.extend_from_slice(&circuit_code.to_be_bytes());
+    for v in throttle.iter() {
+        buf.extend_from_slice(&v.to_be_bytes());
+    }
+    if cfg!(debug_assertions) {
+        let id = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]);
+        println!("[DEBUG] AgentThrottle Packet:");
+        println!("  flags:        {:02X}", buf[0]);
+        println!("  packet_id:    {} (be: {:02X?})", id, &buf[1..5]);
+        println!("  offset:       {:02X}", buf[5]);
+        println!("  msg_num:      {:02X?}", &buf[6..10]);
+        println!("  agent_id:     {:02X?}", &buf[10..26]);
+        println!("  session_id:   {:02X?}", &buf[26..42]);
+        println!("  circuit_code: {:02X?}", &buf[42..46]);
+        println!("  throttle:     {:02X?}", &buf[46..74]);
+        println!("  full:         {:02X?}", buf);
+    }
+    buf
+}
+
+/// Build an AgentUpdate LLUDP packet (High frequency, ID 4) as UNRELIABLE and unencoded
+pub fn build_agent_update_packet(
+    agent_id: Uuid,
+    session_id: Uuid,
+    position: (f32, f32, f32),
+    camera_at: (f32, f32, f32),
+    camera_eye: (f32, f32, f32),
+    controls: u32,
+    packet_id: u32,
+) -> Vec<u8> {
+    let mut buf = Vec::new();
+    let flags: u8 = 0x00; // UNRELIABLE, unencoded
+    buf.push(flags);
+    buf.extend_from_slice(&packet_id.to_be_bytes());
+    buf.push(0x00);
+    buf.extend_from_slice(&[0x00, 0x00, 0x00, 0x04]); // message number (high frequency)
+    buf.extend_from_slice(agent_id.as_bytes());
+    buf.extend_from_slice(session_id.as_bytes());
+    for v in [position.0, position.1, position.2, camera_at.0, camera_at.1, camera_at.2, camera_eye.0, camera_eye.1, camera_eye.2].iter() {
+        buf.extend_from_slice(&v.to_be_bytes());
+    }
+    buf.extend_from_slice(&controls.to_be_bytes());
+    if cfg!(debug_assertions) {
+        let id = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]);
+        println!("[DEBUG] AgentUpdate Packet:");
+        println!("  flags:        {:02X}", buf[0]);
+        println!("  packet_id:    {} (be: {:02X?})", id, &buf[1..5]);
+        println!("  offset:       {:02X}", buf[5]);
+        println!("  msg_num:      {:02X?}", &buf[6..10]);
+        println!("  agent_id:     {:02X?}", &buf[10..26]);
+        println!("  session_id:   {:02X?}", &buf[26..42]);
+        println!("  position:     {:02X?}", &buf[42..54]);
+        println!("  camera_at:    {:02X?}", &buf[54..66]);
+        println!("  camera_eye:   {:02X?}", &buf[66..78]);
+        println!("  controls:     {:02X?}", &buf[78..82]);
+        println!("  full:         {:02X?}", buf);
+    }
+    buf
 } 

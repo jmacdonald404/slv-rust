@@ -4,7 +4,9 @@ use uuid::Uuid;
 use bytes::{BytesMut, BufMut, Buf};
 use std::net::SocketAddr;
 use std::io;
-use crate::utils::lludp::{build_use_circuit_code_packet, LluPacket, LluPacketFlags};
+use crate::utils::lludp::{build_use_circuit_code_packet, build_lludp_packet, LluPacket, LluPacketFlags, LLUDPFrequency};
+use crate::networking::protocol::messages::Message;
+use bincode::{Encode, Decode};
 use async_trait::async_trait;
 use crate::ui::proxy::ProxySettings;
 use crate::networking::socks5_udp::Socks5UdpSocket;
@@ -42,6 +44,7 @@ impl UdpSocketExt for UdpSocket {
 pub struct UdpTransport {
     socket: std::sync::Arc<dyn UdpSocketExt>,
     sim_addr: SocketAddr,
+    packet_id_counter: u32,
 }
 
 impl UdpTransport {
@@ -51,7 +54,7 @@ impl UdpTransport {
                 // Use SOCKS5 proxy, bind to the specified local_port
                 let socks5 = Socks5UdpSocket::connect(&proxy.socks5_host, proxy.socks5_port, Some(local_port)).await?;
                 let arc_socket: std::sync::Arc<dyn UdpSocketExt> = std::sync::Arc::new(socks5);
-                return UdpTransport::new_with_socket(arc_socket, sim_addr).await;
+                return UdpTransport::new_with_socket(arc_socket, sim_addr, 1).await;
             }
         }
         // Use direct UDP socket, bind to the specified local_port
@@ -66,47 +69,87 @@ impl UdpTransport {
             Err(e) => println!("[TEMP TEST] UDP send error in auth flow: {}", e),
         }
         let arc_socket: std::sync::Arc<dyn UdpSocketExt> = std::sync::Arc::new(socket);
-        UdpTransport::new_with_socket(arc_socket, sim_addr).await
+        UdpTransport::new_with_socket(arc_socket, sim_addr, 1).await // Start packet_id_counter at 1 // Start packet_id_counter at 1
     }
 
-    pub async fn new_with_socket(socket: std::sync::Arc<dyn UdpSocketExt>, sim_addr: SocketAddr) -> io::Result<Self> {
-        Ok(UdpTransport { socket, sim_addr })
+    pub async fn new_with_socket(socket: std::sync::Arc<dyn UdpSocketExt>, sim_addr: SocketAddr, initial_packet_id: u32) -> io::Result<Self> {
+        Ok(UdpTransport { socket, sim_addr, packet_id_counter: initial_packet_id })
     }
 
     /// Send a UseCircuitCode packet using the LLUDP binary format (message_template.msg)
-    pub async fn send_usecircuitcode_packet_lludp(&self, circuit_code: u32, session_id: uuid::Uuid, agent_id: uuid::Uuid, packet_id: u32) -> std::io::Result<usize> {
-        // Build the original (uncompressed) payload
-        let mut original_buf = Vec::new();
-        let mut flags: u8 = 0x01; // RELIABLE | Low frequency
-        original_buf.push(flags); // 1 byte flags (will be updated if zerocoding is used)
-        original_buf.extend_from_slice(&packet_id.to_be_bytes()); // 4 bytes packet id
-        let offset: u8 = 0x00; // no extra header
-        original_buf.push(offset); // 1 byte offset
-        original_buf.extend_from_slice(&[0xFF, 0xFF, 0x00, 0x03]); // 4 bytes message number
-        original_buf.extend_from_slice(&circuit_code.to_be_bytes()); // 4 bytes circuit code
-        original_buf.extend_from_slice(session_id.as_bytes()); // 16 bytes session id
-        original_buf.extend_from_slice(agent_id.as_bytes()); // 16 bytes agent id
-        // Build the zerocoded packet
-        let packet = build_use_circuit_code_packet(circuit_code, session_id, agent_id, false); // zerocode_enabled = false for UseCircuitCode
-        // Debug print for troubleshooting (matches udp_test)
-        println!("[LLUDP OUT] UseCircuitCode (Low frequency, zerocoded) seq={} to {}:", packet_id, self.sim_addr);
-        println!("  flags:        {:02X}", packet[0]);
-        println!("  packet_id:    {:02X?}", &packet[1..5]);
-        println!("  offset:       {:02X}", packet[5]);
-        println!("  msg_num:      {:02X?}", &packet[6..10]);
-        println!("  circuit_code: {:02X?}", &packet[10..14]);
-        println!("  session_id:   {:02X?}", &packet[14..30]);
-        println!("  agent_id:     {:02X?}", &packet[30..46]);
-        println!("  full:         {:02X?}", packet);
-        // Decode the zerocoded payload (excluding the flags byte)
-        let decoded = crate::utils::lludp::zerodecode(&packet[1..]);
-        println!("[DEBUG] Decoded zerocoded payload: {:02X?}", decoded);
-        println!("[DEBUG] Original payload:         {:02X?}", &original_buf[1..]);
+    /// Only to be called by Circuit::advance_handshake
+    pub(crate) async fn send_usecircuitcode_packet_lludp(&mut self, circuit_code: u32, session_id: uuid::Uuid, agent_id: uuid::Uuid) -> std::io::Result<usize> {
+        let packet_id = self.packet_id_counter;
+        self.packet_id_counter += 1;
+        let packet = build_use_circuit_code_packet(circuit_code, session_id, agent_id, packet_id);
+        println!("[LLUDP OUT] UseCircuitCode (Low frequency, unencoded) seq={} to {}:", packet_id, self.sim_addr);
+        self.send_to(&packet, &self.sim_addr).await
+    }
+
+    /// Only to be called by Circuit::advance_handshake
+    pub(crate) async fn send_complete_agent_movement_packet(&mut self, agent_id: Uuid, session_id: Uuid, circuit_code: u32, position: (f32, f32, f32), look_at: (f32, f32, f32)) -> std::io::Result<usize> {
+        let packet_id = self.packet_id_counter;
+        self.packet_id_counter += 1;
+        let packet = crate::utils::lludp::build_complete_agent_movement_packet(
+            agent_id,
+            session_id,
+            circuit_code,
+            packet_id,
+            position,
+            look_at,
+        );
+        println!("[LLUDP OUT] CompleteAgentMovement (Low frequency, unencoded) seq={} to {}:", packet_id, self.sim_addr);
+        self.send_to(&packet, &self.sim_addr).await
+    }
+
+    /// Only to be called by Circuit::advance_handshake
+    pub(crate) async fn send_region_handshake_reply_packet(&mut self, agent_id: Uuid, session_id: Uuid, flags: u32) -> std::io::Result<usize> {
+        let packet_id = self.packet_id_counter;
+        self.packet_id_counter += 1;
+        let packet = crate::utils::lludp::build_region_handshake_reply_packet(
+            agent_id,
+            session_id,
+            flags,
+            packet_id,
+        );
+        println!("[LLUDP OUT] RegionHandshakeReply (Low frequency, unencoded) seq={} to {}:", packet_id, self.sim_addr);
+        self.send_to(&packet, &self.sim_addr).await
+    }
+
+    /// Only to be called by Circuit::advance_handshake
+    pub(crate) async fn send_agent_throttle_packet(&mut self, agent_id: Uuid, session_id: Uuid, circuit_code: u32, throttle: [f32; 7]) -> std::io::Result<usize> {
+        let packet_id = self.packet_id_counter;
+        self.packet_id_counter += 1;
+        let packet = crate::utils::lludp::build_agent_throttle_packet(
+            agent_id,
+            session_id,
+            circuit_code,
+            throttle,
+            packet_id,
+        );
+        println!("[LLUDP OUT] AgentThrottle (Low frequency, unencoded) seq={} to {}:", packet_id, self.sim_addr);
+        self.send_to(&packet, &self.sim_addr).await
+    }
+
+    /// Only to be called by Circuit::advance_handshake
+    pub(crate) async fn send_agent_update_packet(&mut self, agent_id: Uuid, session_id: Uuid, position: (f32, f32, f32), camera_at: (f32, f32, f32), camera_eye: (f32, f32, f32), controls: u32) -> std::io::Result<usize> {
+        let packet_id = self.packet_id_counter;
+        self.packet_id_counter += 1;
+        let packet = crate::utils::lludp::build_agent_update_packet(
+            agent_id,
+            session_id,
+            position,
+            camera_at,
+            camera_eye,
+            controls,
+            packet_id,
+        );
+        println!("[LLUDP OUT] AgentUpdate (High frequency, unencoded) seq={} to {}:", packet_id, self.sim_addr);
         self.send_to(&packet, &self.sim_addr).await
     }
 
     /// Log incoming LLUDP packets (for UseCircuitCode response and others)
-    pub async fn recv_lludp_packet(&self, timeout_ms: u64) -> std::io::Result<Option<(LluPacket, std::net::SocketAddr)>> {
+    pub async fn recv_lludp_packet(&mut self, timeout_ms: u64) -> std::io::Result<Option<(LluPacket, std::net::SocketAddr)>> {
         let mut buf = BytesMut::with_capacity(1500);
         buf.resize(1500, 0);
         match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), self.socket.recv_from(&mut buf)).await {
@@ -114,6 +157,11 @@ impl UdpTransport {
                 buf.truncate(len);
                 if let Some(pkt) = LluPacket::parse_incoming(&buf) {
                     println!("[LLUDP IN] msg_id=0x{:04X} seq={:?} from {}: {:02X?}", pkt.message_id, pkt.sequence, addr, &buf);
+                    if let Some(seq) = pkt.sequence {
+                        if seq >= self.packet_id_counter {
+                            self.packet_id_counter = seq + 1;
+                        }
+                    }
                     Ok(Some((pkt, addr)))
                 } else {
                     println!("[LLUDP IN] Unparsed UDP packet ({} bytes) from {}: {:02X?}", buf.len(), addr, &buf);
@@ -126,6 +174,10 @@ impl UdpTransport {
     }
 
     pub async fn send_to(&self, buf: &[u8], target: &SocketAddr) -> std::io::Result<usize> {
+        if buf.len() < 7 {
+            println!("[UDP OUT] WARNING: Attempted to send packet < 7 bytes ({} bytes): {:02X?}", buf.len(), buf);
+            return Ok(0);
+        }
         println!("[UdpTransport] send_to: target = {}", target);
         // Log hex and ASCII
         fn to_hex_ascii(data: &[u8]) -> (String, String) {
