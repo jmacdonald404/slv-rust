@@ -102,17 +102,15 @@ impl UdpTransport {
         self.send_to(&packet, &self.sim_addr).await
     }
 
-    /// Only to be called by Circuit::advance_handshake
-    pub(crate) async fn send_region_handshake_reply_packet(&mut self, agent_id: Uuid, session_id: Uuid, flags: u32) -> std::io::Result<usize> {
-        let packet_id = self.packet_id_counter;
-        self.packet_id_counter += 1;
+    /// Only to be called by Circuit::advance_handshake or for RegionHandshakeReply with custom sequence
+    pub(crate) async fn send_region_handshake_reply_packet_with_seq(&mut self, agent_id: Uuid, session_id: Uuid, flags: u32, sequence_id: u32) -> std::io::Result<usize> {
         let packet = crate::utils::lludp::build_region_handshake_reply_packet(
             agent_id,
             session_id,
             flags,
-            packet_id,
+            sequence_id,
         );
-        println!("[LLUDP OUT] RegionHandshakeReply (Low frequency, unencoded) seq={} to {}:", packet_id, self.sim_addr);
+        println!("[LLUDP OUT] RegionHandshakeReply (Low frequency, unencoded) seq={} to {}:", sequence_id, self.sim_addr);
         self.send_to(&packet, &self.sim_addr).await
     }
 

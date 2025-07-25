@@ -324,10 +324,8 @@ impl Circuit {
                 return;
             }
             HandshakeState::ReceivedRegionHandshake => {
-                info!("[HANDSHAKE] Sending RegionHandshakeReply");
-                let mut transport = self.transport.lock().await;
-                let _ = transport.send_region_handshake_reply_packet(agent_id, session_id, flags).await;
-                self.handshake_state = HandshakeState::SentRegionHandshakeReply;
+                // This state is now handled directly in handle_incoming_message
+                return;
             }
             HandshakeState::SentRegionHandshakeReply => {
                 info!("[HANDSHAKE] Sending AgentThrottle");
@@ -402,6 +400,18 @@ impl Circuit {
         // TODO: Add any additional cleanup if needed
     }
 
+    pub async fn send_region_handshake_reply_with_seq(&mut self, agent_id: uuid::Uuid, session_id: uuid::Uuid, flags: u32, sequence_id: u32, addr: &SocketAddr) {
+        let mut transport = self.transport.lock().await;
+        let packet = crate::utils::lludp::build_region_handshake_reply_packet(
+            agent_id,
+            session_id,
+            flags,
+            sequence_id,
+        );
+        let _ = transport.send_to(&packet, addr).await;
+        self.handshake_state = HandshakeState::SentRegionHandshakeReply;
+    }
+
     pub async fn handle_incoming_message(&mut self, header: PacketHeader, message: Message, addr: SocketAddr,
         agent_id: uuid::Uuid,
         session_id: uuid::Uuid,
@@ -418,7 +428,9 @@ impl Circuit {
         match &message {
             Message::RegionHandshake { .. } => {
                 info!("[HANDSHAKE] Received RegionHandshake");
-                self.handshake_state = HandshakeState::ReceivedRegionHandshake;
+                // Send reply with the same sequence number as incoming packet
+                self.send_region_handshake_reply_with_seq(agent_id, session_id, flags, header.sequence_id, &addr).await;
+                // Continue handshake progression
                 self.advance_handshake(agent_id, session_id, circuit_code, position, look_at, throttle, flags, controls, camera_at, camera_eye).await;
             }
             Message::KeepAlive => {
