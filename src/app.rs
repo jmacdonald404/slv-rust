@@ -2,6 +2,7 @@ use crate::ui::UiState;
 use std::sync::Arc;
 use std::net::SocketAddr;
 
+/*
 // New: Main-thread-only RenderContext for wgpu/winit fields
 pub struct RenderContext<'a> {
     pub surface: wgpu::Surface<'a>,
@@ -11,6 +12,7 @@ pub struct RenderContext<'a> {
     pub window: Arc<winit::window::Window>,
     pub ui_ctx: Option<crate::ui::UiContext>,
 }
+*/
 
 // Multithreaded shared state for UI/logic
 pub struct AppState {
