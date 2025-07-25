@@ -166,53 +166,53 @@ pub fn build_use_circuit_code_packet(
 }
 
 /// Build a generic LLUDP packet.
-pub fn build_lludp_packet(
-    message_id: u16,
-    frequency: LLUDPFrequency,
-    packet_id: u32,
-    reliable: bool,
-    zerocoded: bool,
-    body: &[u8],
-) -> Vec<u8> {
-    let mut buf = Vec::new();
+// pub fn build_lludp_packet(
+//     message_id: u16,
+//     frequency: LLUDPFrequency,
+//     packet_id: u32,
+//     reliable: bool,
+//     zerocoded: bool,
+//     body: &[u8],
+// ) -> Vec<u8> {
+//     let mut buf = Vec::new();
 
-    let mut flags: u8 = 0x00;
-    if reliable {
-        flags |= LluPacketFlags::RELIABLE.bits();
-    }
-    if zerocoded {
-        flags |= LluPacketFlags::ZEROCODED.bits();
-    }
+//     let mut flags: u8 = 0x00;
+//     if reliable {
+//         flags |= LluPacketFlags::RELIABLE.bits();
+//     }
+//     if zerocoded {
+//         flags |= LluPacketFlags::ZEROCODED.bits();
+//     }
 
-    buf.push(flags); // 1 byte flags
-    buf.extend_from_slice(&packet_id.to_le_bytes()); // 4 bytes packet id
-    buf.push(0x00); // 1 byte offset, always 0 for now
+//     buf.push(flags); // 1 byte flags
+//     buf.extend_from_slice(&packet_id.to_le_bytes()); // 4 bytes packet id
+//     buf.push(0x00); // 1 byte offset, always 0 for now
 
-    // Message number based on frequency
-    match frequency {
-        LLUDPFrequency::High => {
-            buf.extend_from_slice(&[0x00, 0x00, 0x00]);
-        }
-        LLUDPFrequency::Medium => {
-            buf.extend_from_slice(&[0xFF, 0x00, 0x00]);
-        }
-        LLUDPFrequency::Low => {
-            buf.extend_from_slice(&[0xFF, 0xFF, 0x00]);
-        }
-        LLUDPFrequency::Fixed => {
-            buf.extend_from_slice(&[0xFF, 0xFF, 0xFF]);
-        }
-    }
-    buf.push(message_id as u8); // Last byte of message number
+//     // Message number based on frequency
+//     match frequency {
+//         LLUDPFrequency::High => {
+//             buf.extend_from_slice(&[0x00, 0x00, 0x00]);
+//         }
+//         LLUDPFrequency::Medium => {
+//             buf.extend_from_slice(&[0xFF, 0x00, 0x00]);
+//         }
+//         LLUDPFrequency::Low => {
+//             buf.extend_from_slice(&[0xFF, 0xFF, 0x00]);
+//         }
+//         LLUDPFrequency::Fixed => {
+//             buf.extend_from_slice(&[0xFF, 0xFF, 0xFF]);
+//         }
+//     }
+//     buf.push(message_id as u8); // Last byte of message number
 
-    let mut final_body = body.to_vec();
-    if zerocoded {
-        final_body = zerocode(body);
-    }
+//     let mut final_body = body.to_vec();
+//     if zerocoded {
+//         final_body = zerocode(body);
+//     }
 
-    buf.extend_from_slice(&final_body);
-    buf
-}
+//     buf.extend_from_slice(&final_body);
+//     buf
+// }
 
 /// Build a CompleteAgentMovement LLUDP packet (Low frequency, ID 249) as RELIABLE and unencoded (flags = 0x40, no zerocoding)
 /// Per SL protocol and Hippolyzer, only AgentID, SessionID, CircuitCode are included in the AgentData block.

@@ -235,7 +235,7 @@ pub fn run_ui_frame(
     // });
 
     // Apply texture updates (font atlas, user textures)
-    for (id, image_delta) in &eframe::egui::TexturesDelta::default().set {
+    for (id, _image_delta) in &eframe::egui::TexturesDelta::default().set {
         // The original UiRenderer had a renderer here, but it's removed.
         // This part of the logic needs to be re-evaluated or removed if not directly applicable.
         // For now, we'll keep it as is, but it might need adjustment depending on how textures are managed.

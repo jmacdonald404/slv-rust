@@ -1,4 +1,4 @@
-use tracing::{Level, Subscriber};
+use tracing::Subscriber;
 use tracing_subscriber::{
     fmt::{self, format::FmtSpan},
     layer::SubscriberExt,
@@ -134,37 +134,10 @@ pub fn log_adapter_info(adapter: &wgpu::Adapter) {
 
 /// Log wgpu device limits and features
 pub fn log_device_info(device: &wgpu::Device) {
-    let limits = device.limits();
-    let features = device.features();
+    let _limits = device.limits();
+    let _features = device.features();
     
     tracing::info!("=== WGPU Device Information ===");
-    tracing::info!("Max Texture Dimension 1D: {}", limits.max_texture_dimension_1d);
-    tracing::info!("Max Texture Dimension 2D: {}", limits.max_texture_dimension_2d);
-    tracing::info!("Max Texture Dimension 3D: {}", limits.max_texture_dimension_3d);
-    tracing::info!("Max Texture Array Layers: {}", limits.max_texture_array_layers);
-    tracing::info!("Max Bind Groups: {}", limits.max_bind_groups);
-    tracing::info!("Max Bindings Per Bind Group: {}", limits.max_bindings_per_bind_group);
-    tracing::info!("Max Dynamic Uniform Buffers Per Pipeline Layout: {}", limits.max_dynamic_uniform_buffers_per_pipeline_layout);
-    tracing::info!("Max Dynamic Storage Buffers Per Pipeline Layout: {}", limits.max_dynamic_storage_buffers_per_pipeline_layout);
-    tracing::info!("Max Sampled Textures Per Shader Stage: {}", limits.max_sampled_textures_per_shader_stage);
-    tracing::info!("Max Samplers Per Shader Stage: {}", limits.max_samplers_per_shader_stage);
-    tracing::info!("Max Storage Buffers Per Shader Stage: {}", limits.max_storage_buffers_per_shader_stage);
-    tracing::info!("Max Storage Textures Per Shader Stage: {}", limits.max_storage_textures_per_shader_stage);
-    tracing::info!("Max Uniform Buffers Per Shader Stage: {}", limits.max_uniform_buffers_per_shader_stage);
-    tracing::info!("Max Uniform Buffer Binding Size: {}", limits.max_uniform_buffer_binding_size);
-    tracing::info!("Max Storage Buffer Binding Size: {}", limits.max_storage_buffer_binding_size);
-    tracing::info!("Min Uniform Buffer Offset Alignment: {}", limits.min_uniform_buffer_offset_alignment);
-    tracing::info!("Min Storage Buffer Offset Alignment: {}", limits.min_storage_buffer_offset_alignment);
-    tracing::info!("Max Vertex Buffers: {}", limits.max_vertex_buffers);
-    tracing::info!("Max Buffer Size: {}", limits.max_buffer_size);
-    tracing::info!("Max Vertex Attributes: {}", limits.max_vertex_attributes);
-    tracing::info!("Max Vertex Buffer Array Stride: {}", limits.max_vertex_buffer_array_stride);
-    tracing::info!("Max InterStage Shader Components: {}", limits.max_inter_stage_shader_components);
-    tracing::info!("Max Compute Workgroup Storage Size: {}", limits.max_compute_workgroup_storage_size);
-    tracing::info!("Max Compute Invocations Per Workgroup: {}", limits.max_compute_invocations_per_workgroup);
-    tracing::info!("Max Compute Workgroup Size X: {}", limits.max_compute_workgroup_size_x);
-    tracing::info!("Max Compute Workgroup Size Y: {}", limits.max_compute_workgroup_size_y);
-    tracing::info!("Max Compute Workgroup Size Z: {}", limits.max_compute_workgroup_size_z);
-    tracing::info!("Max Compute Workgroups Per Dimension: {}", limits.max_compute_workgroups_per_dimension);
+    // Device info logging temporarily disabled to reduce verbosity
     tracing::info!("=====================================");
 }

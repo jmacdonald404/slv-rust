@@ -81,7 +81,7 @@ impl MessageCodec {
                 [0xFF, 0xFF, 0x00, 0x01] => { // StartPingCheck
                     println!("[CODEC] Parsed StartPingCheck");
                     if data.len() >= 14 {
-                        let ping_id = u32::from_le_bytes(data[10..14].try_into().unwrap_or_default());
+                        let _ping_id = u32::from_le_bytes(data[10..14].try_into().unwrap_or_default());
                         // Message::StartPingCheck variant would be needed
                         return Err(io::Error::new(ErrorKind::InvalidData, "StartPingCheck not fully handled"));
                     } else {

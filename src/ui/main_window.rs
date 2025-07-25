@@ -759,7 +759,7 @@ pub async fn connect_leap_bridge(host: &str, port: u16) -> std::io::Result<tokio
 fn parse_sim_address_from_event(xml: &str) -> Option<(String, u16)> {
     if let Ok(doc) = roxmltree::Document::parse(xml) {
         // Find the event type
-        let mut event_type = None;
+        let mut event_type: Option<&str> = None;
         let mut sim_ip = None;
         let mut sim_port = None;
         // Look for <key>message</key><string>...</string>
@@ -769,7 +769,7 @@ fn parse_sim_address_from_event(xml: &str) -> Option<(String, u16)> {
                 last_key = node.text();
             } else if let Some(key) = last_key {
                 if key == "message" && node.has_tag_name("string") {
-                    event_type = node.text();
+                    // event_type = node.text();
                 }
                 if key == "body" && node.has_tag_name("map") {
                     // Entering the body map

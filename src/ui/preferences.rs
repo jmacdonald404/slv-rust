@@ -6,7 +6,7 @@ use crate::ui::PreferencesState;
 use crate::config::settings;
 use std::sync::mpsc::{channel, TryRecvError};
 
-pub fn show_preferences_panel(ctx: &eframe::egui::Context, prefs: &mut PreferencesState, in_world: bool) {
+pub fn show_preferences_panel(ctx: &eframe::egui::Context, prefs: &mut PreferencesState, _in_world: bool) {
     // --- UDP Test Result Channel ---
     static mut UDP_TEST_RESULT_RX: Option<std::sync::mpsc::Receiver<String>> = None;
 

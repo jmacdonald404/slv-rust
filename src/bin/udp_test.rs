@@ -1,7 +1,7 @@
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use std::net::{SocketAddr, IpAddr, Ipv4Addr};
-use uuid::Uuid;
+// use uuid::Uuid;
 
 #[tokio::main]
 async fn main() {

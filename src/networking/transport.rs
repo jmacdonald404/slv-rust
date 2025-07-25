@@ -1,12 +1,10 @@
 use tokio::net::UdpSocket;
 use tokio::time::{timeout, Duration};
-use uuid::Uuid;
-use bytes::{BytesMut, BufMut, Buf};
+use bytes::BytesMut;
 use std::net::SocketAddr;
 use std::io;
-use crate::utils::lludp::{build_use_circuit_code_packet, build_lludp_packet, LluPacket, LluPacketFlags, LLUDPFrequency};
-use crate::networking::protocol::messages::Message;
-use bincode::{Encode, Decode};
+use uuid::Uuid;
+use crate::utils::lludp::{build_use_circuit_code_packet, LluPacket};
 use async_trait::async_trait;
 use crate::ui::proxy::ProxySettings;
 use crate::networking::socks5_udp::Socks5UdpSocket;
@@ -213,9 +211,9 @@ impl UdpTransport {
         }
     }
 
-    pub fn local_port(&self) -> u16 {
-        self.socket.local_addr().map(|a| a.port()).unwrap_or(0)
-    }
+    // pub fn local_port(&self) -> u16 {
+    //     self.socket.local_addr().map(|a| a.port()).unwrap_or(0)
+    // }
 }
 
 // Example usage (to be called from your main or session logic):

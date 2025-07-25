@@ -78,7 +78,7 @@ impl Circuit {
             // Use the trait object for send/recv
             let mut buf = vec![0; 1024];
             loop {
-                let mut transport_locked = transport_bg.lock().await;
+                let transport_locked = transport_bg.lock().await;
                 tokio::select! {
                     Ok((len, addr)) = transport_locked.recv_from(&mut buf) => {
                         println!("[UDP RX] Received {} bytes from {}: {:02X?}", len, addr, &buf[..len]);
@@ -123,7 +123,7 @@ impl Circuit {
                                     }
                                     // Only send ACK if not KeepAlive
                                     if !matches!(received_message, Message::KeepAlive) {
-                                        let ack_message = Message::Ack { sequence_id: header.sequence_id };
+                                        let _ack_message = Message::Ack { sequence_id: header.sequence_id };
                                         let ack_header = PacketHeader { sequence_id: 0, flags: 0 };
                                         // Manual encoding for ACK message
                                         let mut ack_packet = Vec::new();
@@ -242,7 +242,7 @@ impl Circuit {
             header.sequence_id,
             (message.clone(), Instant::now(), 0, target.clone(), encoded.clone()),
         );
-        let mut transport = self.transport.lock().await;
+        let transport = self.transport.lock().await;
         transport.send_to(&encoded, target).await
     }
 
@@ -258,7 +258,7 @@ impl Circuit {
         position: (f32, f32, f32),
         look_at: (f32, f32, f32),
         throttle: [f32; 7],
-        flags: u32,
+        _flags: u32,
         controls: u32,
         camera_at: (f32, f32, f32),
         camera_eye: (f32, f32, f32),
@@ -276,7 +276,7 @@ impl Circuit {
                         position,
                         look_at,
                         throttle,
-                        flags,
+                        _flags,
                         controls,
                         camera_at,
                         camera_eye
@@ -308,13 +308,13 @@ impl Circuit {
         match self.handshake_state {
             HandshakeState::NotStarted => {
                 info!("[HANDSHAKE] Sending UseCircuitCode");
-                let mut transport = self.transport.lock().await;
+                let transport = self.transport.lock().await;
                 let _ = transport.send_usecircuitcode_packet_lludp(circuit_code, session_id, agent_id).await;
                 self.handshake_state = HandshakeState::SentUseCircuitCode;
             }
             HandshakeState::SentUseCircuitCode => {
                 info!("[HANDSHAKE] Sending CompleteAgentMovement");
-                let mut transport = self.transport.lock().await;
+                let transport = self.transport.lock().await;
                 let _ = transport.send_complete_agent_movement_packet(agent_id, session_id, circuit_code, position, look_at).await;
                 self.handshake_state = HandshakeState::SentCompleteAgentMovement;
             }
@@ -329,13 +329,13 @@ impl Circuit {
             }
             HandshakeState::SentRegionHandshakeReply => {
                 info!("[HANDSHAKE] Sending AgentThrottle");
-                let mut transport = self.transport.lock().await;
+                let transport = self.transport.lock().await;
                 let _ = transport.send_agent_throttle_packet(agent_id, session_id, circuit_code, throttle).await;
                 self.handshake_state = HandshakeState::SentAgentThrottle;
             }
             HandshakeState::SentAgentThrottle => {
                 info!("[HANDSHAKE] Sending first AgentUpdate");
-                let mut transport = self.transport.lock().await;
+                let transport = self.transport.lock().await;
                 let _ = transport.send_agent_update_packet(agent_id, session_id, position, camera_at, camera_eye, controls).await;
                 self.handshake_state = HandshakeState::SentFirstAgentUpdate;
             }
@@ -394,14 +394,14 @@ impl Circuit {
         }
     }
 
-    pub async fn disconnect_and_logout(&mut self, sim_addr: &SocketAddr) {
-        // Send Logout message
-        let _ = self.send_message(&Message::Logout, sim_addr).await;
-        // TODO: Add any additional cleanup if needed
-    }
+    // pub async fn disconnect_and_logout(&mut self, sim_addr: &SocketAddr) {
+//     // Send Logout message
+//     let _ = self.send_message(&Message::Logout, sim_addr).await;
+//     // TODO: Add any additional cleanup if needed
+// }
 
     pub async fn send_region_handshake_reply_with_seq(&mut self, agent_id: uuid::Uuid, session_id: uuid::Uuid, flags: u32, sequence_id: u32, addr: &SocketAddr) {
-        let mut transport = self.transport.lock().await;
+        let transport = self.transport.lock().await;
         let packet = crate::utils::lludp::build_region_handshake_reply_packet(
             agent_id,
             session_id,

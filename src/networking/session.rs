@@ -107,78 +107,78 @@ pub enum HandshakeState {
     HandshakeComplete,
 }
 
-fn build_login_xml(req: &LoginRequest) -> String {
-    let options_xml: String = req.options.iter()
-        .map(|opt| format!("<value><string>{}</string></value>", opt))
-        .collect::<Vec<_>>()
-        .join("\n");
+// fn build_login_xml(req: &LoginRequest) -> String {
+//     let options_xml: String = req.options.iter()
+//         .map(|opt| format!("<value><string>{}</string></value>", opt))
+//         .collect::<Vec<_>>()
+//         .join("\n");
 
-    format!(r#"<?xml version="1.0" ?>
-<methodCall>
-  <methodName>login_to_simulator</methodName>
-  <params>
-    <param>
-      <value>
-        <struct>
-          <member><name>address_size</name><value><int>{address_size}</int></value></member>
-          <member><name>agree_to_tos</name><value><int>{agree_to_tos}</int></value></member>
-          <member><name>channel</name><value><string>{channel}</string></value></member>
-          <member><name>extended_errors</name><value><int>{extended_errors}</int></value></member>
-          <member><name>first</name><value><string>{first}</string></value></member>
-          <member><name>host_id</name><value><string>{host_id}</string></value></member>
-          <member><name>id0</name><value><string>{id0}</string></value></member>
-          <member><name>last</name><value><string>{last}</string></value></member>
-          <member><name>last_exec_duration</name><value><int>{last_exec_duration}</int></value></member>
-          <member><name>last_exec_event</name><value><int>{last_exec_event}</int></value></member>
-          <member><name>last_exec_session_id</name><value><string>{last_exec_session_id}</string></value></member>
-          <member><name>mac</name><value><string>{mac}</string></value></member>
-          <member><name>mfa_hash</name><value><string>{mfa_hash}</string></value></member>
-          <member><name>options</name>
-            <value>
-              <array>
-                <data>
-                  {options_xml}
-                </data>
-              </array>
-            </value>
-          </member>
-          <member><name>passwd</name><value><string>{password}</string></value></member>
-          <member><name>platform</name><value><string>{platform}</string></value></member>
-          <member><name>platform_string</name><value><string>{platform_string}</string></value></member>
-          <member><name>platform_version</name><value><string>{platform_version}</string></value></member>
-          <member><name>read_critical</name><value><int>{read_critical}</int></value></member>
-          <member><name>start</name><value><string>{start}</string></value></member>
-          <member><name>token</name><value><string>{token}</string></value></member>
-          <member><name>version</name><value><string>{version}</string></value></member>
-        </struct>
-      </value>
-    </param>
-  </params>
-</methodCall>"#,
-        address_size = req.address_size,
-        agree_to_tos = req.agree_to_tos,
-        channel = req.channel,
-        extended_errors = req.extended_errors,
-        first = req.first,
-        host_id = req.host_id,
-        id0 = req.id0,
-        last = req.last,
-        last_exec_duration = req.last_exec_duration,
-        last_exec_event = req.last_exec_event,
-        last_exec_session_id = req.last_exec_session_id,
-        mac = req.mac,
-        mfa_hash = req.mfa_hash,
-        options_xml = options_xml,
-        password = req.password,
-        platform = req.platform,
-        platform_string = req.platform_string,
-        platform_version = req.platform_version,
-        read_critical = req.read_critical,
-        start = req.start,
-        token = req.token,
-        version = req.version,
-    )
-}
+//     format!(r#"<?xml version="1.0" ?>
+// <methodCall>
+//   <methodName>login_to_simulator</methodName>
+//   <params>
+//     <param>
+//       <value>
+//         <struct>
+//           <member><name>address_size</name><value><int>{address_size}</int></value></member>
+//           <member><name>agree_to_tos</name><value><int>{agree_to_tos}</int></value></member>
+//           <member><name>channel</name><value><string>{channel}</string></value></member>
+//           <member><name>extended_errors</name><value><int>{extended_errors}</int></value></member>
+//           <member><name>first</name><value><string>{first}</string></value></member>
+//           <member><name>host_id</name><value><string>{host_id}</string></value></member>
+//           <member><name>id0</name><value><string>{id0}</string></value></member>
+//           <member><name>last</name><value><string>{last}</string></value></member>
+//           <member><name>last_exec_duration</name><value><int>{last_exec_duration}</int></value></member>
+//           <member><name>last_exec_event</name><value><int>{last_exec_event}</int></value></member>
+//           <member><name>last_exec_session_id</name><value><string>{last_exec_session_id}</string></value></member>
+//           <member><name>mac</name><value><string>{mac}</string></value></member>
+//           <member><name>mfa_hash</name><value><string>{mfa_hash}</string></value></member>
+//           <member><name>options</name>
+//             <value>
+//               <array>
+//                 <data>
+//                   {options_xml}
+//                 </data>
+//               </array>
+//             </value>
+//           </member>
+//           <member><name>passwd</name><value><string>{password}</string></value></member>
+//           <member><name>platform</name><value><string>{platform}</string></value></member>
+//           <member><name>platform_string</name><value><string>{platform_string}</string></value></member>
+//           <member><name>platform_version</name><value><string>{platform_version}</string></value></member>
+//           <member><name>read_critical</name><value><int>{read_critical}</int></value></member>
+//           <member><name>start</name><value><string>{start}</string></value></member>
+//           <member><name>token</name><value><string>{token}</string></value></member>
+//           <member><name>version</name><value><string>{version}</string></value></member>
+//         </struct>
+//       </value>
+//     </param>
+//   </params>
+// </methodCall>"#,
+//         address_size = req.address_size,
+//         agree_to_tos = req.agree_to_tos,
+//         channel = req.channel,
+//         extended_errors = req.extended_errors,
+//         first = req.first,
+//         host_id = req.host_id,
+//         id0 = req.id0,
+//         last = req.last,
+//         last_exec_duration = req.last_exec_duration,
+//         last_exec_event = req.last_exec_event,
+//         last_exec_session_id = req.last_exec_session_id,
+//         mac = req.mac,
+//         mfa_hash = req.mfa_hash,
+//         options_xml = options_xml,
+//         password = req.password,
+//         platform = req.platform,
+//         platform_string = req.platform_string,
+//         platform_version = req.platform_version,
+//         read_critical = req.read_critical,
+//         start = req.start,
+//         token = req.token,
+//         version = req.version,
+//     )
+// }
 
 // Helper to always build a reqwest::Client with proxy settings if enabled
 fn build_proxied_client(_proxy_settings: Option<&crate::ui::proxy::ProxySettings>) -> reqwest::Client {
