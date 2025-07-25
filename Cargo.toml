@@ -3,6 +3,14 @@ name = "slv-rust"
 version = "0.3.0"
 edition = "2021"
 
+[lib]
+name = "slv_rust"
+path = "src/lib.rs"
+
+[[bin]]
+name = "slv-rust"
+path = "src/main.rs"
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
@@ -39,11 +47,14 @@ bitflags = "2.9.1"
 config = "0.15.11"
 crossbeam-channel = "0.5.15"
 directories = "5.0"
+num_cpus = "1.16"
 pollster = "0.4.0"
 rand = "0.9.1"
+rayon = "1.10"
 regex = "1"
 scraper = "0.23.1"
 serde_json = "1.0.140"
+sysinfo = "0.31"
 thiserror = "2.0"
 toml = "0.8"
 tracing = "0.1.41"

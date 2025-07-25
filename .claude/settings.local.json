@@ -3,7 +3,12 @@
     "allow": [
       "Bash(gh issue create:*)",
       "Bash(cargo test:*)",
-      "Bash(cargo check:*)"
+      "Bash(cargo check:*)",
+      "Bash(gh issue edit:*)",
+      "Bash(cargo check:*)",
+      "Bash(cargo doc:*)",
+      "Bash(cargo run:*)",
+      "Bash(gh issue comment:*)"
     ],
     "deny": []
   }

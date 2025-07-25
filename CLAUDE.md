@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-slv-rust is a Second Life viewer implementation in Rust, currently in v0.3.0-alpha development. The project aims to create a high-performance virtual world client with 60 FPS minimum performance and modern Rust architecture patterns.
+slv-rust is a Second Life viewer implementation in Rust, currently in v0.3.0-alpha development. The project follows the principle **"Performance by Default, Scalable by Design"** - building a high-performance virtual world client that dynamically adapts to hardware capabilities from low-end to high-end systems.
 
 ## Development Commands
 
@@ -32,35 +32,61 @@ cargo fmt            # Code formatting
 
 ### Core Design Principles
 
-The codebase follows a **5-phase implementation plan** detailed in `main_plan.md`:
-1. Protocol Definition Parsing (`message_template.msg` as single source of truth)
-2. Automated Code Generation (via build.rs - planned)
-3. Connection & State Management
-4. Application Integration (message-passing between layers)
-5. Testing Strategy
+**Performance by Default, Scalable by Design:** The architecture is built for high performance while providing dynamic adjustment hooks for different hardware configurations.
+
+The codebase follows a **unified 4-phase implementation plan** detailed in `int.md`:
+
+**Phase 1: Foundational Architecture & Configuration** 
+- Core concurrency model (DOD + job-based + async I/O pools)
+- Protocol definition parsing & automated code generation  
+- Performance configuration system with hardware detection
+- **Status:** In Progress (Protocol parsing ✅, Code generation ✅)
+
+**Phase 2: Core Rendering & Network Connection**
+- wgpu rendering pipeline with dynamic quality settings
+- Connection management with performance-aware networking
+- **Status:** Not Started
+
+**Phase 3: Advanced Asset Handling & Application Integration** 
+- Virtual texturing, mesh simplification, impostor generation
+- Message-passing API between network and application layers
+- **Status:** Not Started
+
+**Phase 4: UI, Adaptive Behavior & Testing**
+- Performance preferences UI and adaptive scaling system
+- Comprehensive testing strategy
+- **Status:** Not Started
 
 ### Key Architectural Components
 
 **Networking Layer (`src/networking/`):**
 - `circuit.rs` - UDP circuit management with handshake state machine
-- `transport.rs` - UDP transport with SOCKS5 proxy support
-- `protocol/` - Second Life protocol implementation (binary, little-endian)
+- `transport.rs` - UDP transport with SOCKS5 proxy support  
+- `protocol/` - Auto-generated message structs and codecs from `message_template.msg`
+- Performance-aware packet aggregation, compression, and bandwidth limiting
 - State progression: NotStarted → UseCircuitCode → CompleteAgentMovement → RegionHandshake → RegionHandshakeReply → AgentThrottle → AgentUpdate → HandshakeComplete
 
 **Rendering Pipeline (`src/rendering/`):**
-- Built on `wgpu` for cross-platform graphics (Vulkan/DirectX/Metal)
-- Scene graph management with hierarchical culling
-- WGSL-based shader programs in `shaders/`
+- Built on `wgpu` with Hierarchical-Z Buffer (HZB) and Clustered Forward Shading  
+- Dynamic quality adjustment based on performance profiles
+- Three performance profiles: Low (optimized for low-end), Balanced (mid-range), High (maximum quality)
+- WGSL-based shader programs with multiple quality variants
 
 **Asset Management (`src/assets/`):**
-- Multi-format support: JPEG2000 (SL textures), Collada DAE, audio
-- LRU caching with configurable size limits
-- Progressive asset streaming
+- Virtual texturing system for efficient VRAM usage
+- Dynamic mesh simplification and impostor generation
+- Memory-aware caching with profile-based size limits  
+- Progressive asset streaming coordinated with network layer
+
+**Performance Configuration System (`src/config/`):**
+- Hardware detection and automatic profile selection
+- Runtime settings adjustment with adaptive scaling
+- Granular controls for rendering, memory, and networking parameters
 
 **Concurrency Model:**
-- Async-first design using tokio runtime
-- Channel-based message passing between subsystems
-- Arc/Mutex patterns for shared state management
+- Data-Oriented Design (DOD) with job-based parallelism (`rayon`)
+- Async I/O pool (`tokio`) for network and disk operations
+- Channel-based message passing for loose coupling between subsystems
 
 ### Technology Stack
 
@@ -78,10 +104,12 @@ The codebase follows a **5-phase implementation plan** detailed in `main_plan.md
 
 ### Protocol Implementation
 
-The Second Life protocol implementation uses `message_template.msg` as the authoritative source. Current focus is on UDP-based communication with:
-- Binary message serialization/deserialization
-- Automatic retransmission and acknowledgment
-- Circuit state management for reliable communication
+The Second Life protocol implementation uses `message_template.msg` as the single source of truth. The current implementation includes:
+- **Auto-generated message structs:** 483 messages parsed and generated at build time
+- **Code generation system:** `build.rs` creates `messages.rs` and `codecs.rs` from template
+- **Generated types:** `GeneratedMessage`, `GeneratedMessageCodec`, `GeneratedPacketHeader`
+- **Legacy compatibility:** Co-exists with existing Message enum during transition
+- **UDP-based communication:** Binary serialization, retransmission, circuit state management
 
 ### Reference Implementation
 
@@ -90,27 +118,46 @@ The Second Life protocol implementation uses `message_template.msg` as the autho
 - Development and debugging tool
 - Proxy server for testing
 
-### Performance Targets
+### Performance Targets & Scaling
 
-- 60 FPS minimum rendering
-- <2GB RAM usage
-- <10s startup time
-- <100ms network latency
-- Data-Oriented Design (DOD) principles over OOP
+**Performance Profiles:**
+- **Low Profile:** Optimized for <4GB RAM, integrated graphics, aggressive bandwidth/memory saving
+- **Balanced Profile:** Default for mid-range systems (4-16GB RAM, dedicated GPU)  
+- **High Profile:** Maximum quality for high-end hardware (>16GB RAM, high-end GPU)
+- **Custom Profile:** User-defined granular controls
+
+**Target Metrics:**
+- 60 FPS minimum rendering across all profiles
+- Memory usage scaled to hardware capabilities (512MB-8GB+ asset caches)
+- <10s startup time with adaptive first-run hardware detection
+- <100ms network latency with profile-appropriate compression/aggregation
+- Data-Oriented Design (DOD) principles for cache-friendly performance
 
 ## Development Notes
 
-**Current Phase:** Phase 3 (Connection & State Management) transitioning to Phase 4 (Application Integration)
+**Current Phase:** Phase 1B (Core Concurrency Model & Performance Configuration)
+- **Completed:** Protocol parsing ✅, Code generation ✅  
+- **Next:** Implement DOD concurrency model and performance configuration system
 
-**Message Handling:** The networking layer implements a state machine for Second Life's handshake protocol. When working with protocol messages, refer to the state transitions in `src/networking/circuit.rs`.
+**Message Handling:** Use generated message types (`GeneratedMessage`, `GeneratedMessageCodec`) for all new development. Legacy `Message` enum exists for compatibility during transition.
 
-**Rendering:** Uses modern graphics patterns with uniform buffers and descriptor sets. New shaders should be written in WGSL and placed in `src/rendering/shaders/`.
+**Performance Integration:** All new systems must integrate with the performance configuration system:
+- Read settings from `PerformanceSettings` 
+- Respect memory limits and quality profiles
+- Provide hooks for runtime adjustment
 
-**Asset Loading:** All asset types go through the centralized asset manager. New asset types should implement the appropriate traits and integrate with the LRU cache system.
+**Rendering:** Target wgpu with HZB culling and clustered forward shading. Multiple shader variants per quality level.
+
+**Asset Loading:** Design for virtual texturing, dynamic mesh simplification, and impostor generation. All systems must respect profile-based memory limits.
 
 **Error Handling:** Uses `anyhow` for application errors and `thiserror` for library errors. Maintain this pattern for consistency.
 
+**Testing Strategy:** Include unit tests, integration tests, performance benchmarks, and load tests for all major systems.
+
 ## Project Documentation References
 
-- Reference `readme.md` for overall project concept and structure
-- Reference `perf.md` for overarching long-term performance targets and optimization architecture
+- **`int.md`** - Unified integration plan and 4-phase roadmap (primary reference)
+- **`main_plan.md`** - Original 5-phase networking plan (subset of int.md)
+- **`perf.md`** - Performance architecture principles
+- **GitHub Issues #1-#8** - Detailed implementation plans for each phase
+- **`readme.md`** - Overall project concept and structure
