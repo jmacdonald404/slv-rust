@@ -243,8 +243,8 @@ pub fn show_main_window(ctx: &egui::Context, ui_state: &mut UiState) {
                                                         agent_state
                                                     ).await.unwrap();
                                                     // Start handshake
-                                                    circuit.advance_handshake(agent_id, session_id, circuit_code, (0.0,0.0,0.0), (0.0,0.0,0.0), [207360.0, 165376.0, 33075.19921875, 33075.19921875, 682700.75, 682700.75, 269312.0], 0, 0, (0.0,0.0,0.0), (0.0,0.0,0.0)).await;
-                                                    circuit.advance_handshake(agent_id, session_id, circuit_code, (0.0,0.0,0.0), (0.0,0.0,0.0), [207360.0, 165376.0, 33075.19921875, 33075.19921875, 682700.75, 682700.75, 269312.0], 0, 0, (0.0,0.0,0.0), (0.0,0.0,0.0)).await;
+                                                    circuit.advance_handshake(agent_id, session_id, circuit_code, (0.0,0.0,0.0), (0.0,0.0,0.0), [207360.0, 165376.0, 33075.19921875, 33075.19921875, 682700.75, 682700.75, 269312.0], 0, 0, (0.0,0.0,0.0), (0.0,0.0,0.0), &sim_addr).await;
+                                                    circuit.advance_handshake(agent_id, session_id, circuit_code, (0.0,0.0,0.0), (0.0,0.0,0.0), [207360.0, 165376.0, 33075.19921875, 33075.19921875, 682700.75, 682700.75, 269312.0], 0, 0, (0.0,0.0,0.0), (0.0,0.0,0.0), &sim_addr).await;
                                                     // Start receive loop
                                                     let circuit_mutex = std::sync::Arc::new(tokio::sync::Mutex::new(circuit));
                                                     let _ = udp_tx.send(UdpConnectResult { result: Ok(circuit_mutex.clone()) });

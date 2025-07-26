@@ -535,6 +535,7 @@ pub struct ShaderKey {
 }
 
 #[derive(Hash, Eq, PartialEq, Clone)]
+#[derive(Debug)]
 pub enum ShaderType {
     Vertex,
     Fragment,
@@ -545,6 +546,10 @@ impl ShaderCache {
         Self {
             cache: std::cell::RefCell::new(std::collections::HashMap::new()),
         }
+    }
+
+    pub fn len(&self) -> usize {
+        self.cache.borrow().len()
     }
 
     pub fn get_or_create_shader(

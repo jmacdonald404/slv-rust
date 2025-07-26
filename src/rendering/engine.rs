@@ -118,9 +118,11 @@ impl<'a> RenderEngine<'a> {
     pub async fn new(window: Arc<winit::window::Window>) -> Self {
         info!("Initializing WGPU render engine");
         
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
-            ..Default::default()
+            flags: wgpu::InstanceFlags::default(),
+            dx12_shader_compiler: wgpu::Dx12Compiler::default(),
+            gles_minor_version: wgpu::Gles3MinorVersion::Automatic,
         });
         
         info!("WGPU instance created successfully");
@@ -359,14 +361,14 @@ impl<'a> RenderEngine<'a> {
         });
         
         queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
+            wgpu::ImageCopyTexture {
                 texture: &texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
             &fallback_texture_data,
-            wgpu::TexelCopyBufferLayout {
+            wgpu::ImageDataLayout {
                 offset: 0,
                 bytes_per_row: Some(4 * 32), // 32 pixels * 4 bytes per pixel
                 rows_per_image: Some(32),

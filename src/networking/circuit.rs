@@ -100,8 +100,9 @@ impl Circuit {
         let out_of_order_buffer_arc = Arc::new(Mutex::new(HashMap::<u32, (PacketHeader, Message, SocketAddr)>::new()));
         let out_of_order_buffer_arc_clone = Arc::clone(&out_of_order_buffer_arc);
         let transport_bg = Arc::clone(&transport);
+        let performance_settings_clone = performance_settings.clone();
 
-        // Spawn the UDP receive/retransmit task
+        // Spawn the UDP receive/retransmit task  
         tokio::spawn(async move {
             // Use the trait object for send/recv
             let mut buf = vec![0; 1024];
@@ -194,12 +195,12 @@ impl Circuit {
                             }
                         }
                     },
-                    _ = time::sleep(Duration::from_millis(Self::get_retransmission_timeout_ms(&performance_settings))) => {
+                    _ = time::sleep(Duration::from_millis(Self::get_retransmission_timeout_ms(&performance_settings_clone))) => {
                         let mut messages_to_retransmit = Vec::new();
                         let mut lost_messages = Vec::new();
                         let mut unacked_messages = unacked_messages_arc_clone.lock().await;
-                        let max_retransmissions = Self::get_max_retransmissions(&performance_settings);
-                        let timeout_ms = Self::get_retransmission_timeout_ms(&performance_settings);
+                        let max_retransmissions = Self::get_max_retransmissions(&performance_settings_clone);
+                        let timeout_ms = Self::get_retransmission_timeout_ms(&performance_settings_clone);
                         unacked_messages.retain(|&seq_id, (_message, sent_time, retransmission_count, target_addr, encoded_message)| {
                             if sent_time.elapsed() > Duration::from_millis(timeout_ms) {
                                 if *retransmission_count < max_retransmissions {
@@ -345,52 +346,59 @@ impl Circuit {
 
     /// Process commands from the application
     pub async fn process_commands(&mut self, target_addr: &SocketAddr) -> io::Result<()> {
+        // Collect all pending commands first to avoid borrowing conflicts
+        let mut commands = Vec::new();
         if let Some(ref mut receiver) = self.command_receiver {
             while let Ok(command) = receiver.try_recv() {
-                match command {
-                    NetworkCommand::SendChat { message, channel, chat_type } => {
-                        let msg = Message::ChatFromViewer {
-                            message,
-                            channel: channel.to_string(),
-                        };
-                        let _ = self.send_message(&msg, target_addr).await;
-                    },
-                    NetworkCommand::SendAgentUpdate { position, camera_at, camera_eye, controls } => {
-                        // Update the shared agent state
-                        {
-                            let mut state = self.agent_state.lock().await;
-                            state.position = position;
-                            state.camera_at = camera_at;
-                            state.camera_eye = camera_eye;
-                            state.controls = controls;
-                        }
-                        // Note: AgentUpdate is sent automatically by the periodic task
-                    },
-                    NetworkCommand::RequestObject { id } => {
-                        // TODO: Implement object request message
-                        tracing::debug!("Object request not yet implemented: {}", id);
-                    },
-                    NetworkCommand::RequestTexture { texture_id } => {
-                        // TODO: Implement texture request message
-                        tracing::debug!("Texture request not yet implemented: {}", texture_id);
-                    },
-                    NetworkCommand::SendThrottle { throttle } => {
-                        let msg = Message::AgentThrottle {
-                            agent_id: "unknown".to_string(), // TODO: Use actual agent ID
-                            session_id: "unknown".to_string(), // TODO: Use actual session ID
-                            circuit_code: 0, // TODO: Use actual circuit code
-                            throttle,
-                        };
-                        let _ = self.send_message(&msg, target_addr).await;
-                    },
-                    NetworkCommand::Logout => {
-                        let msg = Message::Logout;
-                        let _ = self.send_message(&msg, target_addr).await;
-                    },
-                    NetworkCommand::SendRawMessage { message } => {
-                        let _ = self.send_message(&message, target_addr).await;
-                    },
-                }
+                commands.push(command);
+            }
+        }
+
+        // Process collected commands
+        for command in commands {
+            match command {
+                NetworkCommand::SendChat { message, channel, chat_type } => {
+                    let msg = Message::ChatFromViewer {
+                        message,
+                        channel: channel.to_string(),
+                    };
+                    let _ = self.send_message(&msg, target_addr).await;
+                },
+                NetworkCommand::SendAgentUpdate { position, camera_at, camera_eye, controls } => {
+                    // Update the shared agent state
+                    {
+                        let mut state = self.agent_state.lock().await;
+                        state.position = position;
+                        state.camera_at = camera_at;
+                        state.camera_eye = camera_eye;
+                        state.controls = controls;
+                    }
+                    // Note: AgentUpdate is sent automatically by the periodic task
+                },
+                NetworkCommand::RequestObject { id } => {
+                    // TODO: Implement object request message
+                    tracing::debug!("Object request not yet implemented: {}", id);
+                },
+                NetworkCommand::RequestTexture { texture_id } => {
+                    // TODO: Implement texture request message
+                    tracing::debug!("Texture request not yet implemented: {}", texture_id);
+                },
+                NetworkCommand::SendThrottle { throttle } => {
+                    let msg = Message::AgentThrottle {
+                        agent_id: "unknown".to_string(), // TODO: Use actual agent ID
+                        session_id: "unknown".to_string(), // TODO: Use actual session ID
+                        circuit_code: 0, // TODO: Use actual circuit code
+                        throttle,
+                    };
+                    let _ = self.send_message(&msg, target_addr).await;
+                },
+                NetworkCommand::Logout => {
+                    let msg = Message::Logout;
+                    let _ = self.send_message(&msg, target_addr).await;
+                },
+                NetworkCommand::SendRawMessage { message } => {
+                    let _ = self.send_message(&message, target_addr).await;
+                },
             }
         }
         Ok(())

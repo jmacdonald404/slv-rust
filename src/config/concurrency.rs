@@ -120,7 +120,7 @@ impl ConcurrencyManager {
     /// Execute parallel work using rayon's parallel iterators
     pub fn execute_parallel<I, F, R>(&self, iter: I, func: F) -> Vec<R>
     where
-        I: rayon::prelude::IntoParallelIterator,
+        I: rayon::prelude::IntoParallelIterator + Send,
         F: Fn(I::Item) -> R + Sync + Send,
         R: Send,
         I::Item: Send,
@@ -211,7 +211,7 @@ pub mod dod_utils {
     ) -> Vec<R>
     where
         T: Sync,
-        F: Fn(&T) -> R + Sync,
+        F: Fn(&T) -> R + Sync + Send,
         R: Send,
     {
         if let Some(manager) = get_concurrency_manager() {
@@ -235,8 +235,9 @@ pub mod dod_utils {
         R: Send,
     {
         if let Some(manager) = get_concurrency_manager() {
+            use rayon::prelude::*;
             manager.execute_parallel(
-                array1.iter().zip(array2.iter()),
+                array1.par_iter().zip(array2.par_iter()),
                 |(a, b)| processor(a, b),
             )
         } else {

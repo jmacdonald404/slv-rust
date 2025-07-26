@@ -20,6 +20,15 @@ pub struct Texture {
     pub sampler: wgpu::Sampler,
 }
 
+impl Clone for Texture {
+    fn clone(&self) -> Self {
+        // WGPU resources can't be directly cloned, but we can share them through Arc
+        // For now, we'll panic if someone tries to clone a texture
+        // In a real implementation, we'd want to manage this differently
+        panic!("Texture cloning not implemented - consider using Arc<Texture> instead")
+    }
+}
+
 impl Texture {
     pub fn from_bytes(device: &Device, queue: &Queue, bytes: &[u8], label: &str) -> Result<Self, TextureError> {
         let img = image::load_from_memory(bytes)?;
@@ -49,14 +58,14 @@ impl Texture {
         );
 
         queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
+            wgpu::ImageCopyTexture {
                 texture: &texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
             &rgba,
-            wgpu::TexelCopyBufferLayout {
+            wgpu::ImageDataLayout {
                 offset: 0,
                 bytes_per_row: Some(4 * dimensions.0),
                 rows_per_image: Some(dimensions.1),

@@ -92,7 +92,9 @@ impl PerformanceRenderer {
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
-            ..Default::default()
+            flags: wgpu::InstanceFlags::default(),
+            dx12_shader_compiler: wgpu::Dx12Compiler::default(),
+            gles_minor_version: wgpu::Gles3MinorVersion::Automatic,
         });
 
         let surface = unsafe {
@@ -190,7 +192,8 @@ impl PerformanceRenderer {
         };
 
         // Initialize cluster resources
-        let cluster_dimensions = settings.read().unwrap().rendering.cluster_resolution;
+        let cluster_resolution = settings.read().unwrap().rendering.cluster_resolution;
+        let cluster_dimensions = (cluster_resolution.0 as u32, cluster_resolution.1 as u32, cluster_resolution.2 as u32);
         let (cluster_buffer, light_indices_buffer) = 
             Self::create_cluster_resources(&device, cluster_dimensions)?;
 
@@ -229,7 +232,8 @@ impl PerformanceRenderer {
         }
 
         // Enable compute shaders for clustered forward shading
-        features |= wgpu::Features::COMPUTE_SHADERS;
+        // Compute shaders are enabled by default in modern WGPU
+        // features |= wgpu::Features::COMPUTE;
 
         features
     }
@@ -550,7 +554,11 @@ impl PerformanceRenderer {
             shader_quality: settings.rendering.shader_quality,
             shadow_quality: settings.rendering.shadow_quality,
             hzb_enabled: settings.rendering.hzb_enabled,
-            cluster_dimensions: settings.rendering.cluster_resolution,
+            cluster_dimensions: (
+                settings.rendering.cluster_resolution.0 as u32,
+                settings.rendering.cluster_resolution.1 as u32,
+                settings.rendering.cluster_resolution.2 as u32
+            ),
         };
         drop(settings);
 
@@ -773,7 +781,7 @@ impl PipelineCache {
     pub fn get_stats(&self) -> PipelineCacheStats {
         PipelineCacheStats {
             pipeline_count: self.pipelines.len(),
-            shader_count: self.shader_cache.cache.len(),
+            shader_count: self.shader_cache.len(),
         }
     }
 }

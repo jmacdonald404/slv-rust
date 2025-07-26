@@ -10,7 +10,8 @@
       "Bash(cargo run:*)",
       "Bash(gh issue comment:*)",
       "Bash(cat:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(cargo build:*)"
     ],
     "deny": []
   }

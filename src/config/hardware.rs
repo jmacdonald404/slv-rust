@@ -7,7 +7,9 @@ pub async fn detect_hardware() -> anyhow::Result<HardwareInfo> {
     // Create wgpu instance for GPU detection
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::all(),
-        ..Default::default()
+        flags: wgpu::InstanceFlags::default(),
+        dx12_shader_compiler: wgpu::Dx12Compiler::default(),
+        gles_minor_version: wgpu::Gles3MinorVersion::Automatic,
     });
 
     // Request adapter to get GPU info
@@ -25,7 +27,7 @@ pub async fn detect_hardware() -> anyhow::Result<HardwareInfo> {
     // Get system information
     let mut system = System::new();
     system.refresh_memory();
-    system.refresh_cpu();
+    system.refresh_cpu_all();
 
     // Estimate GPU memory (this is approximate)
     let graphics_memory_mb = estimate_gpu_memory(&adapter_info);
