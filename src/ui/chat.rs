@@ -1,53 +1,91 @@
-// TODO: Integrate chat UI with egui
-// TODO: Implement chat window, input box, and message display
-
 use eframe::egui::Context;
 use std::collections::VecDeque;
 use crate::ui::UiState;
-use crate::networking::protocol::messages::Message;
-use std::net::SocketAddr;
-use crate::networking::session;
-use crate::networking::circuit;
+use crate::app::App;
+use crate::world::events::ChatEvent;
 
-pub fn show_chat_panel(ctx: &eframe::egui::Context, chat_input: &mut String, chat_messages: &mut VecDeque<String>, udp_circuit: &Option<std::sync::Arc<tokio::sync::Mutex<circuit::Circuit>>>, session_info: &Option<session::LoginSessionInfo>) {
-    eframe::egui::Window::new("Chat").show(ctx, |ui| {
-        ui.label("Chat messages:");
-        for msg in chat_messages.iter() {
-            ui.label(msg);
-        }
-        ui.separator();
-        let send = ui.text_edit_singleline(chat_input).lost_focus() && ui.input(|i| i.key_pressed(eframe::egui::Key::Enter));
-        if send && !chat_input.trim().is_empty() {
-            // Send chat message over network if possible
-            if let (Some(circuit_mutex), Some(session_info)) = (udp_circuit, session_info) {
-                let sim_addr = format!("{}:{}", session_info.sim_ip, session_info.sim_port).parse::<SocketAddr>().ok();
-                if let Some(addr) = sim_addr {
-                    let msg = Message::ChatFromViewer {
-                        message: chat_input.clone(),
-                        channel: "local".to_string(),
-                    };
-                    // Spawn a task to send the message asynchronously
-                    let circuit_mutex_clone = circuit_mutex.clone();
-                    let text = chat_input.clone();
-                    tokio::spawn(async move {
-                        let mut circuit = circuit_mutex_clone.lock().await;
-                        if let Err(e) = circuit.send_message(&msg, &addr).await {
-                            eprintln!("Error sending chat message: {}", e);
+/// Display the chat panel using the new channel-based communication system
+pub fn show_chat_panel(ctx: &eframe::egui::Context, app: &App, chat_input: &mut String) {
+    eframe::egui::Window::new("Chat")
+        .default_size([400.0, 300.0])
+        .show(ctx, |ui| {
+            // Display recent chat messages
+            ui.vertical(|ui| {
+                ui.label("Chat Messages:");
+                
+                eframe::egui::ScrollArea::vertical()
+                    .max_height(200.0)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        // Show recent chat history from the app
+                        for chat_event in app.get_recent_chat(50) {
+                            let timestamp = chat_event.timestamp
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs();
+                            
+                            let time_str = format!("{:02}:{:02}", 
+                                (timestamp / 60) % 60, 
+                                timestamp % 60
+                            );
+                            
+                            let message_text = if chat_event.is_local_chat() {
+                                format!("[{}] {}: {}", time_str, chat_event.sender_name, chat_event.message)
+                            } else if chat_event.is_private_message() {
+                                format!("[{}] [IM] {}: {}", time_str, chat_event.sender_name, chat_event.message)
+                            } else {
+                                format!("[{}] [{}] {}: {}", time_str, chat_event.channel, chat_event.sender_name, chat_event.message)
+                            };
+                            
+                            ui.label(message_text);
                         }
                     });
-                    chat_messages.push_back(format!("You: {}", text));
-                } else {
-                    chat_messages.push_back("[Error: Invalid simulator address]".to_string());
-                }
-            } else {
-                chat_messages.push_back("[Error: Not connected]".to_string());
-            }
-            if chat_messages.len() > 50 {
-                chat_messages.pop_front();
-            }
-            chat_input.clear();
-        }
-    });
+                
+                ui.separator();
+                
+                // Chat input area
+                ui.horizontal(|ui| {
+                    let text_edit = ui.text_edit_singleline(chat_input);
+                    let send_button = ui.button("Send");
+                    
+                    let should_send = (text_edit.lost_focus() && ui.input(|i| i.key_pressed(eframe::egui::Key::Enter))) 
+                                      || send_button.clicked();
+                    
+                    if should_send && !chat_input.trim().is_empty() {
+                        // Send chat message using the new channel system
+                        app.send_chat(chat_input.clone());
+                        chat_input.clear();
+                    }
+                });
+                
+                // Connection status indicator
+                ui.separator();
+                ui.horizontal(|ui| {
+                    let status_text = match app.get_connection_status() {
+                        crate::world::events::ConnectionStatus::Connected => "🟢 Connected",
+                        crate::world::events::ConnectionStatus::Connecting => "🟡 Connecting...",
+                        crate::world::events::ConnectionStatus::Handshaking => "🟡 Handshaking...",
+                        crate::world::events::ConnectionStatus::Disconnecting => "🟠 Disconnecting...",
+                        crate::world::events::ConnectionStatus::Disconnected => "🔴 Disconnected",
+                        crate::world::events::ConnectionStatus::Error(ref err) => {
+                            ui.colored_label(eframe::egui::Color32::RED, format!("❌ Error: {}", err));
+                            return;
+                        }
+                    };
+                    
+                    let color = match app.get_connection_status() {
+                        crate::world::events::ConnectionStatus::Connected => eframe::egui::Color32::GREEN,
+                        crate::world::events::ConnectionStatus::Connecting | 
+                        crate::world::events::ConnectionStatus::Handshaking => eframe::egui::Color32::YELLOW,
+                        crate::world::events::ConnectionStatus::Disconnecting => eframe::egui::Color32::from_rgb(255, 165, 0), // Orange
+                        crate::world::events::ConnectionStatus::Disconnected => eframe::egui::Color32::RED,
+                        crate::world::events::ConnectionStatus::Error(_) => eframe::egui::Color32::RED,
+                    };
+                    
+                    ui.colored_label(color, status_text);
+                });
+            });
+        });
 }
 
 /// Call this from the network receive loop to append incoming chat messages

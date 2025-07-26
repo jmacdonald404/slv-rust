@@ -120,4 +120,89 @@ impl MessageCodec {
         println!("[CODEC] Unknown or unsupported message: {:02X?}", &data[..std::cmp::min(data.len(), 32)]);
         Err(io::Error::new(ErrorKind::InvalidData, "Unsupported or unknown message type"))
     }
+
+    /// Encode a message with the given header into a binary packet
+    pub fn encode(header: &PacketHeader, message: &Message) -> io::Result<Vec<u8>> {
+        let mut buf = Vec::new();
+        
+        // Add flags and sequence ID
+        buf.push(header.flags);
+        buf.extend_from_slice(&header.sequence_id.to_be_bytes());
+        buf.push(0x00); // offset, always 0
+        
+        match message {
+            Message::UseCircuitCode { agent_id, session_id, circuit_code } => {
+                // Low frequency message ID for UseCircuitCode (3)
+                buf.extend_from_slice(&[0xFF, 0xFF, 0x00, 0x03]);
+                buf.extend_from_slice(&circuit_code.to_le_bytes());
+                let session_uuid = Uuid::parse_str(session_id)
+                    .map_err(|_| io::Error::new(ErrorKind::InvalidData, "Invalid session_id UUID"))?;
+                let agent_uuid = Uuid::parse_str(agent_id)
+                    .map_err(|_| io::Error::new(ErrorKind::InvalidData, "Invalid agent_id UUID"))?;
+                buf.extend_from_slice(session_uuid.as_bytes());
+                buf.extend_from_slice(agent_uuid.as_bytes());
+            },
+            Message::CompleteAgentMovement { agent_id, session_id, circuit_code, .. } => {
+                // Low frequency message ID for CompleteAgentMovement (249)
+                buf.extend_from_slice(&[0xFF, 0xFF, 0x00, 0xF9]);
+                let agent_uuid = Uuid::parse_str(agent_id)
+                    .map_err(|_| io::Error::new(ErrorKind::InvalidData, "Invalid agent_id UUID"))?;
+                let session_uuid = Uuid::parse_str(session_id)
+                    .map_err(|_| io::Error::new(ErrorKind::InvalidData, "Invalid session_id UUID"))?;
+                buf.extend_from_slice(agent_uuid.as_bytes());
+                buf.extend_from_slice(session_uuid.as_bytes());
+                buf.extend_from_slice(&circuit_code.to_le_bytes());
+            },
+            Message::RegionHandshakeReply { agent_id, session_id, flags } => {
+                // High frequency message ID for RegionHandshakeReply (6)
+                buf.extend_from_slice(&[0x00, 0x00, 0x00, 0x06]);
+                let agent_uuid = Uuid::parse_str(agent_id)
+                    .map_err(|_| io::Error::new(ErrorKind::InvalidData, "Invalid agent_id UUID"))?;
+                let session_uuid = Uuid::parse_str(session_id)
+                    .map_err(|_| io::Error::new(ErrorKind::InvalidData, "Invalid session_id UUID"))?;
+                buf.extend_from_slice(agent_uuid.as_bytes());
+                buf.extend_from_slice(session_uuid.as_bytes());
+                buf.extend_from_slice(&flags.to_le_bytes());
+            },
+            Message::AgentThrottle { agent_id, session_id, circuit_code, throttle } => {
+                // Low frequency message ID for AgentThrottle (81)
+                buf.extend_from_slice(&[0xFF, 0xFF, 0x00, 0x51]);
+                let agent_uuid = Uuid::parse_str(agent_id)
+                    .map_err(|_| io::Error::new(ErrorKind::InvalidData, "Invalid agent_id UUID"))?;
+                let session_uuid = Uuid::parse_str(session_id)
+                    .map_err(|_| io::Error::new(ErrorKind::InvalidData, "Invalid session_id UUID"))?;
+                buf.extend_from_slice(agent_uuid.as_bytes());
+                buf.extend_from_slice(session_uuid.as_bytes());
+                buf.extend_from_slice(&circuit_code.to_be_bytes());
+                for v in throttle.iter() {
+                    buf.extend_from_slice(&v.to_be_bytes());
+                }
+            },
+            Message::AgentUpdate { agent_id, session_id, position, camera_at, camera_eye, controls } => {
+                // High frequency message ID for AgentUpdate (4)
+                buf.extend_from_slice(&[0x00, 0x00, 0x00, 0x04]);
+                let agent_uuid = Uuid::parse_str(agent_id)
+                    .map_err(|_| io::Error::new(ErrorKind::InvalidData, "Invalid agent_id UUID"))?;
+                let session_uuid = Uuid::parse_str(session_id)
+                    .map_err(|_| io::Error::new(ErrorKind::InvalidData, "Invalid session_id UUID"))?;
+                buf.extend_from_slice(agent_uuid.as_bytes());
+                buf.extend_from_slice(session_uuid.as_bytes());
+                let coords = [position.0, position.1, position.2, camera_at.0, camera_at.1, camera_at.2, camera_eye.0, camera_eye.1, camera_eye.2];
+                for v in coords.iter() {
+                    buf.extend_from_slice(&v.to_be_bytes());
+                }
+                buf.extend_from_slice(&controls.to_be_bytes());
+            },
+            Message::Ack { sequence_id } => {
+                // ACK message (1)
+                buf.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+                buf.extend_from_slice(&sequence_id.to_be_bytes());
+            },
+            _ => {
+                return Err(io::Error::new(ErrorKind::InvalidInput, "Message type not supported for encoding"));
+            }
+        }
+        
+        Ok(buf)
+    }
 }

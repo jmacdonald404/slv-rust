@@ -412,8 +412,8 @@ pub async fn login_to_secondlife(grid_uri: &str, req: &LoginRequest, proxy_setti
 
             tokio::spawn(async move {
                 // Progress through handshake states
-                circuit.advance_handshake(agent_id, session_id, circuit_code, position, look_at, throttle, flags, controls, camera_at, camera_eye).await;
-                circuit.advance_handshake(agent_id, session_id, circuit_code, position, look_at, throttle, flags, controls, camera_at, camera_eye).await;
+                circuit.advance_handshake(agent_id, session_id, circuit_code, position, look_at, throttle, flags, controls, camera_at, camera_eye, &sim_addr).await;
+                circuit.advance_handshake(agent_id, session_id, circuit_code, position, look_at, throttle, flags, controls, camera_at, camera_eye, &sim_addr).await;
                 // Start the receive loop to handle all incoming messages and handshake progression
                 circuit.run_receive_loop(
                     agent_id,
@@ -425,7 +425,8 @@ pub async fn login_to_secondlife(grid_uri: &str, req: &LoginRequest, proxy_setti
                     flags,
                     controls,
                     camera_at,
-                    camera_eye
+                    camera_eye,
+                    &sim_addr
                 ).await;
             });
             Ok(info)

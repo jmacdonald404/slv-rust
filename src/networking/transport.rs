@@ -3,8 +3,7 @@ use tokio::time::{timeout, Duration};
 use bytes::BytesMut;
 use std::net::SocketAddr;
 use std::io;
-use uuid::Uuid;
-use crate::utils::lludp::{build_use_circuit_code_packet, LluPacket};
+use crate::utils::lludp::LluPacket;
 use async_trait::async_trait;
 use crate::ui::proxy::ProxySettings;
 use crate::networking::socks5_udp::Socks5UdpSocket;
@@ -74,75 +73,6 @@ impl UdpTransport {
         Ok(UdpTransport { socket, sim_addr, packet_id_counter: initial_packet_id })
     }
 
-    /// Send a UseCircuitCode packet using the LLUDP binary format (message_template.msg)
-    /// Only to be called by Circuit::advance_handshake
-    pub(crate) async fn send_usecircuitcode_packet_lludp(&mut self, circuit_code: u32, session_id: uuid::Uuid, agent_id: uuid::Uuid) -> std::io::Result<usize> {
-        let packet_id = self.packet_id_counter;
-        self.packet_id_counter += 1;
-        let packet = build_use_circuit_code_packet(circuit_code, session_id, agent_id, packet_id);
-        println!("[LLUDP OUT] UseCircuitCode (Low frequency, unencoded) seq={} to {}:", packet_id, self.sim_addr);
-        self.send_to(&packet, &self.sim_addr).await
-    }
-
-    /// Only to be called by Circuit::advance_handshake
-    pub(crate) async fn send_complete_agent_movement_packet(&mut self, agent_id: Uuid, session_id: Uuid, circuit_code: u32, position: (f32, f32, f32), look_at: (f32, f32, f32)) -> std::io::Result<usize> {
-        let packet_id = self.packet_id_counter;
-        self.packet_id_counter += 1;
-        let packet = crate::utils::lludp::build_complete_agent_movement_packet(
-            agent_id,
-            session_id,
-            circuit_code,
-            packet_id,
-            position,
-            look_at,
-        );
-        println!("[LLUDP OUT] CompleteAgentMovement (Low frequency, unencoded) seq={} to {}:", packet_id, self.sim_addr);
-        self.send_to(&packet, &self.sim_addr).await
-    }
-
-    /// Only to be called by Circuit::advance_handshake or for RegionHandshakeReply with custom sequence
-    pub(crate) async fn send_region_handshake_reply_packet_with_seq(&mut self, agent_id: Uuid, session_id: Uuid, flags: u32, sequence_id: u32) -> std::io::Result<usize> {
-        let packet = crate::utils::lludp::build_region_handshake_reply_packet(
-            agent_id,
-            session_id,
-            flags,
-            sequence_id,
-        );
-        println!("[LLUDP OUT] RegionHandshakeReply (Low frequency, unencoded) seq={} to {}:", sequence_id, self.sim_addr);
-        self.send_to(&packet, &self.sim_addr).await
-    }
-
-    /// Only to be called by Circuit::advance_handshake
-    pub(crate) async fn send_agent_throttle_packet(&mut self, agent_id: Uuid, session_id: Uuid, circuit_code: u32, throttle: [f32; 7]) -> std::io::Result<usize> {
-        let packet_id = self.packet_id_counter;
-        self.packet_id_counter += 1;
-        let packet = crate::utils::lludp::build_agent_throttle_packet(
-            agent_id,
-            session_id,
-            circuit_code,
-            throttle,
-            packet_id,
-        );
-        println!("[LLUDP OUT] AgentThrottle (Low frequency, unencoded) seq={} to {}:", packet_id, self.sim_addr);
-        self.send_to(&packet, &self.sim_addr).await
-    }
-
-    /// Only to be called by Circuit::advance_handshake
-    pub(crate) async fn send_agent_update_packet(&mut self, agent_id: Uuid, session_id: Uuid, position: (f32, f32, f32), camera_at: (f32, f32, f32), camera_eye: (f32, f32, f32), controls: u32) -> std::io::Result<usize> {
-        let packet_id = self.packet_id_counter;
-        self.packet_id_counter += 1;
-        let packet = crate::utils::lludp::build_agent_update_packet(
-            agent_id,
-            session_id,
-            position,
-            camera_at,
-            camera_eye,
-            controls,
-            packet_id,
-        );
-        println!("[LLUDP OUT] AgentUpdate (High frequency, unencoded) seq={} to {}:", packet_id, self.sim_addr);
-        self.send_to(&packet, &self.sim_addr).await
-    }
 
     /// Log incoming LLUDP packets (for UseCircuitCode response and others)
     pub async fn recv_lludp_packet(&mut self, timeout_ms: u64) -> std::io::Result<Option<(LluPacket, std::net::SocketAddr)>> {

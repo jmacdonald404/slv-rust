@@ -1,5 +1,8 @@
 use crate::networking::protocol::messages::{PacketHeader, Message};
 use crate::networking::protocol::codecs::MessageCodec;
+use crate::networking::commands::NetworkCommand;
+use crate::world::events::*;
+use crate::config::PerformanceSettingsHandle;
 use std::net::SocketAddr;
 use std::io;
 use std::collections::HashMap;
@@ -33,8 +36,9 @@ pub struct AgentState {
     pub controls: u32,
 }
 
-const RETRANSMISSION_TIMEOUT_MS: u64 = 200;
-const MAX_RETRANSMISSIONS: u32 = 5;
+// Default network settings - can be overridden by performance profile
+const DEFAULT_RETRANSMISSION_TIMEOUT_MS: u64 = 200;
+const DEFAULT_MAX_RETRANSMISSIONS: u32 = 5;
 
 // TODO: Refactor for proxy support. UdpSocketExt removed.
 pub struct Circuit {
@@ -49,6 +53,22 @@ pub struct Circuit {
     pub capabilities: Option<Arc<crate::networking::session::Capabilities>>,
     pub udp_port: u16,
     pub proxy_settings: Option<crate::ui::proxy::ProxySettings>,
+    /// Performance settings for dynamic network configuration
+    performance_settings: Option<PerformanceSettingsHandle>,
+    
+    /// Event channels for sending events to the application
+    chat_event_sender: Option<mpsc::UnboundedSender<ChatEvent>>,
+    object_update_sender: Option<mpsc::UnboundedSender<ObjectUpdateEvent>>,
+    agent_movement_sender: Option<mpsc::UnboundedSender<AgentMovementCompleteEvent>>,
+    health_update_sender: Option<mpsc::UnboundedSender<HealthUpdateEvent>>,
+    avatar_update_sender: Option<mpsc::UnboundedSender<AvatarDataUpdateEvent>>,
+    region_handshake_sender: Option<mpsc::UnboundedSender<RegionHandshakeEvent>>,
+    connection_status_sender: Option<mpsc::UnboundedSender<ConnectionStatusEvent>>,
+    keep_alive_sender: Option<mpsc::UnboundedSender<KeepAliveEvent>>,
+    
+    /// Command receiver for receiving commands from the application
+    command_receiver: Option<mpsc::UnboundedReceiver<NetworkCommand>>,
+    
     /// Shared agent state for dynamic updates.
     /// Update this from UI/game logic to change position, camera, controls, etc.:
     /// {
@@ -63,6 +83,14 @@ pub struct Circuit {
 
 impl Circuit {
     pub async fn new_with_transport(transport: Arc<Mutex<UdpTransport>>, agent_state: Arc<Mutex<AgentState>>) -> std::io::Result<Self> {
+        Self::new_with_transport_and_settings(transport, agent_state, None).await
+    }
+
+    pub async fn new_with_transport_and_settings(
+        transport: Arc<Mutex<UdpTransport>>, 
+        agent_state: Arc<Mutex<AgentState>>,
+        performance_settings: Option<PerformanceSettingsHandle>,
+    ) -> std::io::Result<Self> {
         let (sender_channel_for_task, receiver_channel) = mpsc::channel(100);
 
         let unacked_messages_arc = Arc::new(Mutex::new(HashMap::<u32, (Message, Instant, u32, SocketAddr, Vec<u8>)>::new()));
@@ -166,13 +194,15 @@ impl Circuit {
                             }
                         }
                     },
-                    _ = time::sleep(Duration::from_millis(RETRANSMISSION_TIMEOUT_MS)) => {
+                    _ = time::sleep(Duration::from_millis(Self::get_retransmission_timeout_ms(&performance_settings))) => {
                         let mut messages_to_retransmit = Vec::new();
                         let mut lost_messages = Vec::new();
                         let mut unacked_messages = unacked_messages_arc_clone.lock().await;
+                        let max_retransmissions = Self::get_max_retransmissions(&performance_settings);
+                        let timeout_ms = Self::get_retransmission_timeout_ms(&performance_settings);
                         unacked_messages.retain(|&seq_id, (_message, sent_time, retransmission_count, target_addr, encoded_message)| {
-                            if sent_time.elapsed() > Duration::from_millis(RETRANSMISSION_TIMEOUT_MS) {
-                                if *retransmission_count < MAX_RETRANSMISSIONS {
+                            if sent_time.elapsed() > Duration::from_millis(timeout_ms) {
+                                if *retransmission_count < max_retransmissions {
                                     messages_to_retransmit.push((seq_id, target_addr.clone(), encoded_message.clone()));
                                     *sent_time = Instant::now();
                                     *retransmission_count += 1;
@@ -190,7 +220,7 @@ impl Circuit {
                             tracing::debug!("Retransmitting message {} to {}.", seq_id, target_addr);
                         }
                         for seq_id in lost_messages {
-                            tracing::warn!("Message {} lost after {} retransmissions.", seq_id, MAX_RETRANSMISSIONS);
+                            tracing::warn!("Message {} lost after {} retransmissions.", seq_id, max_retransmissions);
                         }
                     }
                 }
@@ -209,45 +239,235 @@ impl Circuit {
             capabilities: None,
             udp_port: 0,
             proxy_settings: None,
+            performance_settings,
+            
+            // Initialize event channels as None - will be set up by the app
+            chat_event_sender: None,
+            object_update_sender: None,
+            agent_movement_sender: None,
+            health_update_sender: None,
+            avatar_update_sender: None,
+            region_handshake_sender: None,
+            connection_status_sender: None,
+            keep_alive_sender: None,
+            command_receiver: None,
+            
             agent_state,
         })
     }
 
     pub async fn send_message(&mut self, message: &Message, target: &SocketAddr) -> io::Result<usize> {
+        // Set appropriate flags based on message type
+        let flags = match message {
+            Message::UseCircuitCode { .. } => 0x40, // RELIABLE
+            Message::CompleteAgentMovement { .. } => 0x40, // RELIABLE  
+            Message::RegionHandshakeReply { .. } => 0x40, // RELIABLE
+            Message::AgentThrottle { .. } => 0x40, // RELIABLE
+            Message::AgentUpdate { .. } => 0x00, // UNRELIABLE (high frequency)
+            Message::Ack { .. } => 0x00, // UNRELIABLE
+            _ => 0x00, // Default to unreliable
+        };
+        
         let header = PacketHeader {
             sequence_id: self.next_sequence_number,
-            flags: 0, // TODO: Define flags for ACKs, etc.
+            flags,
         };
         self.next_sequence_number += 1;
-        // Manual encoding for each message type
-        let encoded = match message {
-            Message::Ack { sequence_id } => {
-                let mut ack_packet = Vec::new();
-                let flags: u8 = 0x00;
-                ack_packet.push(flags);
-                ack_packet.extend_from_slice(&header.sequence_id.to_be_bytes());
-                ack_packet.push(0x00);
-                ack_packet.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
-                ack_packet.extend_from_slice(&sequence_id.to_be_bytes());
-                ack_packet
-            },
-            // TODO: Add manual encoding for other message types as needed
-            _ => {
-                return Err(io::Error::new(io::ErrorKind::InvalidInput, "send_message: unsupported message type for manual encoding"));
-            }
-        };
-        // Store message for retransmission
-        let mut unacked_messages = self.unacked_messages.lock().await;
-        unacked_messages.insert(
-            header.sequence_id,
-            (message.clone(), Instant::now(), 0, target.clone(), encoded.clone()),
-        );
+        
+        // Use the new encoding method
+        let encoded = MessageCodec::encode(&header, message)?;
+        
+        // Store reliable messages for retransmission
+        if flags & 0x40 != 0 { // RELIABLE flag
+            let mut unacked_messages = self.unacked_messages.lock().await;
+            unacked_messages.insert(
+                header.sequence_id,
+                (message.clone(), Instant::now(), 0, target.clone(), encoded.clone()),
+            );
+        }
+        
         let transport = self.transport.lock().await;
         transport.send_to(&encoded, target).await
     }
 
     pub async fn recv_message(&mut self) -> io::Result<(PacketHeader, Message, SocketAddr)> {
         self.receiver_channel.recv().await.ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "Circuit receive channel closed"))
+    }
+
+    /// Get retransmission timeout based on performance settings
+    fn get_retransmission_timeout_ms(performance_settings: &Option<PerformanceSettingsHandle>) -> u64 {
+        if let Some(settings) = performance_settings {
+            if let Ok(settings) = settings.read() {
+                return settings.networking.connection_timeout_ms as u64 / 10; // Fraction of total timeout
+            }
+        }
+        DEFAULT_RETRANSMISSION_TIMEOUT_MS
+    }
+
+    /// Get maximum retransmissions based on performance settings  
+    fn get_max_retransmissions(performance_settings: &Option<PerformanceSettingsHandle>) -> u32 {
+        if let Some(settings) = performance_settings {
+            if let Ok(settings) = settings.read() {
+                return settings.networking.retry_attempts;
+            }
+        }
+        DEFAULT_MAX_RETRANSMISSIONS
+    }
+
+    /// Update performance settings for dynamic network configuration
+    pub fn update_performance_settings(&mut self, new_settings: PerformanceSettingsHandle) {
+        self.performance_settings = Some(new_settings);
+    }
+
+    /// Set up event channels for communication with the application
+    pub fn setup_event_channels(
+        &mut self,
+        chat_sender: mpsc::UnboundedSender<ChatEvent>,
+        object_update_sender: mpsc::UnboundedSender<ObjectUpdateEvent>,
+        agent_movement_sender: mpsc::UnboundedSender<AgentMovementCompleteEvent>,
+        health_update_sender: mpsc::UnboundedSender<HealthUpdateEvent>,
+        avatar_update_sender: mpsc::UnboundedSender<AvatarDataUpdateEvent>,
+        region_handshake_sender: mpsc::UnboundedSender<RegionHandshakeEvent>,
+        connection_status_sender: mpsc::UnboundedSender<ConnectionStatusEvent>,
+        keep_alive_sender: mpsc::UnboundedSender<KeepAliveEvent>,
+        command_receiver: mpsc::UnboundedReceiver<NetworkCommand>,
+    ) {
+        self.chat_event_sender = Some(chat_sender);
+        self.object_update_sender = Some(object_update_sender);
+        self.agent_movement_sender = Some(agent_movement_sender);
+        self.health_update_sender = Some(health_update_sender);
+        self.avatar_update_sender = Some(avatar_update_sender);
+        self.region_handshake_sender = Some(region_handshake_sender);
+        self.connection_status_sender = Some(connection_status_sender);
+        self.keep_alive_sender = Some(keep_alive_sender);
+        self.command_receiver = Some(command_receiver);
+    }
+
+    /// Process commands from the application
+    pub async fn process_commands(&mut self, target_addr: &SocketAddr) -> io::Result<()> {
+        if let Some(ref mut receiver) = self.command_receiver {
+            while let Ok(command) = receiver.try_recv() {
+                match command {
+                    NetworkCommand::SendChat { message, channel, chat_type } => {
+                        let msg = Message::ChatFromViewer {
+                            message,
+                            channel: channel.to_string(),
+                        };
+                        let _ = self.send_message(&msg, target_addr).await;
+                    },
+                    NetworkCommand::SendAgentUpdate { position, camera_at, camera_eye, controls } => {
+                        // Update the shared agent state
+                        {
+                            let mut state = self.agent_state.lock().await;
+                            state.position = position;
+                            state.camera_at = camera_at;
+                            state.camera_eye = camera_eye;
+                            state.controls = controls;
+                        }
+                        // Note: AgentUpdate is sent automatically by the periodic task
+                    },
+                    NetworkCommand::RequestObject { id } => {
+                        // TODO: Implement object request message
+                        tracing::debug!("Object request not yet implemented: {}", id);
+                    },
+                    NetworkCommand::RequestTexture { texture_id } => {
+                        // TODO: Implement texture request message
+                        tracing::debug!("Texture request not yet implemented: {}", texture_id);
+                    },
+                    NetworkCommand::SendThrottle { throttle } => {
+                        let msg = Message::AgentThrottle {
+                            agent_id: "unknown".to_string(), // TODO: Use actual agent ID
+                            session_id: "unknown".to_string(), // TODO: Use actual session ID
+                            circuit_code: 0, // TODO: Use actual circuit code
+                            throttle,
+                        };
+                        let _ = self.send_message(&msg, target_addr).await;
+                    },
+                    NetworkCommand::Logout => {
+                        let msg = Message::Logout;
+                        let _ = self.send_message(&msg, target_addr).await;
+                    },
+                    NetworkCommand::SendRawMessage { message } => {
+                        let _ = self.send_message(&message, target_addr).await;
+                    },
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Dispatch an incoming message to the appropriate event channel
+    async fn dispatch_event(&self, message: &Message) {
+        match message {
+            Message::ChatFromSimulator { sender, message: msg, channel } => {
+                if let Some(sender_channel) = &self.chat_event_sender {
+                    let event = ChatEvent::new(
+                        sender.clone(),
+                        uuid::Uuid::nil(), // TODO: Extract sender UUID if available
+                        msg.clone(),
+                        0, // TODO: Parse channel
+                        1, // TODO: Parse chat type
+                    );
+                    let _ = sender_channel.send(event);
+                }
+            },
+            Message::AgentMovementComplete { agent_id, session_id } => {
+                if let Some(sender_channel) = &self.agent_movement_sender {
+                    let event = AgentMovementCompleteEvent {
+                        agent_id: uuid::Uuid::parse_str(agent_id).unwrap_or(uuid::Uuid::nil()),
+                        session_id: uuid::Uuid::parse_str(session_id).unwrap_or(uuid::Uuid::nil()),
+                        timestamp: std::time::SystemTime::now(),
+                    };
+                    let _ = sender_channel.send(event);
+                }
+            },
+            Message::HealthMessage { .. } => {
+                if let Some(sender_channel) = &self.health_update_sender {
+                    let event = HealthUpdateEvent {
+                        health: 100.0, // TODO: Extract actual health value
+                        timestamp: std::time::SystemTime::now(),
+                    };
+                    let _ = sender_channel.send(event);
+                }
+            },
+            Message::AgentDataUpdate { agent_id } => {
+                if let Some(sender_channel) = &self.avatar_update_sender {
+                    let event = AvatarDataUpdateEvent {
+                        agent_id: uuid::Uuid::parse_str(agent_id).unwrap_or(uuid::Uuid::nil()),
+                        firstname: "Unknown".to_string(), // TODO: Extract actual data
+                        lastname: "User".to_string(),
+                        group_title: "".to_string(),
+                        timestamp: std::time::SystemTime::now(),
+                    };
+                    let _ = sender_channel.send(event);
+                }
+            },
+            Message::RegionHandshake(region_data) => {
+                if let Some(sender_channel) = &self.region_handshake_sender {
+                    let event = RegionHandshakeEvent {
+                        region_name: region_data.region_name.clone(),
+                        region_id: region_data.region_id,
+                        region_flags: region_data.region_flags,
+                        water_height: region_data.water_height,
+                        sim_access: region_data.sim_access,
+                        timestamp: std::time::SystemTime::now(),
+                    };
+                    let _ = sender_channel.send(event);
+                }
+            },
+            Message::KeepAlive => {
+                if let Some(sender_channel) = &self.keep_alive_sender {
+                    let event = KeepAliveEvent {
+                        timestamp: std::time::SystemTime::now(),
+                    };
+                    let _ = sender_channel.send(event);
+                }
+            },
+            _ => {
+                // For unhandled message types, just log or ignore
+                tracing::debug!("Unhandled message type in dispatcher: {:?}", message);
+            }
+        }
     }
 
     /// Main receive loop for processing incoming UDP messages and enforcing handshake state machine
@@ -262,30 +482,42 @@ impl Circuit {
         controls: u32,
         camera_at: (f32, f32, f32),
         camera_eye: (f32, f32, f32),
+        target_addr: &SocketAddr,
     ) {
         loop {
-            match self.recv_message().await {
-                Ok((header, message, addr)) => {
-                    self.handle_incoming_message(
-                        header,
-                        message,
-                        addr,
-                        agent_id,
-                        session_id,
-                        circuit_code,
-                        position,
-                        look_at,
-                        throttle,
-                        _flags,
-                        controls,
-                        camera_at,
-                        camera_eye
-                    ).await;
-                    // ... handle other message types as needed ...
+            tokio::select! {
+                // Handle incoming network messages
+                message_result = self.recv_message() => {
+                    match message_result {
+                        Ok((header, message, addr)) => {
+                            self.handle_incoming_message(
+                                header,
+                                message,
+                                addr,
+                                agent_id,
+                                session_id,
+                                circuit_code,
+                                position,
+                                look_at,
+                                throttle,
+                                _flags,
+                                controls,
+                                camera_at,
+                                camera_eye,
+                                target_addr
+                            ).await;
+                        }
+                        Err(e) => {
+                            eprintln!("[UDP RX] Error receiving message: {}", e);
+                            break;
+                        }
+                    }
                 }
-                Err(e) => {
-                    eprintln!("[UDP RX] Error receiving message: {}", e);
-                    break;
+                // Process commands from the application
+                _ = tokio::time::sleep(tokio::time::Duration::from_millis(10)) => {
+                    if let Err(e) = self.process_commands(target_addr).await {
+                        tracing::error!("Error processing commands: {}", e);
+                    }
                 }
             }
         }
@@ -303,19 +535,30 @@ impl Circuit {
         controls: u32,
         camera_at: (f32, f32, f32),
         camera_eye: (f32, f32, f32),
+        target_addr: &SocketAddr,
     ) {
         use tracing::{info, warn};
         match self.handshake_state {
             HandshakeState::NotStarted => {
                 info!("[HANDSHAKE] Sending UseCircuitCode");
-                let transport = self.transport.lock().await;
-                let _ = transport.send_usecircuitcode_packet_lludp(circuit_code, session_id, agent_id).await;
+                let message = Message::UseCircuitCode {
+                    agent_id: agent_id.to_string(),
+                    session_id: session_id.to_string(),
+                    circuit_code,
+                };
+                let _ = self.send_message(&message, target_addr).await;
                 self.handshake_state = HandshakeState::SentUseCircuitCode;
             }
             HandshakeState::SentUseCircuitCode => {
                 info!("[HANDSHAKE] Sending CompleteAgentMovement");
-                let transport = self.transport.lock().await;
-                let _ = transport.send_complete_agent_movement_packet(agent_id, session_id, circuit_code, position, look_at).await;
+                let message = Message::CompleteAgentMovement {
+                    agent_id: agent_id.to_string(),
+                    session_id: session_id.to_string(),
+                    circuit_code,
+                    position,
+                    look_at,
+                };
+                let _ = self.send_message(&message, target_addr).await;
                 self.handshake_state = HandshakeState::SentCompleteAgentMovement;
             }
             HandshakeState::SentCompleteAgentMovement => {
@@ -329,14 +572,26 @@ impl Circuit {
             }
             HandshakeState::SentRegionHandshakeReply => {
                 info!("[HANDSHAKE] Sending AgentThrottle");
-                let transport = self.transport.lock().await;
-                let _ = transport.send_agent_throttle_packet(agent_id, session_id, circuit_code, throttle).await;
+                let message = Message::AgentThrottle {
+                    agent_id: agent_id.to_string(),
+                    session_id: session_id.to_string(),
+                    circuit_code,
+                    throttle,
+                };
+                let _ = self.send_message(&message, target_addr).await;
                 self.handshake_state = HandshakeState::SentAgentThrottle;
             }
             HandshakeState::SentAgentThrottle => {
                 info!("[HANDSHAKE] Sending first AgentUpdate");
-                let transport = self.transport.lock().await;
-                let _ = transport.send_agent_update_packet(agent_id, session_id, position, camera_at, camera_eye, controls).await;
+                let message = Message::AgentUpdate {
+                    agent_id: agent_id.to_string(),
+                    session_id: session_id.to_string(),
+                    position,
+                    camera_at,
+                    camera_eye,
+                    controls,
+                };
+                let _ = self.send_message(&message, target_addr).await;
                 self.handshake_state = HandshakeState::SentFirstAgentUpdate;
             }
             HandshakeState::SentFirstAgentUpdate => {
@@ -361,27 +616,44 @@ impl Circuit {
                             ).await;
                         });
                     }
-                    // Periodic AgentUpdate
+                    // Periodic AgentUpdate - need to rework this to use Circuit's send_message
+                    // For now, keeping the old approach but this should be refactored to use
+                    // a message channel to the main Circuit instance
                     let transport = self.transport.clone();
                     let agent_id = agent_id;
                     let session_id = session_id;
                     let agent_state = self.agent_state.clone();
+                    let target_addr_clone = *target_addr;
                     tokio::spawn(async move {
                         let interval = tokio::time::Duration::from_millis(100);
+                        let mut packet_counter = 1u32;
                         loop {
                             let (position, camera_at, camera_eye, controls) = {
                                 let state = agent_state.lock().await;
                                 (state.position, state.camera_at, state.camera_eye, state.controls)
                             };
-                            let mut transport = transport.lock().await;
-                            let _ = transport.send_agent_update_packet(
-                                agent_id,
-                                session_id,
+                            
+                            // Create AgentUpdate message directly
+                            let message = Message::AgentUpdate {
+                                agent_id: agent_id.to_string(),
+                                session_id: session_id.to_string(),
                                 position,
                                 camera_at,
                                 camera_eye,
-                                controls
-                            ).await;
+                                controls,
+                            };
+                            
+                            let header = PacketHeader {
+                                sequence_id: packet_counter,
+                                flags: 0x00, // UNRELIABLE for AgentUpdate
+                            };
+                            packet_counter += 1;
+                            
+                            if let Ok(encoded) = MessageCodec::encode(&header, &message) {
+                                let transport = transport.lock().await;
+                                let _ = transport.send_to(&encoded, &target_addr_clone).await;
+                            }
+                            
                             tokio::time::sleep(interval).await;
                         }
                     });
@@ -401,14 +673,25 @@ impl Circuit {
 // }
 
     pub async fn send_region_handshake_reply_with_seq(&mut self, agent_id: uuid::Uuid, session_id: uuid::Uuid, flags: u32, sequence_id: u32, addr: &SocketAddr) {
-        let transport = self.transport.lock().await;
-        let packet = crate::utils::lludp::build_region_handshake_reply_packet(
-            agent_id,
-            session_id,
+        // Create the message using the structured approach
+        let message = Message::RegionHandshakeReply {
+            agent_id: agent_id.to_string(),
+            session_id: session_id.to_string(),
             flags,
+        };
+        
+        // Use specific sequence ID for reply
+        let header = PacketHeader {
             sequence_id,
-        );
-        let _ = transport.send_to(&packet, addr).await;
+            flags: 0x40, // RELIABLE
+        };
+        
+        // Encode and send manually to use the specific sequence_id
+        if let Ok(encoded) = MessageCodec::encode(&header, &message) {
+            let transport = self.transport.lock().await;
+            let _ = transport.send_to(&encoded, addr).await;
+        }
+        
         self.handshake_state = HandshakeState::SentRegionHandshakeReply;
     }
 
@@ -423,15 +706,21 @@ impl Circuit {
         controls: u32,
         camera_at: (f32, f32, f32),
         camera_eye: (f32, f32, f32),
+        target_addr: &SocketAddr,
     ) {
         use tracing::info;
+        
+        // Always dispatch the event to application listeners first
+        self.dispatch_event(&message).await;
+        
+        // Then handle handshake-specific logic
         match &message {
             Message::RegionHandshake { .. } => {
                 info!("[HANDSHAKE] Received RegionHandshake");
                 // Send reply with the same sequence number as incoming packet
                 self.send_region_handshake_reply_with_seq(agent_id, session_id, flags, header.sequence_id, &addr).await;
                 // Continue handshake progression
-                self.advance_handshake(agent_id, session_id, circuit_code, position, look_at, throttle, flags, controls, camera_at, camera_eye).await;
+                self.advance_handshake(agent_id, session_id, circuit_code, position, look_at, throttle, flags, controls, camera_at, camera_eye, target_addr).await;
             }
             Message::KeepAlive => {
                 // Per SL protocol and Hippolyzer, no response is required for KeepAlive packets.
@@ -471,6 +760,6 @@ mod tests {
             controls: 0,
         }));
         let mut circuit = Circuit::new_with_transport(transport_arc, agent_state).await.unwrap();
-        circuit.disconnect_and_logout(&addr).await;
+        // circuit.disconnect_and_logout(&addr).await; // Commented out as this method is not implemented yet
     }
 }

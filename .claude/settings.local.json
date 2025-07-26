@@ -8,7 +8,9 @@
       "Bash(cargo check:*)",
       "Bash(cargo doc:*)",
       "Bash(cargo run:*)",
-      "Bash(gh issue comment:*)"
+      "Bash(gh issue comment:*)",
+      "Bash(cat:*)",
+      "Bash(git add:*)"
     ],
     "deny": []
   }
