@@ -1,6 +1,6 @@
 use crate::ui::UiState;
 use crate::networking::commands::NetworkCommand;
-use crate::world::events::*;
+use crate::world::*;
 use std::sync::Arc;
 use std::net::SocketAddr;
 use tokio::sync::mpsc;

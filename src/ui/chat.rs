@@ -2,7 +2,7 @@ use eframe::egui::Context;
 use std::collections::VecDeque;
 use crate::ui::UiState;
 use crate::app::App;
-use crate::world::events::ChatEvent;
+use crate::world::ChatEvent;
 
 /// Display the chat panel using the new channel-based communication system
 pub fn show_chat_panel(ctx: &eframe::egui::Context, app: &App, chat_input: &mut String) {
@@ -62,24 +62,24 @@ pub fn show_chat_panel(ctx: &eframe::egui::Context, app: &App, chat_input: &mut 
                 ui.separator();
                 ui.horizontal(|ui| {
                     let status_text = match app.get_connection_status() {
-                        crate::world::events::ConnectionStatus::Connected => "🟢 Connected",
-                        crate::world::events::ConnectionStatus::Connecting => "🟡 Connecting...",
-                        crate::world::events::ConnectionStatus::Handshaking => "🟡 Handshaking...",
-                        crate::world::events::ConnectionStatus::Disconnecting => "🟠 Disconnecting...",
-                        crate::world::events::ConnectionStatus::Disconnected => "🔴 Disconnected",
-                        crate::world::events::ConnectionStatus::Error(ref err) => {
+                        crate::world::ConnectionStatus::Connected => "🟢 Connected",
+                        crate::world::ConnectionStatus::Connecting => "🟡 Connecting...",
+                        crate::world::ConnectionStatus::Handshaking => "🟡 Handshaking...",
+                        crate::world::ConnectionStatus::Disconnecting => "🟠 Disconnecting...",
+                        crate::world::ConnectionStatus::Disconnected => "🔴 Disconnected",
+                        crate::world::ConnectionStatus::Error(ref err) => {
                             ui.colored_label(eframe::egui::Color32::RED, format!("❌ Error: {}", err));
                             return;
                         }
                     };
                     
                     let color = match app.get_connection_status() {
-                        crate::world::events::ConnectionStatus::Connected => eframe::egui::Color32::GREEN,
-                        crate::world::events::ConnectionStatus::Connecting | 
-                        crate::world::events::ConnectionStatus::Handshaking => eframe::egui::Color32::YELLOW,
-                        crate::world::events::ConnectionStatus::Disconnecting => eframe::egui::Color32::from_rgb(255, 165, 0), // Orange
-                        crate::world::events::ConnectionStatus::Disconnected => eframe::egui::Color32::RED,
-                        crate::world::events::ConnectionStatus::Error(_) => eframe::egui::Color32::RED,
+                        crate::world::ConnectionStatus::Connected => eframe::egui::Color32::GREEN,
+                        crate::world::ConnectionStatus::Connecting | 
+                        crate::world::ConnectionStatus::Handshaking => eframe::egui::Color32::YELLOW,
+                        crate::world::ConnectionStatus::Disconnecting => eframe::egui::Color32::from_rgb(255, 165, 0), // Orange
+                        crate::world::ConnectionStatus::Disconnected => eframe::egui::Color32::RED,
+                        crate::world::ConnectionStatus::Error(_) => eframe::egui::Color32::RED,
                     };
                     
                     ui.colored_label(color, status_text);

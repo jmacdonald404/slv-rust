@@ -1,7 +1,7 @@
 use crate::networking::protocol::messages::{PacketHeader, Message};
 use crate::networking::protocol::codecs::MessageCodec;
 use crate::networking::commands::NetworkCommand;
-use crate::world::events::*;
+use crate::world::*;
 use crate::config::PerformanceSettingsHandle;
 use std::net::SocketAddr;
 use std::io;

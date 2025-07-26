@@ -5,10 +5,10 @@ use crate::utils::logging;
 mod utils;
 mod networking;
 mod ui;
-// mod assets;
-// mod rendering;
+mod assets;
+mod rendering;
 mod config;
-// mod world;
+mod world;
 mod app;
 
 struct MyApp {
