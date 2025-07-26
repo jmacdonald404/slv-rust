@@ -1,9 +1,9 @@
-use crate::networking::protocol::messages::{PacketHeader, Message};
-use crate::networking::protocol::codecs::MessageCodec;
+use crate::networking::protocol::{HandshakeMessage, SLMessageCodec};
+use crate::networking::protocol::codecs::PacketHeader;
 use crate::networking::commands::NetworkCommand;
 use crate::world::*;
 use crate::config::PerformanceSettingsHandle;
-use tracing::{info, warn, debug};
+use tracing::{info, warn};
 use std::net::SocketAddr;
 use std::io;
 use std::collections::HashMap;
@@ -17,7 +17,7 @@ use crate::networking::transport::UdpTransport;
 // Enforces strict ordering: UseCircuitCode -> CompleteAgentMovement -> (wait for RegionHandshake) -> RegionHandshakeReply -> AgentThrottle -> AgentUpdate -> HandshakeComplete
 // Each handshake message is sent only once, and only after the previous step is complete. State is tracked per circuit/session.
 // All handshake message sending is centralized in advance_handshake().
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd)]
 pub enum HandshakeState {
     NotStarted,
     SentUseCircuitCode,
@@ -46,9 +46,9 @@ pub struct Circuit {
     transport: Arc<Mutex<UdpTransport>>,
     next_sequence_number: u32,
     next_expected_sequence_number: Arc<Mutex<u32>>,
-    unacked_messages: Arc<Mutex<HashMap<u32, (Message, Instant, u32, SocketAddr, Vec<u8>)>>>, // sequence_id -> (message, sent_time, retransmission_count, target_addr, encoded_message)
-    receiver_channel: mpsc::Receiver<(PacketHeader, Message, SocketAddr)>, // Channel for receiving messages from the processing task
-    out_of_order_buffer: Arc<Mutex<HashMap<u32, (PacketHeader, Message, SocketAddr)>>>, // sequence_id -> (header, message, sender_addr)
+    unacked_messages: Arc<Mutex<HashMap<u32, (HandshakeMessage, Instant, u32, SocketAddr, Vec<u8>)>>>, // sequence_id -> (message, sent_time, retransmission_count, target_addr, encoded_message)
+    receiver_channel: mpsc::Receiver<(PacketHeader, HandshakeMessage, SocketAddr)>, // Channel for receiving messages from the processing task
+    out_of_order_buffer: Arc<Mutex<HashMap<u32, (PacketHeader, HandshakeMessage, SocketAddr)>>>, // sequence_id -> (header, message, sender_addr)
     pub handshake_state: HandshakeState,
     pub eq_polling_started: bool,
     pub capabilities: Option<Arc<crate::networking::session::Capabilities>>,
@@ -94,11 +94,11 @@ impl Circuit {
     ) -> std::io::Result<Self> {
         let (sender_channel_for_task, receiver_channel) = mpsc::channel(100);
 
-        let unacked_messages_arc = Arc::new(Mutex::new(HashMap::<u32, (Message, Instant, u32, SocketAddr, Vec<u8>)>::new()));
+        let unacked_messages_arc = Arc::new(Mutex::new(HashMap::<u32, (HandshakeMessage, Instant, u32, SocketAddr, Vec<u8>)>::new()));
         let unacked_messages_arc_clone = Arc::clone(&unacked_messages_arc);
         let next_expected_sequence_number_arc = Arc::new(Mutex::new(1));
         let next_expected_sequence_number_arc_clone = Arc::clone(&next_expected_sequence_number_arc);
-        let out_of_order_buffer_arc = Arc::new(Mutex::new(HashMap::<u32, (PacketHeader, Message, SocketAddr)>::new()));
+        let out_of_order_buffer_arc = Arc::new(Mutex::new(HashMap::<u32, (PacketHeader, HandshakeMessage, SocketAddr)>::new()));
         let out_of_order_buffer_arc_clone = Arc::clone(&out_of_order_buffer_arc);
         let transport_bg = Arc::clone(&transport);
         let performance_settings_clone = performance_settings.clone();
@@ -112,23 +112,23 @@ impl Circuit {
                 tokio::select! {
                     Ok((len, addr)) = transport_locked.recv_from(&mut buf) => {
                         info!("[UDP RX] 📥 Received {} bytes from {}: {:02X?}", len, addr, &buf[..len]);
-                        if let Ok((header, message)) = MessageCodec::decode(&buf[..len]) {
+                        if let Ok((header, message)) = SLMessageCodec::decode_handshake(&buf[..len]) {
                             info!("[UDP RX] 🔍 Decoded message: {:?} (seq: {}) from {}", message, header.sequence_id, addr);
                             match &message {
-                                Message::UseCircuitCodeReply(success) => {
+                                HandshakeMessage::UseCircuitCodeReply(success) => {
                                     info!("[HANDSHAKE] 📨 Step 1 Reply: UseCircuitCodeReply success={}", success);
                                 }
-                                Message::AgentMovementComplete { .. } => {
+                                HandshakeMessage::AgentMovementComplete { .. } => {
                                     info!("[HANDSHAKE] 📨 Step 2 Reply: AgentMovementComplete received!");
                                 }
                                 _ => {}
                             }
                             match message {
-                                Message::Ack { sequence_id } => {
+                                HandshakeMessage::Ack { sequence_id } => {
                                     let mut unacked_messages = unacked_messages_arc_clone.lock().await;
                                     unacked_messages.remove(&sequence_id);
                                 }
-                                Message::KeepAlive => {
+                                HandshakeMessage::KeepAlive => {
                                     // Do not send an ACK for KeepAlive!
                                     // Just log or handle as needed.
                                 }
@@ -151,22 +151,24 @@ impl Circuit {
                                             tracing::debug!("Discarding duplicate or old packet: {:?}", header);
                                         }
                                     }
-                                    // Only send ACK if not KeepAlive
-                                    if !matches!(received_message, Message::KeepAlive) {
-                                        let _ack_message = Message::Ack { sequence_id: header.sequence_id };
-                                        let ack_header = PacketHeader { sequence_id: 0, flags: 0 };
-                                        // Manual encoding for ACK message
-                                        let mut ack_packet = Vec::new();
-                                        let flags: u8 = 0x00; // Not reliable, not zerocoded
-                                        ack_packet.push(flags);
-                                        ack_packet.extend_from_slice(&ack_header.sequence_id.to_be_bytes());
-                                        ack_packet.push(0x00); // offset
-                                        ack_packet.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]); // message number for ACK
-                                        ack_packet.extend_from_slice(&header.sequence_id.to_be_bytes()); // ACKed sequence id
-                                        if ack_packet.len() < 7 {
-                                            tracing::warn!("[BUG] Would send ACK packet < 7 bytes ({} bytes): {:02X?}. Skipping.", ack_packet.len(), ack_packet);
-                                        } else {
-                                            let _ = transport_locked.send_to(&ack_packet, &addr).await;
+                                    // Only send ACK if not KeepAlive and if message requires reliable delivery
+                                    if !matches!(received_message, HandshakeMessage::KeepAlive) && (header.flags & 0x40) != 0 {
+                                        let ack_message = HandshakeMessage::Ack { sequence_id: header.sequence_id };
+                                        let ack_header = PacketHeader { 
+                                            sequence_id: 0, // ACKs don't need sequence numbers
+                                            flags: 0x00 // Not reliable, not zerocoded
+                                        };
+                                        
+                                        // Use SL codec for proper ACK encoding
+                                        match SLMessageCodec::encode_handshake(&ack_header, &ack_message) {
+                                            Ok(ack_packet) => {
+                                                tracing::debug!("[UDP TX] 📤 Sending ACK for seq {} to {}: {:02X?}", 
+                                                    header.sequence_id, addr, &ack_packet[..std::cmp::min(ack_packet.len(), 20)]);
+                                                let _ = transport_locked.send_to(&ack_packet, &addr).await;
+                                            },
+                                            Err(e) => {
+                                                tracing::warn!("[UDP TX] ❌ Failed to encode ACK packet: {}", e);
+                                            }
                                         }
                                     }
                                     for (h, m, a) in messages_to_send {
@@ -183,7 +185,7 @@ impl Circuit {
                                 let circuit_code = u32::from_le_bytes([pkt[10], pkt[11], pkt[12], pkt[13]]);
                                 let session_id = uuid::Uuid::from_bytes([pkt[14], pkt[15], pkt[16], pkt[17], pkt[18], pkt[19], pkt[20], pkt[21], pkt[22], pkt[23], pkt[24], pkt[25], pkt[26], pkt[27], pkt[28], pkt[29]]);
                                 let agent_id = uuid::Uuid::from_bytes([pkt[30], pkt[31], pkt[32], pkt[33], pkt[34], pkt[35], pkt[36], pkt[37], pkt[38], pkt[39], pkt[40], pkt[41], pkt[42], pkt[43], pkt[44], pkt[45]]);
-                                let message = Message::UseCircuitCode {
+                                let message = HandshakeMessage::UseCircuitCode {
                                     agent_id: agent_id.to_string(),
                                     session_id: session_id.to_string(),
                                     circuit_code,
@@ -258,15 +260,15 @@ impl Circuit {
         })
     }
 
-    pub async fn send_message(&mut self, message: &Message, target: &SocketAddr) -> io::Result<usize> {
+    pub async fn send_message(&mut self, message: &HandshakeMessage, target: &SocketAddr) -> io::Result<usize> {
         // Set appropriate flags based on message type
         let flags = match message {
-            Message::UseCircuitCode { .. } => 0x40, // RELIABLE
-            Message::CompleteAgentMovement { .. } => 0x40, // RELIABLE  
-            Message::RegionHandshakeReply { .. } => 0x40, // RELIABLE
-            Message::AgentThrottle { .. } => 0x40, // RELIABLE
-            Message::AgentUpdate { .. } => 0x00, // UNRELIABLE (high frequency)
-            Message::Ack { .. } => 0x00, // UNRELIABLE
+            HandshakeMessage::UseCircuitCode { .. } => 0x40, // RELIABLE
+            HandshakeMessage::CompleteAgentMovement { .. } => 0x40, // RELIABLE  
+            HandshakeMessage::RegionHandshakeReply { .. } => 0x40, // RELIABLE
+            HandshakeMessage::AgentThrottle { .. } => 0x40, // RELIABLE
+            HandshakeMessage::AgentUpdate { .. } => 0x00, // UNRELIABLE (high frequency)
+            HandshakeMessage::Ack { .. } => 0x00, // UNRELIABLE
             _ => 0x00, // Default to unreliable
         };
         
@@ -277,7 +279,7 @@ impl Circuit {
         self.next_sequence_number += 1;
         
         // Use the new encoding method
-        let encoded = MessageCodec::encode(&header, message)?;
+        let encoded = SLMessageCodec::encode_handshake(&header, message)?;
         
         // Store reliable messages for retransmission
         if flags & 0x40 != 0 { // RELIABLE flag
@@ -296,7 +298,7 @@ impl Circuit {
         transport.send_to(&encoded, target).await
     }
 
-    pub async fn recv_message(&mut self) -> io::Result<(PacketHeader, Message, SocketAddr)> {
+    pub async fn recv_message(&mut self) -> io::Result<(PacketHeader, HandshakeMessage, SocketAddr)> {
         self.receiver_channel.recv().await.ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "Circuit receive channel closed"))
     }
 
@@ -363,7 +365,7 @@ impl Circuit {
         for command in commands {
             match command {
                 NetworkCommand::SendChat { message, channel, chat_type } => {
-                    let msg = Message::ChatFromViewer {
+                    let msg = HandshakeMessage::ChatFromViewer {
                         message,
                         channel: channel.to_string(),
                     };
@@ -389,7 +391,7 @@ impl Circuit {
                     tracing::debug!("Texture request not yet implemented: {}", texture_id);
                 },
                 NetworkCommand::SendThrottle { throttle } => {
-                    let msg = Message::AgentThrottle {
+                    let msg = HandshakeMessage::AgentThrottle {
                         agent_id: "unknown".to_string(), // TODO: Use actual agent ID
                         session_id: "unknown".to_string(), // TODO: Use actual session ID
                         circuit_code: 0, // TODO: Use actual circuit code
@@ -398,7 +400,7 @@ impl Circuit {
                     let _ = self.send_message(&msg, target_addr).await;
                 },
                 NetworkCommand::Logout => {
-                    let msg = Message::Logout;
+                    let msg = HandshakeMessage::Logout;
                     let _ = self.send_message(&msg, target_addr).await;
                 },
                 NetworkCommand::SendRawMessage { message } => {
@@ -410,9 +412,9 @@ impl Circuit {
     }
 
     /// Dispatch an incoming message to the appropriate event channel
-    async fn dispatch_event(&self, message: &Message) {
+    async fn dispatch_event(&self, message: &HandshakeMessage) {
         match message {
-            Message::ChatFromSimulator { sender, message: msg, channel } => {
+            HandshakeMessage::ChatFromSimulator { sender, message: msg, channel } => {
                 if let Some(sender_channel) = &self.chat_event_sender {
                     let event = ChatEvent::new(
                         sender.clone(),
@@ -424,7 +426,7 @@ impl Circuit {
                     let _ = sender_channel.send(event);
                 }
             },
-            Message::AgentMovementComplete { agent_id, session_id } => {
+            HandshakeMessage::AgentMovementComplete { agent_id, session_id } => {
                 if let Some(sender_channel) = &self.agent_movement_sender {
                     let event = AgentMovementCompleteEvent {
                         agent_id: uuid::Uuid::parse_str(agent_id).unwrap_or(uuid::Uuid::nil()),
@@ -434,7 +436,7 @@ impl Circuit {
                     let _ = sender_channel.send(event);
                 }
             },
-            Message::HealthMessage { .. } => {
+            HandshakeMessage::HealthMessage => {
                 if let Some(sender_channel) = &self.health_update_sender {
                     let event = HealthUpdateEvent {
                         health: 100.0, // TODO: Extract actual health value
@@ -443,7 +445,7 @@ impl Circuit {
                     let _ = sender_channel.send(event);
                 }
             },
-            Message::AgentDataUpdate { agent_id } => {
+            HandshakeMessage::AgentDataUpdate { agent_id } => {
                 if let Some(sender_channel) = &self.avatar_update_sender {
                     let event = AvatarDataUpdateEvent {
                         agent_id: uuid::Uuid::parse_str(agent_id).unwrap_or(uuid::Uuid::nil()),
@@ -455,20 +457,20 @@ impl Circuit {
                     let _ = sender_channel.send(event);
                 }
             },
-            Message::RegionHandshake(region_data) => {
+            HandshakeMessage::RegionHandshake { region_name, region_id, region_flags, water_height, sim_access } => {
                 if let Some(sender_channel) = &self.region_handshake_sender {
                     let event = RegionHandshakeEvent {
-                        region_name: region_data.region_name.clone(),
-                        region_id: region_data.region_id,
-                        region_flags: region_data.region_flags,
-                        water_height: region_data.water_height,
-                        sim_access: region_data.sim_access,
+                        region_name: region_name.clone(),
+                        region_id: *region_id,
+                        region_flags: *region_flags,
+                        water_height: *water_height,
+                        sim_access: *sim_access,
                         timestamp: std::time::SystemTime::now(),
                     };
                     let _ = sender_channel.send(event);
                 }
             },
-            Message::KeepAlive => {
+            HandshakeMessage::KeepAlive => {
                 if let Some(sender_channel) = &self.keep_alive_sender {
                     let event = KeepAliveEvent {
                         timestamp: std::time::SystemTime::now(),
@@ -562,7 +564,7 @@ impl Circuit {
             HandshakeState::NotStarted => {
                 info!("[HANDSHAKE] 📤 Step 1/7: Sending UseCircuitCode");
                 info!("[HANDSHAKE] 📋 Agent ID: {}, Session ID: {}, Circuit Code: {}", agent_id, circuit_code, target_addr);
-                let message = Message::UseCircuitCode {
+                let message = HandshakeMessage::UseCircuitCode {
                     agent_id: agent_id.to_string(),
                     session_id: session_id.to_string(),
                     circuit_code,
@@ -574,7 +576,7 @@ impl Circuit {
             HandshakeState::SentUseCircuitCode => {
                 info!("[HANDSHAKE] 📤 Step 2/7: Sending CompleteAgentMovement");
                 info!("[HANDSHAKE] 📍 Position: {:?}, Look At: {:?}", position, look_at);
-                let message = Message::CompleteAgentMovement {
+                let message = HandshakeMessage::CompleteAgentMovement {
                     agent_id: agent_id.to_string(),
                     session_id: session_id.to_string(),
                     circuit_code,
@@ -598,7 +600,7 @@ impl Circuit {
             HandshakeState::SentRegionHandshakeReply => {
                 info!("[HANDSHAKE] 📤 Step 5/7: Sending AgentThrottle");
                 info!("[HANDSHAKE] 🎛️  Throttle settings: {:?}", throttle);
-                let message = Message::AgentThrottle {
+                let message = HandshakeMessage::AgentThrottle {
                     agent_id: agent_id.to_string(),
                     session_id: session_id.to_string(),
                     circuit_code,
@@ -611,7 +613,7 @@ impl Circuit {
             HandshakeState::SentAgentThrottle => {
                 info!("[HANDSHAKE] 📤 Step 6/7: Sending first AgentUpdate");
                 info!("[HANDSHAKE] 🚶 Agent state - Position: {:?}, Camera At: {:?}, Camera Eye: {:?}, Controls: {}", position, camera_at, camera_eye, controls);
-                let message = Message::AgentUpdate {
+                let message = HandshakeMessage::AgentUpdate {
                     agent_id: agent_id.to_string(),
                     session_id: session_id.to_string(),
                     position,
@@ -671,7 +673,7 @@ impl Circuit {
                             };
                             
                             // Create AgentUpdate message directly
-                            let message = Message::AgentUpdate {
+                            let message = HandshakeMessage::AgentUpdate {
                                 agent_id: agent_id.to_string(),
                                 session_id: session_id.to_string(),
                                 position,
@@ -686,7 +688,7 @@ impl Circuit {
                             };
                             packet_counter += 1;
                             
-                            if let Ok(encoded) = MessageCodec::encode(&header, &message) {
+                            if let Ok(encoded) = SLMessageCodec::encode_handshake(&header, &message) {
                                 let transport = transport.lock().await;
                                 let _ = transport.send_to(&encoded, &target_addr_clone).await;
                             }
@@ -705,13 +707,13 @@ impl Circuit {
 
     // pub async fn disconnect_and_logout(&mut self, sim_addr: &SocketAddr) {
 //     // Send Logout message
-//     let _ = self.send_message(&Message::Logout, sim_addr).await;
+//     let _ = self.send_message(&HandshakeMessage::Logout, sim_addr).await;
 //     // TODO: Add any additional cleanup if needed
 // }
 
     pub async fn send_region_handshake_reply_with_seq(&mut self, agent_id: uuid::Uuid, session_id: uuid::Uuid, flags: u32, sequence_id: u32, addr: &SocketAddr) {
         // Create the message using the structured approach
-        let message = Message::RegionHandshakeReply {
+        let message = HandshakeMessage::RegionHandshakeReply {
             agent_id: agent_id.to_string(),
             session_id: session_id.to_string(),
             flags,
@@ -724,7 +726,7 @@ impl Circuit {
         };
         
         // Encode and send manually to use the specific sequence_id
-        if let Ok(encoded) = MessageCodec::encode(&header, &message) {
+        if let Ok(encoded) = SLMessageCodec::encode_handshake(&header, &message) {
             let transport = self.transport.lock().await;
             let _ = transport.send_to(&encoded, addr).await;
         }
@@ -732,7 +734,7 @@ impl Circuit {
         self.handshake_state = HandshakeState::SentRegionHandshakeReply;
     }
 
-    pub async fn handle_incoming_message(&mut self, header: PacketHeader, message: Message, addr: SocketAddr,
+    pub async fn handle_incoming_message(&mut self, header: PacketHeader, message: HandshakeMessage, addr: SocketAddr,
         agent_id: uuid::Uuid,
         session_id: uuid::Uuid,
         circuit_code: u32,
@@ -752,24 +754,33 @@ impl Circuit {
         
         // Then handle handshake-specific logic
         match &message {
-            Message::RegionHandshake { .. } => {
-                info!("[HANDSHAKE] 📨 Step 3 Reply: RegionHandshake received from server!");
-                info!("[HANDSHAKE] 📤 Step 4/7: Sending RegionHandshakeReply (seq: {})", header.sequence_id);
-                // Send reply with the same sequence number as incoming packet
-                self.send_region_handshake_reply_with_seq(agent_id, session_id, flags, header.sequence_id, &addr).await;
-                // Continue handshake progression
-                self.advance_handshake(agent_id, session_id, circuit_code, position, look_at, throttle, flags, controls, camera_at, camera_eye, target_addr).await;
+            HandshakeMessage::RegionHandshake { .. } => {
+                if self.handshake_state < HandshakeState::SentRegionHandshakeReply {
+                    info!("[HANDSHAKE] 📨 Step 3 Reply: RegionHandshake received from server! Advancing state.");
+                    info!("[HANDSHAKE] 📤 Step 4/7: Sending RegionHandshakeReply (seq: {})", header.sequence_id);
+                    
+                    // Manually set the state to ensure we can send the reply and advance.
+                    self.handshake_state = HandshakeState::ReceivedRegionHandshake;
+                    
+                    // Send reply with the same sequence number as incoming packet
+                    self.send_region_handshake_reply_with_seq(agent_id, session_id, flags, header.sequence_id, &addr).await;
+                    
+                    // Continue handshake progression, which will now send AgentThrottle
+                    self.advance_handshake(agent_id, session_id, circuit_code, position, look_at, throttle, flags, controls, camera_at, camera_eye, target_addr).await;
+                } else {
+                    info!("[HANDSHAKE] Ignoring duplicate RegionHandshake message.");
+                }
             }
-            Message::KeepAlive => {
+            HandshakeMessage::KeepAlive => {
                 // Per SL protocol and Hippolyzer, no response is required for KeepAlive packets.
                 // Only log receipt for debugging.
                 info!("[UDP] Received KeepAlive from {} (no response sent)", addr);
             }
-            Message::AgentDataUpdate { .. } => {
+            HandshakeMessage::AgentDataUpdate { .. } => {
                 info!("[UDP] Received AgentDataUpdate from {}", addr);
                 // ACK would be handled by the main loop, but specific logic could go here.
             }
-            Message::HealthMessage { .. } => {
+            HandshakeMessage::HealthMessage => {
                 info!("[UDP] Received HealthMessage from {}", addr);
                 // ACK would be handled by the main loop.
             }

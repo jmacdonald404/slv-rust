@@ -5,7 +5,7 @@
 use crate::ui::{UiState, LoginUiState, LoginProgress, LoginResult, UdpConnectionProgress};
 use crate::networking::session::{login_to_secondlife, LoginRequest, LoginSessionInfo};
 use crate::networking::circuit::Circuit;
-use crate::networking::protocol::messages::Message;
+use crate::networking::protocol::{HandshakeMessage};
 use std::net::SocketAddr;
 use crossbeam_channel::{unbounded, Sender, Receiver};
 use tokio::task::JoinHandle;
@@ -319,7 +319,7 @@ pub fn show_main_window(ctx: &egui::Context, ui_state: &mut UiState) {
                         circuit.recv_message().await
                     }).await;
                     match entry_result {
-                        Ok(Ok((_header, Message::AgentMovementComplete { agent_id: _, session_id: _ /* TODO: extract more fields */ }, _addr))) => {
+                        Ok(Ok((_header, HandshakeMessage::AgentMovementComplete { agent_id: _, session_id: _ /* TODO: extract more fields */ }, _addr))) => {
                             // World entry success
                             let _ = world_entry_tx.send(UdpConnectResult { result: Ok(circuit_mutex_clone.clone()) });
                             // --- Region Handshake sequence ---
@@ -330,9 +330,9 @@ pub fn show_main_window(ctx: &egui::Context, ui_state: &mut UiState) {
                                 match circuit.recv_message().await {
                                     Ok((_header, msg, addr)) => {
                                         match msg {
-                                            Message::RegionHandshake { .. } => {
+                                            HandshakeMessage::RegionHandshake { .. } => {
                                     // Send RegionHandshakeReply
-                                    let reply = Message::RegionHandshakeReply {
+                                    let reply = HandshakeMessage::RegionHandshakeReply {
                                         agent_id: session_info.as_ref().map(|s| s.agent_id.clone()).unwrap_or_default(),
                                         session_id: session_info.as_ref().map(|s| s.session_id.clone()).unwrap_or_default(),
                                         flags: 0x07, // SUPPORTS_SELF_APPEARANCE | VOCACHE_CULLING_ENABLED (example)
@@ -342,7 +342,7 @@ pub fn show_main_window(ctx: &egui::Context, ui_state: &mut UiState) {
                                                     Err(e) => eprintln!("[ERROR] Failed to send RegionHandshakeReply: {e}"),
                                                 }
                                     // Send AgentThrottle
-                                    let throttle = Message::AgentThrottle {
+                                    let throttle = HandshakeMessage::AgentThrottle {
                                         agent_id: session_info.as_ref().map(|s| s.agent_id.clone()).unwrap_or_default(),
                                         session_id: session_info.as_ref().map(|s| s.session_id.clone()).unwrap_or_default(),
                                         circuit_code: session_info.as_ref().map(|s| s.circuit_code).unwrap_or(0),
@@ -350,7 +350,7 @@ pub fn show_main_window(ctx: &egui::Context, ui_state: &mut UiState) {
                                     };
                                     let _ = circuit.send_message(&throttle, &addr).await;
                                     // Send AgentUpdate
-                                    let update = Message::AgentUpdate {
+                                    let update = HandshakeMessage::AgentUpdate {
                                         agent_id: session_info.as_ref().map(|s| s.agent_id.clone()).unwrap_or_default(),
                                         session_id: session_info.as_ref().map(|s| s.session_id.clone()).unwrap_or_default(),
                                         position: (128.0, 128.0, 25.0), // placeholder

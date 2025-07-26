@@ -1,28 +1,17 @@
-// Test just the config system without full library import
-mod config {
-    pub mod settings;
-    pub mod hardware;
-    pub mod concurrency;
-    
-    pub use settings::*;
-    pub use hardware::*;
-    pub use concurrency::*;
-}
 
-mod utils {
-    pub mod logging;
-}
+use slv_rust::config::*;
+use slv_rust::utils::logging;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Initialize logging
-    utils::logging::init_logging();
+    logging::init_logging();
     
     println!("Testing Performance Configuration System");
     println!("========================================");
     
     // Test hardware detection and settings initialization
-    match config::initialize_performance_settings().await {
+    match initialize_performance_settings().await {
         Ok(settings) => {
             println!("✅ Hardware detection successful!");
             println!("   Profile: {:?}", settings.profile);
@@ -40,7 +29,7 @@ async fn main() -> anyhow::Result<()> {
     println!("\nTesting Profile Switching");
     println!("=========================");
     
-    let mock_hardware = config::HardwareInfo {
+    let mock_hardware = HardwareInfo {
         gpu_name: "Test GPU".to_string(),
         gpu_vendor: "Test".to_string(),
         total_memory_gb: 16,
@@ -49,8 +38,8 @@ async fn main() -> anyhow::Result<()> {
         is_integrated_gpu: false,
     };
     
-    for profile in [config::PerformanceProfile::Low, config::PerformanceProfile::Balanced, config::PerformanceProfile::High] {
-        let settings = config::PerformanceSettings::for_profile(profile, &mock_hardware);
+    for profile in [PerformanceProfile::Low, PerformanceProfile::Balanced, PerformanceProfile::High] {
+        let settings = PerformanceSettings::for_profile(profile, &mock_hardware);
         println!("Profile {:?}:", profile);
         println!("  Draw Distance: {}", settings.rendering.draw_distance);
         println!("  Texture Quality: {:?}", settings.rendering.texture_quality);
@@ -64,8 +53,8 @@ async fn main() -> anyhow::Result<()> {
     println!("Testing Concurrency System");
     println!("==========================");
     
-    let thread_config = config::ThreadPoolConfig::for_performance_profile(
-        &config::PerformanceSettings::for_profile(config::PerformanceProfile::Balanced, &mock_hardware),
+    let thread_config = ThreadPoolConfig::for_performance_profile(
+        &PerformanceSettings::for_profile(PerformanceProfile::Balanced, &mock_hardware),
         mock_hardware.cpu_cores,
         mock_hardware.total_memory_gb,
     );
@@ -75,12 +64,12 @@ async fn main() -> anyhow::Result<()> {
     println!("  Async threads: {}", thread_config.async_threads);
     println!("  Work stealing: {}", thread_config.enable_work_stealing);
     
-    match config::initialize_concurrency(thread_config) {
+    match initialize_concurrency(thread_config) {
         Ok(()) => {
             println!("✅ Concurrency system initialized successfully!");
             
             // Test job execution
-            if let Some(manager) = config::get_concurrency_manager() {
+            if let Some(manager) = get_concurrency_manager() {
                 let result = manager.execute_job(|| {
                     (1..1000).sum::<i32>()
                 });
@@ -112,13 +101,13 @@ async fn main() -> anyhow::Result<()> {
     println!("\nTesting Configuration Persistence");
     println!("=================================");
     
-    let test_settings = config::PerformanceSettings::for_profile(config::PerformanceProfile::High, &mock_hardware);
-    match config::save_performance_settings(&test_settings) {
+    let test_settings = PerformanceSettings::for_profile(PerformanceProfile::High, &mock_hardware);
+    match save_performance_settings(&test_settings) {
         Ok(()) => println!("✅ Settings saved successfully!"),
         Err(e) => println!("❌ Settings save failed: {}", e),
     }
     
-    match config::load_performance_settings() {
+    match load_performance_settings() {
         Some(loaded_settings) => {
             println!("✅ Settings loaded successfully!");
             println!("   Loaded profile: {:?}", loaded_settings.profile);

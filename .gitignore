@@ -5,4 +5,4 @@ gemini-github-manager.sh
 ./gemini-github-config.json
 .env
 hippolyzer/
-message_template.msg
+message_template.msgexternal/master-message-template/

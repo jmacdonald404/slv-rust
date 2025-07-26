@@ -57,7 +57,7 @@ impl Socks5UdpSocket {
             return Err(io::Error::new(io::ErrorKind::Other, "SOCKS5 UDP associate failed"));
         }
         let atyp = resp[3];
-        let relay_addr = match atyp {
+        let mut relay_addr = match atyp {
             0x01 => {
                 let mut ip = [0u8; 4];
                 tcp_stream.read_exact(&mut ip).await?;
@@ -70,6 +70,14 @@ impl Socks5UdpSocket {
                 return Err(io::Error::new(io::ErrorKind::Other, "Unsupported ATYP in UDP associate reply"));
             }
         };
+        
+        // If the proxy returns 0.0.0.0, we should use the proxy's actual IP address.
+        if relay_addr.ip().is_unspecified() {
+            let proxy_ip = tcp_stream.peer_addr()?.ip();
+            relay_addr.set_ip(proxy_ip);
+            info!("[SOCKS5] Relay IP was unspecified, using proxy IP {} instead.", proxy_ip);
+        }
+        
         info!("[SOCKS5] SOCKS5 UDP relay address: {}", relay_addr);
 
         Ok(Self {
@@ -149,7 +157,8 @@ impl UdpSocketExt for Socks5UdpSocket {
         self.udp_socket.send_to(&packet, self.relay_addr).await
     }
     async fn recv_from(&self, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
-        let (n, _src) = self.udp_socket.recv_from(buf).await?;
+        let (n, src) = self.udp_socket.recv_from(buf).await?;
+        debug!("[SOCKS5] Received {} bytes from relay {}", n, src);
         match Self::parse_udp_packet(buf, n) {
             Ok((data_len, addr)) => Ok((data_len, addr)),
             Err(e) => Err(e),

@@ -38,6 +38,10 @@ fn main() -> eframe::Result<()> {
     eprintln!("EPRINT TEST: If you see this, stderr works!");
     println!("VERSION: {}", VERSION);
     
+    // SL_CODEC debug messages tested and working! 
+    // Uncomment the line below to test the codec debug system:
+    // networking::protocol::SLMessageCodec::test_debug_messages();
+    
     // Build a multi-threaded Tokio runtime
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

@@ -3,7 +3,22 @@
 use uuid::Uuid;
 use std::io::{Cursor, Read};
 use byteorder::{LittleEndian, ReadBytesExt};
-use crate::networking::protocol::messages::RegionHandshakeData;
+// Temporarily commented out until we implement full message generation
+// use crate::networking::protocol::messages::RegionHandshakeData;
+
+#[derive(Debug, Clone)]
+pub struct RegionHandshakeData {
+    pub region_flags: u32,
+    pub sim_access: u8,
+    pub sim_name: String,
+    pub sim_owner: Uuid,
+    pub is_estate_manager: bool,
+    pub water_height: f32,
+    pub billable_factor: f32,
+    pub cache_id: Uuid,
+    pub region_id: Uuid,
+    pub region_name: String,
+}
 
 // Correctly parse RegionHandshake according to message_template.msg
 pub fn parse_region_handshake(mut payload: &[u8]) -> Option<RegionHandshakeData> {
@@ -49,17 +64,14 @@ pub fn parse_region_handshake(mut payload: &[u8]) -> Option<RegionHandshakeData>
     Some(RegionHandshakeData {
         region_flags,
         sim_access,
-        region_name, // Placeholder
+        sim_name: region_name.clone(), // Placeholder
         sim_owner,
-        is_estate_manager,
+        is_estate_manager: is_estate_manager != 0,
         water_height,
         billable_factor,
         cache_id,
-        terrain_base,
-        terrain_detail,
-        terrain_start_height,
-        terrain_height_range,
         region_id,
+        region_name, // Placeholder
     })
 }
 

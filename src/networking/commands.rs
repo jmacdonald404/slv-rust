@@ -38,7 +38,7 @@ pub enum NetworkCommand {
     
     /// Send a generic message (for testing or special cases)
     SendRawMessage {
-        message: crate::networking::protocol::messages::Message,
+        message: crate::networking::protocol::HandshakeMessage,
     },
 }
 
