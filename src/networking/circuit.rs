@@ -3,6 +3,7 @@ use crate::networking::protocol::codecs::MessageCodec;
 use crate::networking::commands::NetworkCommand;
 use crate::world::*;
 use crate::config::PerformanceSettingsHandle;
+use tracing::{info, warn, debug};
 use std::net::SocketAddr;
 use std::io;
 use std::collections::HashMap;
@@ -110,15 +111,15 @@ impl Circuit {
                 let transport_locked = transport_bg.lock().await;
                 tokio::select! {
                     Ok((len, addr)) = transport_locked.recv_from(&mut buf) => {
-                        println!("[UDP RX] Received {} bytes from {}: {:02X?}", len, addr, &buf[..len]);
+                        info!("[UDP RX] 📥 Received {} bytes from {}: {:02X?}", len, addr, &buf[..len]);
                         if let Ok((header, message)) = MessageCodec::decode(&buf[..len]) {
-                            println!("[UDP RX] Decoded message: {:?} (seq: {}) from {}", message, header.sequence_id, addr);
+                            info!("[UDP RX] 🔍 Decoded message: {:?} (seq: {}) from {}", message, header.sequence_id, addr);
                             match &message {
                                 Message::UseCircuitCodeReply(success) => {
-                                    println!("[HANDSHAKE] Received UseCircuitCodeReply: success={}", success);
+                                    info!("[HANDSHAKE] 📨 Step 1 Reply: UseCircuitCodeReply success={}", success);
                                 }
                                 Message::AgentMovementComplete { .. } => {
-                                    println!("[HANDSHAKE] Received AgentMovementComplete!");
+                                    info!("[HANDSHAKE] 📨 Step 2 Reply: AgentMovementComplete received!");
                                 }
                                 _ => {}
                             }
@@ -286,6 +287,10 @@ impl Circuit {
                 (message.clone(), Instant::now(), 0, target.clone(), encoded.clone()),
             );
         }
+        
+        info!("[UDP TX] 📤 Sending {} bytes to {} (seq: {}, flags: 0x{:02X}): {:02X?}", 
+              encoded.len(), target, header.sequence_id, flags, &encoded[..std::cmp::min(16, encoded.len())]);
+        info!("[UDP TX] 🔍 Message type: {:?}", message);
         
         let transport = self.transport.lock().await;
         transport.send_to(&encoded, target).await
@@ -546,9 +551,17 @@ impl Circuit {
         target_addr: &SocketAddr,
     ) {
         use tracing::{info, warn};
+        
+        // Log handshake progress summary
+        if self.handshake_state == HandshakeState::NotStarted {
+            info!("[HANDSHAKE] 🚀 Starting authentication handshake sequence");
+            info!("[HANDSHAKE] 📊 Flow: NotStarted → UseCircuitCode → CompleteAgentMovement → [RegionHandshake] → RegionHandshakeReply → AgentThrottle → AgentUpdate → Complete");
+        }
+        
         match self.handshake_state {
             HandshakeState::NotStarted => {
-                info!("[HANDSHAKE] Sending UseCircuitCode");
+                info!("[HANDSHAKE] 📤 Step 1/7: Sending UseCircuitCode");
+                info!("[HANDSHAKE] 📋 Agent ID: {}, Session ID: {}, Circuit Code: {}", agent_id, circuit_code, target_addr);
                 let message = Message::UseCircuitCode {
                     agent_id: agent_id.to_string(),
                     session_id: session_id.to_string(),
@@ -556,9 +569,11 @@ impl Circuit {
                 };
                 let _ = self.send_message(&message, target_addr).await;
                 self.handshake_state = HandshakeState::SentUseCircuitCode;
+                info!("[HANDSHAKE] ✅ State transition: NotStarted -> SentUseCircuitCode");
             }
             HandshakeState::SentUseCircuitCode => {
-                info!("[HANDSHAKE] Sending CompleteAgentMovement");
+                info!("[HANDSHAKE] 📤 Step 2/7: Sending CompleteAgentMovement");
+                info!("[HANDSHAKE] 📍 Position: {:?}, Look At: {:?}", position, look_at);
                 let message = Message::CompleteAgentMovement {
                     agent_id: agent_id.to_string(),
                     session_id: session_id.to_string(),
@@ -568,9 +583,11 @@ impl Circuit {
                 };
                 let _ = self.send_message(&message, target_addr).await;
                 self.handshake_state = HandshakeState::SentCompleteAgentMovement;
+                info!("[HANDSHAKE] ✅ State transition: SentUseCircuitCode -> SentCompleteAgentMovement");
             }
             HandshakeState::SentCompleteAgentMovement => {
-                warn!("advance_handshake called in SentCompleteAgentMovement; waiting for RegionHandshake (IN)");
+                info!("[HANDSHAKE] ⏳ Step 3/7: Waiting for RegionHandshake from server...");
+                warn!("[HANDSHAKE] ⚠️  advance_handshake called while waiting for RegionHandshake - this is expected");
                 // Wait for RegionHandshake (IN)
                 return;
             }
@@ -579,7 +596,8 @@ impl Circuit {
                 return;
             }
             HandshakeState::SentRegionHandshakeReply => {
-                info!("[HANDSHAKE] Sending AgentThrottle");
+                info!("[HANDSHAKE] 📤 Step 5/7: Sending AgentThrottle");
+                info!("[HANDSHAKE] 🎛️  Throttle settings: {:?}", throttle);
                 let message = Message::AgentThrottle {
                     agent_id: agent_id.to_string(),
                     session_id: session_id.to_string(),
@@ -588,9 +606,11 @@ impl Circuit {
                 };
                 let _ = self.send_message(&message, target_addr).await;
                 self.handshake_state = HandshakeState::SentAgentThrottle;
+                info!("[HANDSHAKE] ✅ State transition: SentRegionHandshakeReply -> SentAgentThrottle");
             }
             HandshakeState::SentAgentThrottle => {
-                info!("[HANDSHAKE] Sending first AgentUpdate");
+                info!("[HANDSHAKE] 📤 Step 6/7: Sending first AgentUpdate");
+                info!("[HANDSHAKE] 🚶 Agent state - Position: {:?}, Camera At: {:?}, Camera Eye: {:?}, Controls: {}", position, camera_at, camera_eye, controls);
                 let message = Message::AgentUpdate {
                     agent_id: agent_id.to_string(),
                     session_id: session_id.to_string(),
@@ -601,10 +621,19 @@ impl Circuit {
                 };
                 let _ = self.send_message(&message, target_addr).await;
                 self.handshake_state = HandshakeState::SentFirstAgentUpdate;
+                info!("[HANDSHAKE] ✅ State transition: SentAgentThrottle -> SentFirstAgentUpdate");
             }
             HandshakeState::SentFirstAgentUpdate => {
-                info!("[HANDSHAKE] Handshake complete. Starting EQ polling and periodic AgentUpdate.");
+                info!("[HANDSHAKE] ✅ Handshake complete! Starting EQ polling and periodic AgentUpdate.");
+                info!("[HANDSHAKE] 🎯 Authentication successful - setting 10 second auto-shutdown timer");
                 self.handshake_state = HandshakeState::HandshakeComplete;
+                
+                // Start 10-second shutdown timer after successful authentication
+                tokio::spawn(async move {
+                    tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+                    info!("[SHUTDOWN] 🔴 Auto-shutdown timer reached - terminating application for debug analysis");
+                    std::process::exit(0);
+                });
                 if !self.eq_polling_started {
                     self.eq_polling_started = true;
                     // EQ polling
@@ -724,7 +753,8 @@ impl Circuit {
         // Then handle handshake-specific logic
         match &message {
             Message::RegionHandshake { .. } => {
-                info!("[HANDSHAKE] Received RegionHandshake");
+                info!("[HANDSHAKE] 📨 Step 3 Reply: RegionHandshake received from server!");
+                info!("[HANDSHAKE] 📤 Step 4/7: Sending RegionHandshakeReply (seq: {})", header.sequence_id);
                 // Send reply with the same sequence number as incoming packet
                 self.send_region_handshake_reply_with_seq(agent_id, session_id, flags, header.sequence_id, &addr).await;
                 // Continue handshake progression
