@@ -185,7 +185,10 @@ fn build_proxied_client(_proxy_settings: Option<&crate::ui::proxy::ProxySettings
     let mut builder = reqwest::Client::builder();
     // Always use the proxy for this test
     builder = builder.proxy(reqwest::Proxy::all("http://127.0.0.1:9062").unwrap());
-    let ca_cert = fs::read("src/assets/CA.pem").expect("Failed to read Hippolyzer CA cert");
+    let ca_cert_path = std::env::var("CARGO_MANIFEST_DIR")
+        .map(|dir| format!("{}/src/assets/CA.pem", dir))
+        .unwrap_or_else(|_| "src/assets/CA.pem".to_string());
+    let ca_cert = fs::read(&ca_cert_path).expect("Failed to read Hippolyzer CA cert");
     let ca_cert = Certificate::from_pem(&ca_cert).expect("Invalid CA cert");
     builder = builder.add_root_certificate(ca_cert);
     builder.build().unwrap()

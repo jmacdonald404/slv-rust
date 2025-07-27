@@ -9,7 +9,7 @@ mod template_parser {
     include!("src/utils/build_utils/template_parser.rs");
 }
 
-use template_parser::{MessageDefinition, BlockDefinition, FieldDefinition, Cardinality};
+use template_parser::{MessageDefinition, BlockDefinition, Cardinality};
 
 fn generate_block_structs(code: &mut String, message: &MessageDefinition, generated_blocks: &mut HashSet<String>) {
     for block in &message.blocks {
@@ -33,7 +33,7 @@ fn generate_block_structs(code: &mut String, message: &MessageDefinition, genera
             
             code.push_str("}\n\n");
             
-            // Generate Encode implementation for block
+            // Generate placeholder Encode implementation for block
             code.push_str(&format!("impl Encode for {} {{\n", block_name));
             code.push_str("    fn encode<W: Write>(&self, _writer: &mut W) -> Result<()> {\n");
             code.push_str("        // TODO: Implement block encoding logic\n");
@@ -41,7 +41,7 @@ fn generate_block_structs(code: &mut String, message: &MessageDefinition, genera
             code.push_str("    }\n");
             code.push_str("}\n\n");
             
-            // Generate Decode implementation for block
+            // Generate placeholder Decode implementation for block
             code.push_str(&format!("impl Decode for {} {{\n", block_name));
             code.push_str("    fn decode<R: Read>(_reader: &mut R) -> Result<Self> {\n");
             code.push_str("        // TODO: Implement block decoding logic\n");
@@ -66,22 +66,23 @@ fn generate_message_struct(code: &mut String, message: &MessageDefinition) {
     
     code.push_str("}\n\n");
     
-    // Generate Encode implementation
+    // Generate placeholder Encode implementation 
     code.push_str(&format!("impl Encode for {} {{\n", message.name));
     code.push_str("    fn encode<W: Write>(&self, _writer: &mut W) -> Result<()> {\n");
-    code.push_str("        // TODO: Implement encoding logic\n");
+    code.push_str("        // TODO: Implement proper SL protocol encoding\n");
     code.push_str("        Ok(())\n");
     code.push_str("    }\n");
     code.push_str("}\n\n");
     
-    // Generate Decode implementation
+    // Generate placeholder Decode implementation
     code.push_str(&format!("impl Decode for {} {{\n", message.name));
     code.push_str("    fn decode<R: Read>(_reader: &mut R) -> Result<Self> {\n");
-    code.push_str("        // TODO: Implement decoding logic\n");
+    code.push_str("        // TODO: Implement proper SL protocol decoding\n");
     code.push_str("        anyhow::bail!(\"Message decoding not yet implemented\")\n");
     code.push_str("    }\n");
     code.push_str("}\n\n");
 }
+
 
 fn generate_block_fields_with_dedup(
     code: &mut String, 
@@ -307,7 +308,7 @@ fn main() -> Result<()> {
     }
     code.push_str("}\n\n");
     
-    // Generate Encode implementation for Message enum
+    // Generate placeholder Encode implementation for Message enum
     code.push_str("impl Encode for Message {\n");
     code.push_str("    fn encode<W: Write>(&self, writer: &mut W) -> Result<()> {\n");
     code.push_str("        match self {\n");
@@ -318,11 +319,24 @@ fn main() -> Result<()> {
     code.push_str("    }\n");
     code.push_str("}\n\n");
     
-    // Generate Decode implementation for Message enum (placeholder for now)
+    // Generate message ID constants for reference
+    code.push_str("// Message ID constants for reference\n");
+    for message in &parsed.messages {
+        let id_value = match message.frequency {
+            template_parser::Frequency::Fixed => format!("0x{:08X}", message.id),
+            _ => message.id.to_string(),
+        };
+        code.push_str(&format!("pub const {}_ID: u32 = {};\n", 
+            message.name.to_uppercase(), id_value));
+    }
+    code.push_str("\n");
+    
+    // Generate placeholder Decode implementation for Message enum
     code.push_str("impl Decode for Message {\n");
     code.push_str("    fn decode<R: Read>(_reader: &mut R) -> Result<Self> {\n");
-    code.push_str("        // TODO: Implement message decoding logic - requires message ID lookup\n");
-    code.push_str("        anyhow::bail!(\"Message decoding not yet implemented\")\n");
+    code.push_str("        // TODO: Implement proper SL protocol message parsing\n");
+    code.push_str("        // The SL protocol uses complex packet headers, not simple message IDs\n");
+    code.push_str("        anyhow::bail!(\"Message decoding not yet implemented - use SLMessageCodec instead\")\n");
     code.push_str("    }\n");
     code.push_str("}\n\n");
 
