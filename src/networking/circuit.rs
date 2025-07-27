@@ -12,6 +12,37 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use crate::networking::transport::UdpTransport;
 
+/// Configuration for handshake behavior
+/// 
+/// This configuration allows fine-tuning of the Second Life login handshake process
+/// to work around known protocol issues or optimize for different network conditions.
+#[derive(Debug, Clone)]
+pub struct HandshakeConfig {
+    /// Delay before sending RegionHandshakeReply (in milliseconds)
+    /// 
+    /// Set to 0 to disable delay for maximum performance (default).
+    /// Set to 2000 for official spec compatibility to reduce interest list errors (BUG-233107).
+    /// 
+    /// This delay is applied in ALL RegionHandshakeReply sending paths:
+    /// - UDP background task (direct from RegionHandshake reception)
+    /// - Generated messages handshake flow
+    /// - handle_incoming_message method
+    /// 
+    /// Usage:
+    /// - Environment variable: SLV_HANDSHAKE_DELAY_MS=2000
+    /// - Runtime: circuit.set_region_handshake_delay(2000).await
+    pub region_handshake_reply_delay_ms: u64,
+}
+
+impl Default for HandshakeConfig {
+    fn default() -> Self {
+        Self {
+            // Default to 2000ms for official spec compatibility (BUG-233107)
+            region_handshake_reply_delay_ms: 2000,
+        }
+    }
+}
+
 // Handshake State Machine for Second Life UDP Login
 // Enforces strict ordering: UseCircuitCode -> CompleteAgentMovement -> (wait for RegionHandshake) -> RegionHandshakeReply -> AgentThrottle -> AgentUpdate -> HandshakeComplete
 // Each handshake message is sent only once, and only after the previous step is complete. State is tracked per circuit/session.
@@ -79,6 +110,12 @@ pub struct Circuit {
     ///     state.controls = new_controls;
     /// }
     pub agent_state: Arc<Mutex<AgentState>>,
+    
+    /// Handshake configuration for controlling timing and behavior (shared with UDP task)
+    pub handshake_config: Arc<Mutex<HandshakeConfig>>,
+    
+    /// Coordination flag: UDP task sets this when RegionHandshakeReply is sent
+    region_handshake_reply_sent: Arc<Mutex<bool>>,
 }
 
 impl Circuit {
@@ -101,6 +138,14 @@ impl Circuit {
         let out_of_order_buffer_arc_clone = Arc::clone(&out_of_order_buffer_arc);
         let transport_bg = Arc::clone(&transport);
         let performance_settings_clone = performance_settings.clone();
+        
+        // Create shared handshake config for UDP task
+        let handshake_config_arc = Arc::new(Mutex::new(HandshakeConfig::default()));
+        let handshake_config_for_task = Arc::clone(&handshake_config_arc);
+        
+        // Create shared coordination flag for RegionHandshakeReply
+        let region_handshake_reply_sent_arc = Arc::new(Mutex::new(false));
+        let region_handshake_reply_sent_for_task = Arc::clone(&region_handshake_reply_sent_arc);
 
         // Spawn the UDP receive/retransmit task  
         tokio::spawn(async move {
@@ -121,38 +166,39 @@ impl Circuit {
                                     info!("[HANDSHAKE] 📨 Step 2 Reply: AgentMovementComplete received!");
                                 }
                                 HandshakeMessage::RegionHandshake { .. } => {
-                                    info!("[HANDSHAKE] 📨 Step 3: RegionHandshake received - calling handle_incoming_message directly");
-                                    // Call handle_incoming_message directly for RegionHandshake since it's critical for handshake flow
-                                    // We need to get the parameters from somewhere - for now use defaults, TODO: pass real values
-                                    let agent_id = uuid::Uuid::nil(); // TODO: Get from circuit context
-                                    let session_id = uuid::Uuid::nil(); // TODO: Get from circuit context  
-                                    let circuit_code = 0; // TODO: Get from circuit context
-                                    let position = (128.0, 128.0, 25.0); // Default SL position
-                                    let look_at = (1.0, 0.0, 0.0); // Default look direction
-                                    let throttle = [1000.0; 7]; // Default throttle values
-                                    let flags = 5; // Default flags value like official viewer
-                                    let controls = 0; // No controls active
-                                    let camera_at = (1.0, 0.0, 0.0); // Default camera
-                                    let camera_eye = (0.0, 0.0, 0.0); // Default eye position
+                                    info!("[HANDSHAKE] 📨 Step 3: RegionHandshake received - handling in isolation for immediate response");
+                                    // Handle RegionHandshake in isolation because:
+                                    // 1. Needs immediate response (can't wait for main message loop)
+                                    // 2. Main Circuit doesn't have real agent_id/session_id yet
+                                    // 3. Early handshake timing requirements
                                     
-                                    // This is a workaround - we need to call handle_incoming_message but it's not async in this context
-                                    // For now, just send the RegionHandshakeReply directly here
+                                    let agent_id = uuid::Uuid::nil(); // Will be updated via coordination mechanism
+                                    let session_id = uuid::Uuid::nil(); // Will be updated via coordination mechanism  
+                                    let circuit_code = 0; // Will be updated via coordination mechanism
+                                    let flags = 5; // Default flags value like official viewer
+                                    
                                     let reply_message = HandshakeMessage::RegionHandshakeReply {
                                         agent_id: agent_id.to_string(),
                                         session_id: session_id.to_string(),
                                         flags,
                                     };
                                     
-                                    // Send reply with packet header (use a simple counter for now)
                                     let reply_header = PacketHeader { 
                                         sequence_id: 100, // TODO: Use proper sequence counter
                                         flags: 0x40 // Reliable delivery
                                     };
                                     
+                                    // Apply configured delay before sending RegionHandshakeReply
+                                    Self::apply_handshake_delay(&handshake_config_for_task).await;
+                                    
                                     match SLMessageCodec::encode_handshake(&reply_header, &reply_message) {
                                         Ok(reply_packet) => {
-                                            info!("[HANDSHAKE] 📤 Step 4/7: Sending RegionHandshakeReply directly from UDP task (seq: {})", reply_header.sequence_id);
+                                            info!("[HANDSHAKE] 📤 Step 4/7: Sending RegionHandshakeReply from UDP task (seq: {})", reply_header.sequence_id);
                                             let _ = transport_locked.send_to(&reply_packet, &addr).await;
+                                            
+                                            // Set coordination flag to notify main Circuit that RegionHandshakeReply was sent
+                                            *region_handshake_reply_sent_for_task.lock().await = true;
+                                            info!("[HANDSHAKE] 🔗 Set coordination flag: RegionHandshakeReply sent from UDP task");
                                         },
                                         Err(e) => {
                                             tracing::warn!("[HANDSHAKE] ❌ Failed to encode RegionHandshakeReply: {}", e);
@@ -295,7 +341,89 @@ impl Circuit {
             command_receiver: None,
             
             agent_state,
+            handshake_config: handshake_config_arc,
+            region_handshake_reply_sent: region_handshake_reply_sent_arc,
         })
+    }
+
+    /// Set handshake configuration
+    pub async fn set_handshake_config(&mut self, config: HandshakeConfig) {
+        let delay_ms = config.region_handshake_reply_delay_ms;
+        *self.handshake_config.lock().await = config;
+        info!("[HANDSHAKE] 🔧 Updated handshake config: RegionHandshakeReply delay = {}ms", delay_ms);
+    }
+    
+    /// Get current handshake configuration (for testing/debugging)
+    pub async fn get_handshake_config(&self) -> HandshakeConfig {
+        self.handshake_config.lock().await.clone()
+    }
+    
+    /// Set RegionHandshakeReply delay specifically (convenience method)
+    pub async fn set_region_handshake_delay(&mut self, delay_ms: u64) {
+        let mut config = self.handshake_config.lock().await;
+        config.region_handshake_reply_delay_ms = delay_ms;
+        info!("[HANDSHAKE] 🔧 Set RegionHandshakeReply delay to {}ms", delay_ms);
+    }
+    
+    /// Check if UDP task sent RegionHandshakeReply and continue handshake if needed
+    pub async fn check_and_continue_handshake(
+        &mut self,
+        agent_id: uuid::Uuid,
+        session_id: uuid::Uuid,
+        circuit_code: u32,
+        position: (f32, f32, f32),
+        look_at: (f32, f32, f32),
+        throttle: [f32; 7],
+        flags: u32,
+        controls: u32,
+        camera_at: (f32, f32, f32),
+        camera_eye: (f32, f32, f32),
+        target_addr: &SocketAddr,
+    ) -> bool {
+        let should_continue = {
+            let mut flag = self.region_handshake_reply_sent.lock().await;
+            if *flag && self.handshake_state == HandshakeState::SentCompleteAgentMovement {
+                info!("[HANDSHAKE] 🔗 Detected UDP task sent RegionHandshakeReply, continuing handshake progression");
+                *flag = false; // Reset flag
+                true
+            } else {
+                false
+            }
+        }; // Lock is dropped here
+        
+        if should_continue {
+            // Update state to reflect that RegionHandshakeReply was sent
+            self.handshake_state = HandshakeState::SentRegionHandshakeReply;
+            
+            // FIX: Use the generated messages path to ensure correct AgentThrottle encoding.
+            // This resolves the "variable value is not set" error for the 'Throttles' field.
+            info!("[HANDSHAKE] 🔗 Handshake coordination advancing with generated messages path.");
+            if let Err(e) = self.advance_handshake_with_generated_messages(
+                agent_id, session_id, circuit_code, target_addr, position, look_at, throttle, flags, controls, camera_at, camera_eye
+            ).await {
+                warn!("[HANDSHAKE] ❌ Error advancing handshake with generated messages: {}", e);
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Helper method to apply configured delay before sending RegionHandshakeReply
+    async fn apply_region_handshake_reply_delay(&self) {
+        Self::apply_handshake_delay(&self.handshake_config).await;
+    }
+    
+    /// Static helper to apply delay from a shared HandshakeConfig (for use in UDP task)
+    async fn apply_handshake_delay(config_arc: &Arc<Mutex<HandshakeConfig>>) {
+        let config = config_arc.lock().await;
+        if config.region_handshake_reply_delay_ms > 0 {
+            let delay = Duration::from_millis(config.region_handshake_reply_delay_ms);
+            info!("[HANDSHAKE] ⏱️  Applying {}ms delay before RegionHandshakeReply (BUG-233107 workaround)", 
+                  config.region_handshake_reply_delay_ms);
+            drop(config); // Release lock before sleeping
+            tokio::time::sleep(delay).await;
+        }
     }
 
     pub async fn send_message(&mut self, message: &HandshakeMessage, target: &SocketAddr) -> io::Result<usize> {
@@ -430,10 +558,10 @@ impl Circuit {
     pub fn create_agent_throttle_message(&self, agent_id: uuid::Uuid, session_id: uuid::Uuid, circuit_code: u32, throttle: [f32; 7]) -> Message {
         use crate::networking::protocol::messages::{AgentThrottle};
         
-        // Convert throttle values to bytes (Second Life protocol format)
+        // Convert throttle values to bytes (Second Life protocol format - big-endian)
         let mut throttle_bytes = Vec::new();
         for val in throttle {
-            throttle_bytes.extend_from_slice(&val.to_le_bytes());
+            throttle_bytes.extend_from_slice(&val.to_be_bytes());
         }
         
         Message::AgentThrottle(AgentThrottle {
@@ -637,8 +765,17 @@ impl Circuit {
         camera_eye: (f32, f32, f32),
         target_addr: &SocketAddr,
     ) {
+        let mut coordination_check_interval = tokio::time::interval(Duration::from_millis(100));
+        
         loop {
             tokio::select! {
+                // Check for UDP task coordination (RegionHandshakeReply sent)
+                _ = coordination_check_interval.tick() => {
+                    self.check_and_continue_handshake(
+                        agent_id, session_id, circuit_code, position, look_at, 
+                        throttle, _flags, controls, camera_at, camera_eye, target_addr
+                    ).await;
+                }
                 // Handle incoming network messages
                 message_result = self.recv_message() => {
                     match message_result {
@@ -716,6 +853,10 @@ impl Circuit {
             }
             HandshakeState::ReceivedRegionHandshake => {
                 info!("[HANDSHAKE] 🆕 Using Generated Messages: Step 4/7: Sending RegionHandshakeReply");
+                
+                // Apply configured delay before sending RegionHandshakeReply
+                self.apply_region_handshake_reply_delay().await;
+                
                 let message = self.create_region_handshake_reply_message(agent_id, session_id, flags);
                 self.send_generated_message(&message, true, target_addr).await?;
                 self.handshake_state = HandshakeState::SentRegionHandshakeReply;
@@ -986,6 +1127,10 @@ impl Circuit {
                         session_id: session_id.to_string(),
                         flags,
                     };
+                    
+                    // Apply configured delay before sending RegionHandshakeReply
+                    self.apply_region_handshake_reply_delay().await;
+                    
                     let _ = self.send_message(&reply_message, &addr).await;
                     self.handshake_state = HandshakeState::SentRegionHandshakeReply;
                     

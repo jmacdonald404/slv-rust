@@ -66,11 +66,31 @@ fn generate_message_struct(code: &mut String, message: &MessageDefinition) {
     
     code.push_str("}\n\n");
     
-    // Generate placeholder Encode implementation 
+    // Generate Encode implementation (with special handling for known messages)
     code.push_str(&format!("impl Encode for {} {{\n", message.name));
-    code.push_str("    fn encode<W: Write>(&self, _writer: &mut W) -> Result<()> {\n");
-    code.push_str("        // TODO: Implement proper SL protocol encoding\n");
-    code.push_str("        Ok(())\n");
+    code.push_str("    fn encode<W: Write>(&self, writer: &mut W) -> Result<()> {\n");
+    
+    if message.name == "AgentThrottle" {
+        // Special implementation for AgentThrottle based on working sl_compatibility.rs
+        code.push_str("        // AgentThrottle Low frequency message ID (81)\n");
+        code.push_str("        writer.write_all(&[0xFF, 0xFF, 0x00, 0x51])?;\n");
+        code.push_str("        \n");
+        code.push_str("        // AgentData block\n");
+        code.push_str("        writer.write_all(self.agent_id.as_bytes())?;  // AgentID (16 bytes)\n");
+        code.push_str("        writer.write_all(self.session_id.as_bytes())?; // SessionID (16 bytes)\n");
+        code.push_str("        writer.write_all(&self.circuit_code.to_be_bytes())?; // CircuitCode (4 bytes, big-endian)\n");
+        code.push_str("        \n");
+        code.push_str("        // Throttle block\n");
+        code.push_str("        writer.write_all(&self.gen_counter.to_be_bytes())?; // GenCounter (4 bytes, big-endian)\n");
+        code.push_str("        writer.write_all(&self.throttles)?; // Throttles (Variable 1 - raw bytes)\n");
+        code.push_str("        \n");
+        code.push_str("        Ok(())\n");
+    } else {
+        // Placeholder for other messages
+        code.push_str("        // TODO: Implement proper SL protocol encoding\n");
+        code.push_str(&format!("        anyhow::bail!(\"Encoding not yet implemented for {}\")\n", message.name));
+    }
+    
     code.push_str("    }\n");
     code.push_str("}\n\n");
     

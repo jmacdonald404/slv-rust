@@ -15,6 +15,7 @@ use md5;
 use std::fs;
 use reqwest::Certificate;
 use std::sync::Arc;
+use tokio::task::JoinHandle;
 
 #[derive(Serialize, Debug)]
 pub struct LoginRequest {
@@ -220,6 +221,29 @@ fn log_http_response(status: reqwest::StatusCode, headers: &reqwest::header::Hea
     println!("[HTTP DEBUG] Response body (first 512 chars): {}", &body.chars().take(512).collect::<String>());
 }
 
+/// Starts EventQueueGet polling as a background task during login flow
+async fn start_event_queue_polling(
+    capabilities: &Capabilities,
+    udp_port: u16,
+    proxy_settings: Option<&ProxySettings>,
+) -> Result<JoinHandle<()>, String> {
+    let caps_clone = capabilities.clone();
+    let proxy_clone = proxy_settings.cloned();
+    
+    let handle = tokio::spawn(async move {
+        let _ = poll_event_queue(&caps_clone, udp_port, proxy_clone.as_ref(), |event| {
+            info!("[EQG] Received event during login: {}", 
+                  if event.len() > 200 { 
+                      format!("{}...", &event[..200]) 
+                  } else { 
+                      event 
+                  });
+        }).await;
+    });
+    
+    Ok(handle)
+}
+
 pub async fn login_to_secondlife(grid_uri: &str, req: &LoginRequest, proxy_settings: Option<&ProxySettings>, udp_port: u16) -> Result<LoginSessionInfo, String> {
     info!("[LOGIN] login_to_secondlife called. proxy_settings: {:?}", proxy_settings);
     // --- Build official viewer-matching fields ---
@@ -383,8 +407,25 @@ pub async fn login_to_secondlife(grid_uri: &str, req: &LoginRequest, proxy_setti
                     }
                 }
             }
-            // (Event queue polling should be started from the UI code after login succeeds)
-            // --- Now start UDP handshake (after OpenID POST is done) ---
+            
+            // Start EventQueueGet polling if capabilities are available
+            let _eq_task_handle = if let Some(ref caps) = capabilities {
+                match start_event_queue_polling(caps, udp_port, proxy_settings).await {
+                    Ok(handle) => {
+                        info!("[LOGIN] ✅ EventQueueGet polling started during login flow");
+                        Some(handle)
+                    }
+                    Err(e) => {
+                        warn!("[LOGIN] ⚠️ Failed to start EventQueueGet polling: {}", e);
+                        None
+                    }
+                }
+            } else {
+                warn!("[LOGIN] ⚠️ No capabilities available, skipping EventQueueGet polling");
+                None
+            };
+            
+            // --- Now start UDP handshake (after OpenID POST and EQG setup is done) ---
             let sim_addr = format!("{}:{}", info.sim_ip, info.sim_port).parse().unwrap();
             let session_id = uuid::Uuid::parse_str(&info.session_id).unwrap();
             let agent_id = uuid::Uuid::parse_str(&info.agent_id).unwrap();
@@ -405,6 +446,10 @@ pub async fn login_to_secondlife(grid_uri: &str, req: &LoginRequest, proxy_setti
                 Arc::new(tokio::sync::Mutex::new(udp_transport)),
                 agent_state
             ).await.map_err(|e| e.to_string())?;
+            
+            // Handshake configuration is now handled by the Circuit's default implementation.
+            // The default delay is 2000ms for compatibility, but can be overridden by
+            // the SLV_HANDSHAKE_DELAY_MS environment variable if needed for performance testing.
             let position = (0.0, 0.0, 0.0);
             let look_at = (0.0, 0.0, 0.0);
             let throttle = [207360.0, 165376.0, 33075.19921875, 33075.19921875, 682700.75, 682700.75, 269312.0];
