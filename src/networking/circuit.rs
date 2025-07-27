@@ -120,6 +120,45 @@ impl Circuit {
                                 HandshakeMessage::AgentMovementComplete { .. } => {
                                     info!("[HANDSHAKE] 📨 Step 2 Reply: AgentMovementComplete received!");
                                 }
+                                HandshakeMessage::RegionHandshake { .. } => {
+                                    info!("[HANDSHAKE] 📨 Step 3: RegionHandshake received - calling handle_incoming_message directly");
+                                    // Call handle_incoming_message directly for RegionHandshake since it's critical for handshake flow
+                                    // We need to get the parameters from somewhere - for now use defaults, TODO: pass real values
+                                    let agent_id = uuid::Uuid::nil(); // TODO: Get from circuit context
+                                    let session_id = uuid::Uuid::nil(); // TODO: Get from circuit context  
+                                    let circuit_code = 0; // TODO: Get from circuit context
+                                    let position = (128.0, 128.0, 25.0); // Default SL position
+                                    let look_at = (1.0, 0.0, 0.0); // Default look direction
+                                    let throttle = [1000.0; 7]; // Default throttle values
+                                    let flags = 5; // Default flags value like official viewer
+                                    let controls = 0; // No controls active
+                                    let camera_at = (1.0, 0.0, 0.0); // Default camera
+                                    let camera_eye = (0.0, 0.0, 0.0); // Default eye position
+                                    
+                                    // This is a workaround - we need to call handle_incoming_message but it's not async in this context
+                                    // For now, just send the RegionHandshakeReply directly here
+                                    let reply_message = HandshakeMessage::RegionHandshakeReply {
+                                        agent_id: agent_id.to_string(),
+                                        session_id: session_id.to_string(),
+                                        flags,
+                                    };
+                                    
+                                    // Send reply with packet header (use a simple counter for now)
+                                    let reply_header = PacketHeader { 
+                                        sequence_id: 100, // TODO: Use proper sequence counter
+                                        flags: 0x40 // Reliable delivery
+                                    };
+                                    
+                                    match SLMessageCodec::encode_handshake(&reply_header, &reply_message) {
+                                        Ok(reply_packet) => {
+                                            info!("[HANDSHAKE] 📤 Step 4/7: Sending RegionHandshakeReply directly from UDP task (seq: {})", reply_header.sequence_id);
+                                            let _ = transport_locked.send_to(&reply_packet, &addr).await;
+                                        },
+                                        Err(e) => {
+                                            tracing::warn!("[HANDSHAKE] ❌ Failed to encode RegionHandshakeReply: {}", e);
+                                        }
+                                    }
+                                }
                                 _ => {}
                             }
                             match message {

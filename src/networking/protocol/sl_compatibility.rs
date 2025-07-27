@@ -108,9 +108,9 @@ impl SLMessageCodec {
                 buf.extend_from_slice(&circuit_code.to_le_bytes());
             },
             HandshakeMessage::RegionHandshakeReply { agent_id, session_id, flags } => {
-                // High frequency message ID for RegionHandshakeReply (6) - single byte
-                tracing::info!("[SL_CODEC] 📤 RegionHandshakeReply: High frequency [0x06], flags={}", flags);
-                buf.push(0x06);
+                // Low frequency message ID for RegionHandshakeReply (149 = 0x95)
+                tracing::info!("[SL_CODEC] 📤 RegionHandshakeReply: Low frequency [0xFF,0xFF,0x00,0x95], flags={}", flags);
+                buf.extend_from_slice(&[0xFF, 0xFF, 0x00, 0x95]);
                 let agent_uuid = Uuid::parse_str(agent_id)
                     .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid agent_id UUID"))?;
                 let session_uuid = Uuid::parse_str(session_id)
@@ -149,9 +149,12 @@ impl SLMessageCodec {
                 buf.extend_from_slice(&controls.to_be_bytes());
             },
             HandshakeMessage::Ack { sequence_id } => {
-                // ACK message (1) - single byte high frequency
-                buf.push(0x01);
-                buf.extend_from_slice(&sequence_id.to_be_bytes());
+                // PacketAck (0xFFFFFFFB) - Fixed frequency message
+                tracing::info!("[SL_CODEC] 📤 PacketAck: Fixed frequency [0xFF,0xFF,0xFF,0xFB], acking sequence={}", sequence_id);
+                buf.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFB]);
+                // PacketAck has a Variable "Packets" block with U32 ID fields
+                buf.push(1); // Number of packet IDs in the variable block
+                buf.extend_from_slice(&sequence_id.to_le_bytes());
             },
             _ => {
                 return Err(io::Error::new(io::ErrorKind::InvalidInput, "Message type not supported for encoding"));
@@ -212,13 +215,10 @@ impl SLMessageCodec {
                         }
                     }
                 },
-                1 => { // ACK
-                    tracing::info!("[SL_CODEC] 📥 High frequency ACK message");
-                    if data.len() >= 11 {
-                        let acked_seq = u32::from_be_bytes(data[7..11].try_into().unwrap_or_default());
-                        tracing::info!("[SL_CODEC] ✅ ACK decoded: acked_seq={}", acked_seq);
-                        return Ok((header, HandshakeMessage::Ack { sequence_id: acked_seq }));
-                    }
+                1 => { // StartPingCheck (High frequency message 1) 
+                    tracing::info!("[SL_CODEC] 📥 StartPingCheck message - not implemented");
+                    // StartPingCheck messages are not part of our handshake flow
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, "StartPingCheck not supported in handshake"));
                 },
                 5 => { // RegionHandshake (legacy support)
                     tracing::info!("[SL_CODEC] 📥 RegionHandshake message (type 5 - legacy)");
@@ -262,9 +262,16 @@ impl SLMessageCodec {
                         return Ok((header, HandshakeMessage::UseCircuitCode { agent_id, session_id, circuit_code }));
                     }
                 },
-                [0xFF, 0xFF, 0xFF, 0xFB] => { // KeepAlive
-                    tracing::info!("[SL_CODEC] ✅ KeepAlive decoded");
-                    return Ok((header, HandshakeMessage::KeepAlive));
+                [0xFF, 0xFF, 0xFF, 0xFB] => { // PacketAck (Fixed message 0xFFFFFFFB)
+                    tracing::info!("[SL_CODEC] 📥 PacketAck message");
+                    if data.len() >= 15 { // 10 (header) + 1 (var block count) + 4 (U32 packet ID)
+                        let _num_packets = data[10]; // Variable block count
+                        let acked_seq = u32::from_be_bytes(data[11..15].try_into().unwrap_or_default());
+                        tracing::info!("[SL_CODEC] ✅ PacketAck decoded: acked_seq={}", acked_seq);
+                        return Ok((header, HandshakeMessage::Ack { sequence_id: acked_seq }));
+                    } else {
+                        tracing::warn!("[SL_CODEC] ❌ PacketAck packet too short: {} bytes", data.len());
+                    }
                 },
                 [0xFF, 0xFF, 0x00, 0x96] => { // UseCircuitCodeReply (150)
                     tracing::info!("[SL_CODEC] 📥 UseCircuitCodeReply message");

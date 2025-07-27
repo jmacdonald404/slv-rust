@@ -6,6 +6,8 @@ use tracing_subscriber::{
     EnvFilter,
 };
 use std::env;
+use std::fs;
+use std::io;
 
 /// Initialize logging with comprehensive configuration
 pub fn init_logging() {
@@ -13,6 +15,16 @@ pub fn init_logging() {
     let log_level = env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
     let enable_wgpu_logging = env::var("WGPU_LOG").unwrap_or_else(|_| "1".to_string()) == "1";
     let enable_backtrace = env::var("RUST_BACKTRACE").unwrap_or_else(|_| "0".to_string()) == "1";
+
+    // Remove existing log.txt file if it exists
+    if let Err(e) = fs::remove_file("log.txt") {
+        if e.kind() != io::ErrorKind::NotFound {
+            eprintln!("Warning: Failed to remove existing log.txt: {}", e);
+        }
+    }
+
+    // Create log file
+    let log_file = fs::File::create("log.txt").expect("Failed to create log.txt");
 
     // Create environment filter
     let env_filter = EnvFilter::try_from_default_env()
@@ -37,7 +49,7 @@ pub fn init_logging() {
             filter
         });
 
-    // Create the subscriber with multiple layers
+    // Create the subscriber with multiple layers (console + file)
     let subscriber = tracing_subscriber::registry()
         .with(env_filter)
         .with(fmt::layer()
@@ -48,6 +60,16 @@ pub fn init_logging() {
             .with_file(true)
             .with_line_number(true)
             .with_ansi(true)
+        )
+        .with(fmt::layer()
+            .with_writer(log_file)
+            .with_span_events(FmtSpan::CLOSE)
+            .with_target(true)
+            .with_thread_ids(true)
+            .with_thread_names(true)
+            .with_file(true)
+            .with_line_number(true)
+            .with_ansi(false) // No ANSI codes in file
         );
 
     // Initialize the subscriber
@@ -78,6 +100,7 @@ pub fn init_logging() {
 
     // Log startup information
     tracing::info!("Logging initialized with level: {}", log_level);
+    tracing::info!("File logging enabled: log.txt (session-based, cleaned on startup)");
     tracing::info!("WGPU logging enabled: {}", enable_wgpu_logging);
     tracing::info!("Backtrace enabled: {}", enable_backtrace);
 }
