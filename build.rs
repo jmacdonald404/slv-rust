@@ -3,9 +3,236 @@ use std::env;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use std::collections::HashSet;
 
 mod template_parser {
     include!("src/utils/build_utils/template_parser.rs");
+}
+
+use template_parser::{MessageDefinition, BlockDefinition, FieldDefinition, Cardinality};
+
+fn generate_block_structs(code: &mut String, message: &MessageDefinition, generated_blocks: &mut HashSet<String>) {
+    for block in &message.blocks {
+        if matches!(block.cardinality, Cardinality::Multiple | Cardinality::Variable) && !block.fields.is_empty() {
+            let block_name = format!("{}Block", block.name);
+            
+            // Skip if we've already generated this block struct
+            if generated_blocks.contains(&block_name) {
+                continue;
+            }
+            generated_blocks.insert(block_name.clone());
+            
+            code.push_str(&format!("#[derive(Debug, Clone, PartialEq)]\n"));
+            code.push_str(&format!("pub struct {} {{\n", block_name));
+            
+            for field in &block.fields {
+                let rust_type = map_field_type(&field.type_name);
+                code.push_str(&format!("    pub {}: {},\n", 
+                    to_snake_case(&field.name), rust_type));
+            }
+            
+            code.push_str("}\n\n");
+            
+            // Generate Encode implementation for block
+            code.push_str(&format!("impl Encode for {} {{\n", block_name));
+            code.push_str("    fn encode<W: Write>(&self, _writer: &mut W) -> Result<()> {\n");
+            code.push_str("        // TODO: Implement block encoding logic\n");
+            code.push_str("        Ok(())\n");
+            code.push_str("    }\n");
+            code.push_str("}\n\n");
+            
+            // Generate Decode implementation for block
+            code.push_str(&format!("impl Decode for {} {{\n", block_name));
+            code.push_str("    fn decode<R: Read>(_reader: &mut R) -> Result<Self> {\n");
+            code.push_str("        // TODO: Implement block decoding logic\n");
+            code.push_str("        anyhow::bail!(\"Block decoding not yet implemented\")\n");
+            code.push_str("    }\n");
+            code.push_str("}\n\n");
+        }
+    }
+}
+
+fn generate_message_struct(code: &mut String, message: &MessageDefinition) {
+    code.push_str(&format!("#[derive(Debug, Clone, PartialEq)]\n"));
+    code.push_str(&format!("pub struct {} {{\n", message.name));
+    
+    // Track field names to detect and resolve conflicts
+    let mut field_names = std::collections::HashSet::new();
+    let mut field_counter = std::collections::HashMap::new();
+    
+    for block in &message.blocks {
+        generate_block_fields_with_dedup(code, block, &mut field_names, &mut field_counter);
+    }
+    
+    code.push_str("}\n\n");
+    
+    // Generate Encode implementation
+    code.push_str(&format!("impl Encode for {} {{\n", message.name));
+    code.push_str("    fn encode<W: Write>(&self, _writer: &mut W) -> Result<()> {\n");
+    code.push_str("        // TODO: Implement encoding logic\n");
+    code.push_str("        Ok(())\n");
+    code.push_str("    }\n");
+    code.push_str("}\n\n");
+    
+    // Generate Decode implementation
+    code.push_str(&format!("impl Decode for {} {{\n", message.name));
+    code.push_str("    fn decode<R: Read>(_reader: &mut R) -> Result<Self> {\n");
+    code.push_str("        // TODO: Implement decoding logic\n");
+    code.push_str("        anyhow::bail!(\"Message decoding not yet implemented\")\n");
+    code.push_str("    }\n");
+    code.push_str("}\n\n");
+}
+
+fn generate_block_fields_with_dedup(
+    code: &mut String, 
+    block: &BlockDefinition, 
+    field_names: &mut std::collections::HashSet<String>,
+    field_counter: &mut std::collections::HashMap<String, u32>
+) {
+    match block.cardinality {
+        Cardinality::Single => {
+            // Single block - generate fields directly with deduplication
+            for field in &block.fields {
+                let rust_type = map_field_type(&field.type_name);
+                let mut field_name = to_snake_case(&field.name);
+                
+                // Handle field name conflicts by appending counter
+                if field_names.contains(&field_name) {
+                    let counter = field_counter.entry(field_name.clone()).or_insert(1);
+                    *counter += 1;
+                    field_name = format!("{}_{}", field_name, counter);
+                }
+                
+                field_names.insert(field_name.clone());
+                code.push_str(&format!("    pub {}: {},\n", field_name, rust_type));
+            }
+        }
+        Cardinality::Multiple => {
+            // Multiple blocks - wrap in Vec
+            if !block.fields.is_empty() {
+                let mut block_field_name = to_snake_case(&block.name);
+                
+                // Handle block name conflicts
+                if field_names.contains(&block_field_name) {
+                    let counter = field_counter.entry(block_field_name.clone()).or_insert(1);
+                    *counter += 1;
+                    block_field_name = format!("{}_{}", block_field_name, counter);
+                }
+                
+                field_names.insert(block_field_name.clone());
+                code.push_str(&format!("    pub {}: Vec<{}Block>,\n", 
+                    block_field_name, block.name));
+            }
+        }
+        Cardinality::Variable => {
+            // Variable blocks - also wrap in Vec
+            if !block.fields.is_empty() {
+                let mut block_field_name = to_snake_case(&block.name);
+                
+                // Handle block name conflicts
+                if field_names.contains(&block_field_name) {
+                    let counter = field_counter.entry(block_field_name.clone()).or_insert(1);
+                    *counter += 1;
+                    block_field_name = format!("{}_{}", block_field_name, counter);
+                }
+                
+                field_names.insert(block_field_name.clone());
+                code.push_str(&format!("    pub {}: Vec<{}Block>,\n", 
+                    block_field_name, block.name));
+            }
+        }
+    }
+}
+
+
+fn map_field_type(sl_type: &str) -> &'static str {
+    match sl_type {
+        "U8" => "u8",
+        "U16" => "u16", 
+        "U32" => "u32",
+        "U64" => "u64",
+        "S8" => "i8",
+        "S16" => "i16",
+        "S32" => "i32", 
+        "S64" => "i64",
+        "F32" => "f32",
+        "F64" => "f64",
+        "LLUUID" => "Uuid",
+        "BOOL" => "bool",
+        "LLVector3" => "[f32; 3]",
+        "LLVector4" => "[f32; 4]",
+        "LLQuaternion" => "[f32; 4]",
+        _ if sl_type.starts_with("Variable") => "Vec<u8>",
+        _ if sl_type.starts_with("Fixed") => "Vec<u8>",
+        _ => "Vec<u8>", // Default fallback
+    }
+}
+
+fn to_snake_case(s: &str) -> String {
+    let mut result = String::new();
+    let mut prev_was_upper = false;
+    
+    for (i, c) in s.chars().enumerate() {
+        if c.is_uppercase() {
+            if i > 0 && !prev_was_upper {
+                result.push('_');
+            }
+            result.push(c.to_lowercase().next().unwrap());
+            prev_was_upper = true;
+        } else {
+            result.push(c);
+            prev_was_upper = false;
+        }
+    }
+    
+    // Escape Rust keywords and reserved words
+    match result.as_str() {
+        "type" => "r#type".to_string(),
+        "match" => "r#match".to_string(),
+        "self" => "r#self".to_string(),
+        "super" => "r#super".to_string(),
+        "crate" => "r#crate".to_string(),
+        "loop" => "r#loop".to_string(),
+        "move" => "r#move".to_string(),
+        "ref" => "r#ref".to_string(),
+        "mut" => "r#mut".to_string(),
+        "static" => "r#static".to_string(),
+        "const" => "r#const".to_string(),
+        "fn" => "r#fn".to_string(),
+        "let" => "r#let".to_string(),
+        "if" => "r#if".to_string(),
+        "else" => "r#else".to_string(),
+        "while" => "r#while".to_string(),
+        "for" => "r#for".to_string(),
+        "in" => "r#in".to_string(),
+        "where" => "r#where".to_string(),
+        "impl" => "r#impl".to_string(),
+        "trait" => "r#trait".to_string(),
+        "struct" => "r#struct".to_string(),
+        "enum" => "r#enum".to_string(),
+        "use" => "r#use".to_string(),
+        "mod" => "r#mod".to_string(),
+        "pub" => "r#pub".to_string(),
+        "override" => "r#override".to_string(),
+        "final" => "r#final".to_string(),
+        "abstract" => "r#abstract".to_string(),
+        "async" => "r#async".to_string(),
+        "await" => "r#await".to_string(),
+        "become" => "r#become".to_string(),
+        "box" => "r#box".to_string(),
+        "do" => "r#do".to_string(),
+        "extern" => "r#extern".to_string(),
+        "macro" => "r#macro".to_string(),
+        "priv" => "r#priv".to_string(),
+        "typeof" => "r#typeof".to_string(),
+        "union" => "r#union".to_string(),
+        "unsafe" => "r#unsafe".to_string(),
+        "unsized" => "r#unsized".to_string(),
+        "virtual" => "r#virtual".to_string(),
+        "yield" => "r#yield".to_string(),
+        "try" => "r#try".to_string(),
+        _ => result,
+    }
 }
 
 fn main() -> Result<()> {
@@ -51,40 +278,57 @@ fn main() -> Result<()> {
     println!("cargo:rerun-if-changed=message_template.msg");
     println!("cargo:rerun-if-changed=build.rs");
     
-    // For now, generate a minimal stub to prove the build system works
+    // Generate real message structs and enums from parsed data
     let out_dir = env::var("OUT_DIR")?;
     
-    // Generate minimal Message enum that won't conflict with HandshakeMessage
     let mut code = String::new();
-    code.push_str("// Auto-generated stub - minimal Message enum\n\n");
+    code.push_str("// Auto-generated from message_template.msg - DO NOT EDIT MANUALLY\n\n");
     code.push_str("use uuid::Uuid;\n");
     code.push_str("use anyhow::{Result, anyhow};\n");
     code.push_str("use std::io::{Read, Write};\n");
     code.push_str("use super::codecs::{Encode, Decode};\n\n");
     
-    // For now, just create a placeholder enum to avoid conflicts
+    // Generate block structs first (for Multiple/Variable blocks)
+    let mut generated_blocks = HashSet::new();
+    for message in &parsed.messages {
+        generate_block_structs(&mut code, message, &mut generated_blocks);
+    }
+    
+    // Generate individual message structs
+    for message in &parsed.messages {
+        generate_message_struct(&mut code, message);
+    }
+    
+    // Generate the main Message enum
     code.push_str("#[derive(Debug, Clone, PartialEq)]\n");
     code.push_str("pub enum Message {\n");
-    code.push_str("    // Placeholder - real messages handled by HandshakeMessage\n");
-    code.push_str("    Placeholder,\n");
+    for message in &parsed.messages {
+        code.push_str(&format!("    {}({}),\n", message.name, message.name));
+    }
     code.push_str("}\n\n");
     
-    // Add minimal implementations
+    // Generate Encode implementation for Message enum
     code.push_str("impl Encode for Message {\n");
-    code.push_str("    fn encode<W: Write>(&self, _writer: &mut W) -> Result<()> {\n");
-    code.push_str("        Ok(())\n");
+    code.push_str("    fn encode<W: Write>(&self, writer: &mut W) -> Result<()> {\n");
+    code.push_str("        match self {\n");
+    for message in &parsed.messages {
+        code.push_str(&format!("            Message::{}(msg) => msg.encode(writer),\n", message.name));
+    }
+    code.push_str("        }\n");
     code.push_str("    }\n");
     code.push_str("}\n\n");
     
+    // Generate Decode implementation for Message enum (placeholder for now)
     code.push_str("impl Decode for Message {\n");
     code.push_str("    fn decode<R: Read>(_reader: &mut R) -> Result<Self> {\n");
-    code.push_str("        Ok(Message::Placeholder)\n");
+    code.push_str("        // TODO: Implement message decoding logic - requires message ID lookup\n");
+    code.push_str("        anyhow::bail!(\"Message decoding not yet implemented\")\n");
     code.push_str("    }\n");
     code.push_str("}\n\n");
 
     let messages_path = std::path::Path::new(&out_dir).join("messages.rs");
     std::fs::write(&messages_path, code)?;
-    println!("Generated minimal messages.rs stub with {} messages parsed", parsed.messages.len());
+    println!("Generated complete messages.rs with {} message structs and main Message enum", parsed.messages.len());
     
     // Generate a minimal codecs.rs that matches the new generated Message type
     let codecs_content = r#"// Auto-generated from message_template.msg - DO NOT EDIT MANUALLY

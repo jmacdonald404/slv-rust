@@ -6,3 +6,4 @@ gemini-github-manager.sh
 .env
 hippolyzer/
 message_template.msgexternal/master-message-template/
+external/

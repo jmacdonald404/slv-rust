@@ -1,5 +1,4 @@
-use crate::networking::protocol::{HandshakeMessage, SLMessageCodec};
-use crate::networking::protocol::codecs::PacketHeader;
+use crate::networking::protocol::{HandshakeMessage, SLMessageCodec, Message, MessageCodec, PacketHeader};
 use crate::networking::commands::NetworkCommand;
 use crate::world::*;
 use crate::config::PerformanceSettingsHandle;
@@ -298,6 +297,34 @@ impl Circuit {
         transport.send_to(&encoded, target).await
     }
 
+    /// Send a message using the generated Message enum (Phase 3 implementation)
+    pub async fn send_generated_message(&mut self, message: &Message, reliable: bool, target: &SocketAddr) -> io::Result<usize> {
+        let flags = if reliable { 0x40 } else { 0x00 }; // RELIABLE flag
+        
+        let header = PacketHeader {
+            sequence_id: self.next_sequence_number,
+            flags,
+        };
+        self.next_sequence_number += 1;
+        
+        // Use the generated message codec
+        let encoded = MessageCodec::encode(&header, message)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        
+        // Store reliable messages for retransmission (placeholder for now)
+        if reliable {
+            // TODO: Update unacked_messages to support Message enum
+            info!("[UDP TX] 📝 Note: Reliable message storage not yet implemented for generated messages");
+        }
+        
+        info!("[UDP TX] 📤 Sending {} bytes to {} (seq: {}, flags: 0x{:02X}) [Generated Message]", 
+              encoded.len(), target, header.sequence_id, flags);
+        info!("[UDP TX] 🔍 Generated message type: {:?}", message);
+        
+        let transport = self.transport.lock().await;
+        transport.send_to(&encoded, target).await
+    }
+
     pub async fn recv_message(&mut self) -> io::Result<(PacketHeader, HandshakeMessage, SocketAddr)> {
         self.receiver_channel.recv().await.ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "Circuit receive channel closed"))
     }
@@ -325,6 +352,78 @@ impl Circuit {
     /// Update performance settings for dynamic network configuration
     pub fn update_performance_settings(&mut self, new_settings: PerformanceSettingsHandle) {
         self.performance_settings = Some(new_settings);
+    }
+
+    /// Helper method to convert handshake data to generated UseCircuitCode message
+    pub fn create_use_circuit_code_message(&self, agent_id: uuid::Uuid, session_id: uuid::Uuid, circuit_code: u32) -> Message {
+        use crate::networking::protocol::messages::{UseCircuitCode};
+        
+        Message::UseCircuitCode(UseCircuitCode {
+            code: circuit_code,
+            session_id,
+            id: agent_id.as_bytes().to_vec(), // Convert agent_id to Vec<u8>
+        })
+    }
+
+    /// Helper method to create CompleteAgentMovement message  
+    pub fn create_complete_agent_movement_message(&self, agent_id: uuid::Uuid, session_id: uuid::Uuid, circuit_code: u32) -> Message {
+        use crate::networking::protocol::messages::{CompleteAgentMovement};
+        
+        Message::CompleteAgentMovement(CompleteAgentMovement {
+            agent_id,
+            session_id, 
+            circuit_code,
+        })
+    }
+
+    /// Helper method to create RegionHandshakeReply message
+    pub fn create_region_handshake_reply_message(&self, agent_id: uuid::Uuid, session_id: uuid::Uuid, flags: u32) -> Message {
+        use crate::networking::protocol::messages::{RegionHandshakeReply};
+        
+        Message::RegionHandshakeReply(RegionHandshakeReply {
+            agent_id,
+            session_id,
+            flags,
+        })
+    }
+
+    /// Helper method to create AgentThrottle message
+    pub fn create_agent_throttle_message(&self, agent_id: uuid::Uuid, session_id: uuid::Uuid, circuit_code: u32, throttle: [f32; 7]) -> Message {
+        use crate::networking::protocol::messages::{AgentThrottle};
+        
+        // Convert throttle values to bytes (Second Life protocol format)
+        let mut throttle_bytes = Vec::new();
+        for val in throttle {
+            throttle_bytes.extend_from_slice(&val.to_le_bytes());
+        }
+        
+        Message::AgentThrottle(AgentThrottle {
+            agent_id,
+            session_id,
+            circuit_code,
+            gen_counter: 0, // Default generation counter
+            throttles: throttle_bytes,
+        })
+    }
+
+    /// Helper method to create AgentUpdate message
+    pub fn create_agent_update_message(&self, agent_id: uuid::Uuid, session_id: uuid::Uuid, position: (f32, f32, f32), camera_at: (f32, f32, f32), camera_eye: (f32, f32, f32), controls: u32) -> Message {
+        use crate::networking::protocol::messages::{AgentUpdate};
+        
+        Message::AgentUpdate(AgentUpdate {
+            agent_id,
+            session_id,
+            body_rotation: [0.0, 0.0, 0.0, 1.0], // Default quaternion (no rotation)
+            head_rotation: [0.0, 0.0, 0.0, 1.0], // Default quaternion
+            state: 0, // Default state
+            camera_center: [camera_eye.0, camera_eye.1, camera_eye.2], // Convert tuple to array
+            camera_at_axis: [camera_at.0, camera_at.1, camera_at.2],
+            camera_left_axis: [0.0, 1.0, 0.0], // Default left axis
+            camera_up_axis: [0.0, 0.0, 1.0], // Default up axis
+            far: 512.0, // Default far plane distance
+            control_flags: controls,
+            flags: 0, // Default flags
+        })
     }
 
     /// Set up event channels for communication with the application
@@ -536,6 +635,85 @@ impl Circuit {
                 }
             }
         }
+    }
+
+    /// Experimental handshake method using generated Message enum (Phase 3 implementation)
+    /// This demonstrates the transition to the full protocol implementation
+    pub async fn advance_handshake_with_generated_messages(
+        &mut self,
+        agent_id: uuid::Uuid,
+        session_id: uuid::Uuid,
+        circuit_code: u32,
+        target_addr: &SocketAddr,
+        position: (f32, f32, f32),
+        look_at: (f32, f32, f32),
+        throttle: [f32; 7],
+        flags: u32,
+        controls: u32,
+        camera_at: (f32, f32, f32),
+        camera_eye: (f32, f32, f32),
+    ) -> io::Result<()> {
+        use tracing::info;
+        
+        match self.handshake_state {
+            HandshakeState::NotStarted => {
+                info!("[HANDSHAKE] 🆕 Using Generated Messages: Step 1/7: Sending UseCircuitCode");
+                let message = self.create_use_circuit_code_message(agent_id, session_id, circuit_code);
+                self.send_generated_message(&message, true, target_addr).await?;
+                self.handshake_state = HandshakeState::SentUseCircuitCode;
+                info!("[HANDSHAKE] ✅ Generated message transition: NotStarted -> SentUseCircuitCode");
+            }
+            HandshakeState::SentUseCircuitCode => {
+                info!("[HANDSHAKE] 🆕 Using Generated Messages: Step 2/7: Sending CompleteAgentMovement");
+                let message = self.create_complete_agent_movement_message(agent_id, session_id, circuit_code);
+                self.send_generated_message(&message, true, target_addr).await?;
+                self.handshake_state = HandshakeState::SentCompleteAgentMovement;
+                info!("[HANDSHAKE] ✅ Generated message transition: SentUseCircuitCode -> SentCompleteAgentMovement");
+            }
+            HandshakeState::SentCompleteAgentMovement => {
+                info!("[HANDSHAKE] 🆕 Generated Messages: Step 3/7: Waiting for RegionHandshake from server...");
+                // This state waits for RegionHandshake message which will be handled in the incoming message handler
+                return Ok(());
+            }
+            HandshakeState::ReceivedRegionHandshake => {
+                info!("[HANDSHAKE] 🆕 Using Generated Messages: Step 4/7: Sending RegionHandshakeReply");
+                let message = self.create_region_handshake_reply_message(agent_id, session_id, flags);
+                self.send_generated_message(&message, true, target_addr).await?;
+                self.handshake_state = HandshakeState::SentRegionHandshakeReply;
+                info!("[HANDSHAKE] ✅ Generated message transition: ReceivedRegionHandshake -> SentRegionHandshakeReply");
+            }
+            HandshakeState::SentRegionHandshakeReply => {
+                info!("[HANDSHAKE] 🆕 Using Generated Messages: Step 5/7: Sending AgentThrottle");
+                let message = self.create_agent_throttle_message(agent_id, session_id, circuit_code, throttle);
+                self.send_generated_message(&message, true, target_addr).await?;
+                self.handshake_state = HandshakeState::SentAgentThrottle;
+                info!("[HANDSHAKE] ✅ Generated message transition: SentRegionHandshakeReply -> SentAgentThrottle");
+            }
+            HandshakeState::SentAgentThrottle => {
+                info!("[HANDSHAKE] 🆕 Using Generated Messages: Step 6/7: Sending first AgentUpdate");
+                let message = self.create_agent_update_message(agent_id, session_id, position, camera_at, camera_eye, controls);
+                self.send_generated_message(&message, false, target_addr).await?; // AgentUpdate is unreliable
+                self.handshake_state = HandshakeState::SentFirstAgentUpdate;
+                info!("[HANDSHAKE] ✅ Generated message transition: SentAgentThrottle -> SentFirstAgentUpdate");
+            }
+            HandshakeState::SentFirstAgentUpdate => {
+                info!("[HANDSHAKE] 🆕 Using Generated Messages: Step 7/7: Handshake complete!");
+                self.handshake_state = HandshakeState::HandshakeComplete;
+                info!("[HANDSHAKE] ✅ Generated message transition: SentFirstAgentUpdate -> HandshakeComplete");
+                
+                // Start 10-second shutdown timer after successful authentication
+                tokio::spawn(async move {
+                    tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+                    info!("[SHUTDOWN] 🔴 Auto-shutdown timer reached (Generated Messages) - terminating application for debug analysis");
+                    std::process::exit(0);
+                });
+            }
+            HandshakeState::HandshakeComplete => {
+                info!("[HANDSHAKE] 🆕 Generated Messages: Handshake already complete");
+                return Ok(());
+            }
+        }
+        Ok(())
     }
 
     pub async fn advance_handshake(
@@ -755,6 +933,7 @@ impl Circuit {
         // Then handle handshake-specific logic
         match &message {
             HandshakeMessage::RegionHandshake { .. } => {
+                info!("[HANDSHAKE] 🔍 RegionHandshake match arm entered. Current state: {:?}", self.handshake_state);
                 if self.handshake_state < HandshakeState::SentRegionHandshakeReply {
                     info!("[HANDSHAKE] 📨 Step 3 Reply: RegionHandshake received from server! Advancing state.");
                     info!("[HANDSHAKE] 📤 Step 4/7: Sending RegionHandshakeReply (seq: {})", header.sequence_id);
@@ -762,8 +941,14 @@ impl Circuit {
                     // Manually set the state to ensure we can send the reply and advance.
                     self.handshake_state = HandshakeState::ReceivedRegionHandshake;
                     
-                    // Send reply with the same sequence number as incoming packet
-                    self.send_region_handshake_reply_with_seq(agent_id, session_id, flags, header.sequence_id, &addr).await;
+                    // Send reply with our own next sequence number (not echoing server's sequence number)
+                    let reply_message = HandshakeMessage::RegionHandshakeReply {
+                        agent_id: agent_id.to_string(),
+                        session_id: session_id.to_string(),
+                        flags,
+                    };
+                    let _ = self.send_message(&reply_message, &addr).await;
+                    self.handshake_state = HandshakeState::SentRegionHandshakeReply;
                     
                     // Continue handshake progression, which will now send AgentThrottle
                     self.advance_handshake(agent_id, session_id, circuit_code, position, look_at, throttle, flags, controls, camera_at, camera_eye, target_addr).await;

@@ -12,7 +12,11 @@
       "Bash(cat:*)",
       "Bash(git add:*)",
       "Bash(cargo build:*)",
-      "Bash(RUST_LOG=info cargo run --bin slv-rust)"
+      "Bash(RUST_LOG=info cargo run --bin slv-rust)",
+      "Bash(find:*)",
+      "Bash(RUST_LOG=debug cargo run --bin slv-rust)",
+      "Bash(RUST_LOG=1 cargo run --bin slv-rust)",
+      "Bash(git rm:*)"
     ],
     "deny": []
   }

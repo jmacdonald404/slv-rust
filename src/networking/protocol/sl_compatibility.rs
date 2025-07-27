@@ -301,6 +301,15 @@ impl SLMessageCodec {
                                 }));
                             }
                         }
+                    } else {
+                        tracing::warn!("[SL_CODEC] ❌ RegionHandshake packet too short: {} bytes", data.len());
+                        return Ok((header, HandshakeMessage::RegionHandshake {
+                            region_name: "Too_Short".to_string(),
+                            region_id: Uuid::nil(),
+                            region_flags: 0,
+                            water_height: 0.0,
+                            sim_access: 0,
+                        }));
                     }
                 },
                 [0xFF, 0xFF, 0x00, 0xF9] => { // AgentMovementComplete

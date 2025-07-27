@@ -14,3 +14,7 @@ pub use crate::utils::build_utils::template_parser;
 
 // Re-export compatibility types for easier use
 pub use sl_compatibility::{HandshakeMessage, SLMessageCodec};
+
+// Re-export generated types
+pub use messages::Message;
+pub use codecs::{MessageCodec, PacketHeader, Encode, Decode};
