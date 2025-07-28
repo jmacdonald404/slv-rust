@@ -67,28 +67,104 @@ fn generate_message_struct(code: &mut String, message: &MessageDefinition) {
     code.push_str("}\n\n");
     
     // Generate Encode implementation (with special handling for known messages)
+    let has_complete_implementation = message.name == "AgentThrottle" || message.name == "AgentUpdate" || message.name == "UseCircuitCode";
+    
     code.push_str(&format!("impl Encode for {} {{\n", message.name));
     code.push_str("    fn encode<W: Write>(&self, writer: &mut W) -> Result<()> {\n");
     
     if message.name == "AgentThrottle" {
-        // Special implementation for AgentThrottle based on working sl_compatibility.rs
-        code.push_str("        // AgentThrottle Low frequency message ID (81)\n");
-        code.push_str("        writer.write_all(&[0xFF, 0xFF, 0x00, 0x51])?;\n");
+        // Special implementation for AgentThrottle matching working sl_compatibility.rs format
+        // Note: Message ID should be handled by MessageCodec, not here
+        code.push_str("        // AgentThrottle message body (without header/message ID)\n");
         code.push_str("        \n");
         code.push_str("        // AgentData block\n");
         code.push_str("        writer.write_all(self.agent_id.as_bytes())?;  // AgentID (16 bytes)\n");
         code.push_str("        writer.write_all(self.session_id.as_bytes())?; // SessionID (16 bytes)\n");
-        code.push_str("        writer.write_all(&self.circuit_code.to_be_bytes())?; // CircuitCode (4 bytes, big-endian)\n");
+        code.push_str("        writer.write_all(&self.circuit_code.to_be_bytes())?; // CircuitCode (4 bytes, BIG-endian)\n");
         code.push_str("        \n");
-        code.push_str("        // Throttle block\n");
-        code.push_str("        writer.write_all(&self.gen_counter.to_be_bytes())?; // GenCounter (4 bytes, big-endian)\n");
-        code.push_str("        writer.write_all(&self.throttles)?; // Throttles (Variable 1 - raw bytes)\n");
+        code.push_str("        // Throttle block - Variable field with proper SL protocol format\n");
+        code.push_str("        writer.write_all(&self.gen_counter.to_be_bytes())?; // GenCounter (4 bytes, BIG-endian)\n");
+        code.push_str("        \n");
+        code.push_str("        // Variable 1 Throttles field: each value a LITTLE ENDIAN 32 bit float\n");
+        code.push_str("        if self.throttles.len() >= 28 { // 7 f32 values * 4 bytes each\n");
+        code.push_str("            writer.write_all(&[28u8])?; // Variable field length: 28 bytes (1 byte prefix)\n");
+        code.push_str("            // Write throttles as little-endian f32 values (as per message layout spec)\n");
+        code.push_str("            for chunk in self.throttles.chunks_exact(4) {\n");
+        code.push_str("                let val = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);\n");
+        code.push_str("                writer.write_all(&val.to_le_bytes())?; // LITTLE ENDIAN as per spec\n");
+        code.push_str("            }\n");
+        code.push_str("        } else {\n");
+        code.push_str("            return Err(anyhow::anyhow!(\"AgentThrottle throttles field too short: {} bytes\", self.throttles.len()));\n");
+        code.push_str("        }\n");
         code.push_str("        \n");
         code.push_str("        Ok(())\n");
-    } else {
-        // Placeholder for other messages
+    } else if message.name == "UseCircuitCode" {
+        // Complete implementation for UseCircuitCode matching SL protocol
+        // Based on message_template.msg: CircuitCode { Code U32, SessionID LLUUID, ID LLUUID }
+        code.push_str("        // UseCircuitCode message body (without header/message ID)\n");
+        code.push_str("        \n");
+        code.push_str("        // CircuitCode block\n");
+        code.push_str("        writer.write_all(&self.code.to_le_bytes())?; // Code (4 bytes, LITTLE-endian)\n");
+        code.push_str("        writer.write_all(self.session_id.as_bytes())?; // SessionID (16 bytes)\n");
+        code.push_str("        writer.write_all(&self.id)?; // ID/AgentID as Vec<u8> (16 bytes)\n");
+        code.push_str("        \n");
+        code.push_str("        Ok(())\n");
+    } else if message.name == "AgentUpdate" {
+        // Complete implementation for AgentUpdate with all required SL protocol fields
+        code.push_str("        // AgentUpdate message body (without header/message ID)\n");
+        code.push_str("        // Complete SL protocol structure with all required fields\n");
+        code.push_str("        \n");
+        code.push_str("        // AgentData block\n");
+        code.push_str("        writer.write_all(self.agent_id.as_bytes())?;  // AgentID (16 bytes)\n");
+        code.push_str("        writer.write_all(self.session_id.as_bytes())?; // SessionID (16 bytes)\n");
+        code.push_str("        \n");
+        code.push_str("        // BodyRotation (LLQuaternion - 3 x F32, LITTLE-endian, normalized)\n");
+        code.push_str("        for component in self.body_rotation.iter().take(3) {\n");
+        code.push_str("            writer.write_all(&component.to_le_bytes())?;\n");
+        code.push_str("        }\n");
+        code.push_str("        \n");
+        code.push_str("        // HeadRotation (LLQuaternion - 3 x F32, LITTLE-endian, normalized)\n");
+        code.push_str("        for component in self.head_rotation.iter().take(3) {\n");
+        code.push_str("            writer.write_all(&component.to_le_bytes())?;\n");
+        code.push_str("        }\n");
+        code.push_str("        \n");
+        code.push_str("        // State (U8)\n");
+        code.push_str("        writer.write_all(&[self.state])?;\n");
+        code.push_str("        \n");
+        code.push_str("        // CameraCenter (LLVector3 - 3 x F32, LITTLE-endian)\n");
+        code.push_str("        for component in self.camera_center.iter() {\n");
+        code.push_str("            writer.write_all(&component.to_le_bytes())?;\n");
+        code.push_str("        }\n");
+        code.push_str("        \n");
+        code.push_str("        // CameraAtAxis (LLVector3 - 3 x F32, LITTLE-endian)\n");
+        code.push_str("        for component in self.camera_at_axis.iter() {\n");
+        code.push_str("            writer.write_all(&component.to_le_bytes())?;\n");
+        code.push_str("        }\n");
+        code.push_str("        \n");
+        code.push_str("        // CameraLeftAxis (LLVector3 - 3 x F32, LITTLE-endian)\n");
+        code.push_str("        for component in self.camera_left_axis.iter() {\n");
+        code.push_str("            writer.write_all(&component.to_le_bytes())?;\n");
+        code.push_str("        }\n");
+        code.push_str("        \n");
+        code.push_str("        // CameraUpAxis (LLVector3 - 3 x F32, LITTLE-endian)\n");
+        code.push_str("        for component in self.camera_up_axis.iter() {\n");
+        code.push_str("            writer.write_all(&component.to_le_bytes())?;\n");
+        code.push_str("        }\n");
+        code.push_str("        \n");
+        code.push_str("        // Far (F32, LITTLE-endian)\n");
+        code.push_str("        writer.write_all(&self.far.to_le_bytes())?;\n");
+        code.push_str("        \n");
+        code.push_str("        // ControlFlags (U32, LITTLE-endian)\n");
+        code.push_str("        writer.write_all(&self.control_flags.to_le_bytes())?;\n");
+        code.push_str("        \n");
+        code.push_str("        // Flags (U8)\n");
+        code.push_str("        writer.write_all(&[self.flags])?;\n");
+        code.push_str("        \n");
+        code.push_str("        Ok(())\n");
+    } else if !has_complete_implementation {
+        // Placeholder for other messages (only if not already implemented above)
         code.push_str("        // TODO: Implement proper SL protocol encoding\n");
-        code.push_str(&format!("        anyhow::bail!(\"Encoding not yet implemented for {}\")\n", message.name));
+        code.push_str("        anyhow::bail!(\"Encoding not yet implemented for this message type\")\n");
     }
     
     code.push_str("    }\n");
@@ -670,6 +746,26 @@ impl MessageCodec {
     pub fn encode(header: &PacketHeader, message: &Message) -> Result<Vec<u8>> {
         let mut buffer = Vec::new();
         header.encode(&mut buffer)?;
+        
+        // Add message ID based on message type
+        match message {
+            Message::UseCircuitCode(_) => {
+                // UseCircuitCode Low frequency message ID (3 = 0x03)
+                buffer.extend_from_slice(&[0xFF, 0xFF, 0x00, 0x03]);
+            },
+            Message::AgentThrottle(_) => {
+                // AgentThrottle Low frequency message ID (81 = 0x51)
+                buffer.extend_from_slice(&[0xFF, 0xFF, 0x00, 0x51]);
+            },
+            Message::AgentUpdate(_) => {
+                // AgentUpdate High frequency message ID (4 = 0x04)
+                buffer.push(0x04);
+            },
+            _ => {
+                return Err(anyhow!("Message ID not implemented for message type"));
+            }
+        }
+        
         message.encode(&mut buffer)?;
         Ok(buffer)
     }

@@ -358,7 +358,20 @@ pub async fn login_to_secondlife(grid_uri: &str, req: &LoginRequest, proxy_setti
     // eprintln!("[LOGIN RESPONSE] Raw body:\n{}", filtered_text);
     // eprintln!("[DEBUG] Full login response XML:\n{}", text);
     match parse_login_response(&text) {
-        Ok(info) => {
+        Ok(mut info) => {
+            // Extract session cookie from Set-Cookie headers for my.secondlife.com requests
+            for (name, value) in headers.iter() {
+                if name == "set-cookie" {
+                    if let Ok(cookie_str) = value.to_str() {
+                        eprintln!("[DEBUG] Found Set-Cookie: {}", cookie_str);
+                        if cookie_str.contains("agni_sl_session_id") {
+                            info.session_cookie = Some(extract_cookie_kv(cookie_str));
+                            eprintln!("[DEBUG] Extracted session cookie: {}", extract_cookie_kv(cookie_str));
+                            break;
+                        }
+                    }
+                }
+            }
             // --- OpenID/capabilities step: MUST complete OpenID POST before UDP handshake ---
             if let Some(openid_token) = extract_openid_token(&text) {
                 eprintln!("[DEBUG] Found openid_token: {}", openid_token);
@@ -387,7 +400,20 @@ pub async fn login_to_secondlife(grid_uri: &str, req: &LoginRequest, proxy_setti
                         eprintln!("[DEBUG] OpenID POST error (non-blocking): {}", e);
                     }
                 }
-                // Capabilities POST and my.secondlife.com GET are also non-blocking/skipped for now
+                
+                // Fetch my.secondlife.com homepage (required for proper session establishment)
+                if let Some(ref cookie) = info.session_cookie {
+                    match fetch_my_secondlife_homepage(cookie, udp_port, proxy_settings).await {
+                        Ok(response) => {
+                            eprintln!("[DEBUG] my.secondlife.com GET successful (length: {} chars)", response.len());
+                        }
+                        Err(e) => {
+                            eprintln!("[DEBUG] my.secondlife.com GET error (non-blocking): {}", e);
+                        }
+                    }
+                } else {
+                    eprintln!("[DEBUG] No session cookie available for my.secondlife.com GET");
+                }
             }
             // After parsing login response and extracting seed_capability
             // Fetch seed capabilities if not present
@@ -459,8 +485,7 @@ pub async fn login_to_secondlife(grid_uri: &str, req: &LoginRequest, proxy_setti
             let camera_eye = (0.0, 0.0, 0.0);
 
             tokio::spawn(async move {
-                // Progress through handshake states
-                circuit.advance_handshake(agent_id, session_id, circuit_code, position, look_at, throttle, flags, controls, camera_at, camera_eye, &sim_addr).await;
+                // Start handshake sequence (only call once - state machine handles progression)
                 circuit.advance_handshake(agent_id, session_id, circuit_code, position, look_at, throttle, flags, controls, camera_at, camera_eye, &sim_addr).await;
                 // Start the receive loop to handle all incoming messages and handshake progression
                 circuit.run_receive_loop(

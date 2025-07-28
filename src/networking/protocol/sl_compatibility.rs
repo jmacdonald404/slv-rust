@@ -66,6 +66,9 @@ pub enum HandshakeMessage {
         message: String,
         channel: String,
     },
+    OnlineNotification {
+        agent_ids: Vec<String>,
+    },
     Logout,
 }
 
@@ -154,7 +157,7 @@ impl SLMessageCodec {
                 buf.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFB]);
                 // PacketAck has a Variable "Packets" block with U32 ID fields
                 buf.push(1); // Number of packet IDs in the variable block
-                buf.extend_from_slice(&sequence_id.to_le_bytes());
+                buf.extend_from_slice(&sequence_id.to_be_bytes());
             },
             _ => {
                 return Err(io::Error::new(io::ErrorKind::InvalidInput, "Message type not supported for encoding"));
@@ -168,7 +171,7 @@ impl SLMessageCodec {
     /// Decode packets into handshake messages
     pub fn decode_handshake(data: &[u8]) -> io::Result<(PacketHeader, HandshakeMessage)> {
         tracing::info!("[SL_CODEC] 🔍 Decoding {} bytes: {:02X?}", data.len(), &data[..std::cmp::min(data.len(), 20)]);
-        
+
         if data.len() < 7 {
             tracing::warn!("[SL_CODEC] ❌ Packet too short: {} bytes", data.len());
             return Err(io::Error::new(io::ErrorKind::InvalidData, "Packet too short for message ID"));
@@ -179,197 +182,199 @@ impl SLMessageCodec {
             flags: data[0],
         };
 
-        let id_byte1 = data[6];
-        tracing::info!("[SL_CODEC] 🎯 Header parsed: seq={}, flags=0x{:02X}, first_msg_byte=0x{:02X}", header.sequence_id, header.flags, id_byte1);
-        
-        // High Frequency Messages (single byte)
-        if id_byte1 < 0xFF {
-            tracing::info!("[SL_CODEC] 🔥 High frequency message detected: 0x{:02X}", id_byte1);
-            match id_byte1 {
-                0 => { // RegionHandshake - High frequency message type 0
-                    tracing::info!("[SL_CODEC] 📥 High frequency RegionHandshake message (type 0)");
-                    // Parse RegionHandshake data using the manual parser
-                    if data.len() > 7 {
-                        match super::region_handshake::parse_region_handshake(&data[7..]) {
-                            Some(region_data) => {
-                                tracing::info!("[SL_CODEC] ✅ RegionHandshake decoded: region_id={}, flags={}, water_height={}", 
-                                    region_data.region_id, region_data.region_flags, region_data.water_height);
-                                return Ok((header, HandshakeMessage::RegionHandshake {
-                                    region_name: region_data.region_name,
-                                    region_id: region_data.region_id,
-                                    region_flags: region_data.region_flags,
-                                    water_height: region_data.water_height,
-                                    sim_access: region_data.sim_access,
-                                }));
-                            },
-                            None => {
-                                tracing::warn!("[SL_CODEC] ❌ Failed to parse RegionHandshake data");
-                                return Ok((header, HandshakeMessage::RegionHandshake {
-                                    region_name: "Parse_Error".to_string(),
-                                    region_id: Uuid::nil(),
-                                    region_flags: 0,
-                                    water_height: 0.0,
-                                    sim_access: 0,
-                                }));
-                            }
-                        }
-                    }
-                },
-                1 => { // StartPingCheck (High frequency message 1) 
-                    tracing::info!("[SL_CODEC] 📥 StartPingCheck message - not implemented");
-                    // StartPingCheck messages are not part of our handshake flow
-                    return Err(io::Error::new(io::ErrorKind::InvalidData, "StartPingCheck not supported in handshake"));
-                },
-                5 => { // RegionHandshake (legacy support)
-                    tracing::info!("[SL_CODEC] 📥 RegionHandshake message (type 5 - legacy)");
-                    // TODO: Parse actual RegionHandshake data
-                    tracing::info!("[SL_CODEC] ✅ RegionHandshake decoded (placeholder)");
-                    return Ok((header, HandshakeMessage::RegionHandshake {
-                        region_name: "Unknown".to_string(),
-                        region_id: Uuid::nil(),
-                        region_flags: 0,
-                        water_height: 0.0,
-                        sim_access: 0,
-                    }));
-                },
-                250 => { // AgentMovementComplete - High frequency message type 250 (0xFA)
-                    tracing::info!("[SL_CODEC] 📥 High frequency AgentMovementComplete message (type 250)");
-                    if data.len() >= 39 { // 7 (header) + 16 (agent_id) + 16 (session_id) = 39 minimum
-                        let agent_id = Uuid::from_slice(&data[7..23]).map(|u| u.to_string()).unwrap_or_default();
-                        let session_id = Uuid::from_slice(&data[23..39]).map(|u| u.to_string()).unwrap_or_default();
-                        tracing::info!("[SL_CODEC] ✅ AgentMovementComplete decoded: agent_id={}", agent_id);
-                        return Ok((header, HandshakeMessage::AgentMovementComplete { agent_id, session_id }));
-                    } else {
-                        tracing::warn!("[SL_CODEC] ❌ AgentMovementComplete packet too short: {} bytes", data.len());
-                    }
-                },
-                _ => {}
-            }
+        let mut frequency = 0;
+        while frequency < 3 && data.get(6 + frequency) == Some(&0xFF) {
+            frequency += 1;
         }
 
-        // Medium/Low Frequency Messages
-        if data.len() >= 10 {
-            let full_id = &data[6..10];
-            tracing::info!("[SL_CODEC] 🌊 Medium/Low frequency message: {:02X?}", full_id);
-            match full_id {
-                [0xFF, 0xFF, 0x00, 0x03] => { // UseCircuitCode (3)
-                    tracing::info!("[SL_CODEC] 📥 UseCircuitCode message");
-                    if data.len() >= 42 {
-                        let circuit_code = u32::from_le_bytes(data[10..14].try_into().unwrap_or_default());
-                        let session_id = Uuid::from_slice(&data[14..30]).map(|u| u.to_string()).unwrap_or_default();
-                        let agent_id = Uuid::from_slice(&data[30..46]).map(|u| u.to_string()).unwrap_or_default();
-                        tracing::info!("[SL_CODEC] ✅ UseCircuitCode decoded: circuit_code={}", circuit_code);
-                        return Ok((header, HandshakeMessage::UseCircuitCode { agent_id, session_id, circuit_code }));
-                    }
-                },
-                [0xFF, 0xFF, 0xFF, 0xFB] => { // PacketAck (Fixed message 0xFFFFFFFB)
-                    tracing::info!("[SL_CODEC] 📥 PacketAck message");
-                    if data.len() >= 15 { // 10 (header) + 1 (var block count) + 4 (U32 packet ID)
-                        let _num_packets = data[10]; // Variable block count
-                        let acked_seq = u32::from_be_bytes(data[11..15].try_into().unwrap_or_default());
-                        tracing::info!("[SL_CODEC] ✅ PacketAck decoded: acked_seq={}", acked_seq);
-                        return Ok((header, HandshakeMessage::Ack { sequence_id: acked_seq }));
-                    } else {
-                        tracing::warn!("[SL_CODEC] ❌ PacketAck packet too short: {} bytes", data.len());
-                    }
-                },
-                [0xFF, 0xFF, 0x00, 0x96] => { // UseCircuitCodeReply (150)
-                    tracing::info!("[SL_CODEC] 📥 UseCircuitCodeReply message");
-                    if data.len() >= 11 {
-                        let success = data[10] != 0;
-                        tracing::info!("[SL_CODEC] ✅ UseCircuitCodeReply decoded: success={}", success);
-                        return Ok((header, HandshakeMessage::UseCircuitCodeReply(success)));
-                    }
-                },
-                [0xFF, 0xFF, 0x00, 0x01] => { // RegionHandshake (Low frequency message 1)
-                    tracing::info!("[SL_CODEC] 📥 Low frequency RegionHandshake message (type 1)");
-                    // Parse RegionHandshake data using the manual parser
-                    if data.len() > 10 {
-                        match super::region_handshake::parse_region_handshake(&data[10..]) {
-                            Some(region_data) => {
-                                tracing::info!("[SL_CODEC] ✅ RegionHandshake decoded: region_id={}, flags={}, water_height={}", 
-                                    region_data.region_id, region_data.region_flags, region_data.water_height);
-                                return Ok((header, HandshakeMessage::RegionHandshake {
-                                    region_name: region_data.region_name,
-                                    region_id: region_data.region_id,
-                                    region_flags: region_data.region_flags,
-                                    water_height: region_data.water_height,
-                                    sim_access: region_data.sim_access,
-                                }));
-                            },
-                            None => {
-                                tracing::warn!("[SL_CODEC] ❌ Failed to parse RegionHandshake data");
-                                return Ok((header, HandshakeMessage::RegionHandshake {
-                                    region_name: "Parse_Error".to_string(),
-                                    region_id: Uuid::nil(),
-                                    region_flags: 0,
-                                    water_height: 0.0,
-                                    sim_access: 0,
-                                }));
-                            }
-                        }
-                    } else {
-                        tracing::warn!("[SL_CODEC] ❌ RegionHandshake packet too short: {} bytes", data.len());
-                        return Ok((header, HandshakeMessage::RegionHandshake {
-                            region_name: "Too_Short".to_string(),
-                            region_id: Uuid::nil(),
-                            region_flags: 0,
-                            water_height: 0.0,
-                            sim_access: 0,
-                        }));
-                    }
-                },
-                [0xFF, 0xFF, 0x00, 0xF9] => { // AgentMovementComplete
-                    if data.len() >= 42 {
-                        let agent_id = Uuid::from_slice(&data[10..26]).map(|u| u.to_string()).unwrap_or_default();
-                        let session_id = Uuid::from_slice(&data[26..42]).map(|u| u.to_string()).unwrap_or_default();
-                        return Ok((header, HandshakeMessage::AgentMovementComplete { agent_id, session_id }));
-                    }
-                },
-                [0xFF, 0xFF, 0x00, 0xFA] => { // AgentMovementComplete (Low frequency message 250)
-                    tracing::info!("[SL_CODEC] 📥 Low frequency AgentMovementComplete message (type 250)");
-                    if data.len() >= 42 { // 10 (header+msg_id) + 16 (agent_id) + 16 (session_id) = 42 minimum
-                        let agent_id = Uuid::from_slice(&data[10..26]).map(|u| u.to_string()).unwrap_or_default();
-                        let session_id = Uuid::from_slice(&data[26..42]).map(|u| u.to_string()).unwrap_or_default();
-                        tracing::info!("[SL_CODEC] ✅ AgentMovementComplete decoded: agent_id={}", agent_id);
-                        return Ok((header, HandshakeMessage::AgentMovementComplete { agent_id, session_id }));
-                    } else {
-                        tracing::warn!("[SL_CODEC] ❌ AgentMovementComplete packet too short: {} bytes", data.len());
-                    }
-                },
-                [0xFF, 0xFF, 0x01, 0x83] => { // AgentDataUpdate
-                    if data.len() >= 26 {
-                        let agent_id = Uuid::from_slice(&data[10..26]).map(|u| u.to_string()).unwrap_or_default();
-                        return Ok((header, HandshakeMessage::AgentDataUpdate { agent_id }));
-                    }
-                },
-                [0xFF, 0xFF, 0x00, 0x8A] => { // HealthMessage
-                    return Ok((header, HandshakeMessage::HealthMessage));
-                },
-                _ => {}
-            }
-        }
-
-        // Medium frequency messages (0xFF + single byte)
-        if data.len() >= 8 && data[6] == 0xFF && data[7] != 0xFF {
-            tracing::info!("[SL_CODEC] 🔄 Medium frequency message: 0xFF{:02X}", data[7]);
-            match data[7] {
-                0x06 => { // ACK list message
-                    tracing::info!("[SL_CODEC] 📥 Medium frequency ACK list message");
-                    if data.len() >= 12 {
-                        let acked_seq = u32::from_be_bytes(data[8..12].try_into().unwrap_or_default());
-                        tracing::info!("[SL_CODEC] ✅ Medium ACK decoded: acked_seq={}", acked_seq);
-                        return Ok((header, HandshakeMessage::Ack { sequence_id: acked_seq }));
-                    }
-                },
-                _ => {
-                    tracing::warn!("[SL_CODEC] ❓ Unknown medium frequency message: 0xFF{:02X}", data[7]);
+        let (id, body_offset) = match frequency {
+            0 => { // High
+                tracing::info!("[SL_CODEC] 🔥 High frequency message detected: 0x{:02X}", data[6]);
+                (data[6] as u32, 7)
+            },
+            1 => { // Medium
+                if data.len() < 8 {
+                     return Err(io::Error::new(io::ErrorKind::InvalidData, "Packet too short for Medium frequency message ID"));
                 }
+                tracing::info!("[SL_CODEC] 🔄 Medium frequency message detected: 0xFF{:02X}", data[7]);
+                (data[7] as u32, 8)
+            },
+            2 => { // Low
+                if data.len() < 10 {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, "Packet too short for Low frequency message ID"));
+                }
+                let id = u16::from_be_bytes([data[8], data[9]]);
+                tracing::info!("[SL_CODEC] 🌊 Low frequency message detected: 0xFFFF{:04X}", id);
+                (id as u32, 10)
+            },
+            _ => { // Fixed or other
+                 if data.len() < 10 {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, "Packet too short for Fixed frequency message ID"));
+                }
+                let id = u32::from_be_bytes(data[6..10].try_into().unwrap());
+                tracing::info!("[SL_CODEC] ⚓ Fixed frequency message detected: 0x{:08X}", id);
+                (id, 10)
+            }
+        };
+
+        match (frequency, id) {
+             // High Frequency
+            (0, 0) => { // RegionHandshake
+                tracing::info!("[SL_CODEC] 📥 High frequency RegionHandshake message (type 0)");
+                match super::region_handshake::parse_region_handshake(&data[body_offset..]) {
+                    Some(region_data) => Ok((header, HandshakeMessage::RegionHandshake {
+                        region_name: region_data.region_name,
+                        region_id: region_data.region_id,
+                        region_flags: region_data.region_flags,
+                        water_height: region_data.water_height,
+                        sim_access: region_data.sim_access,
+                    })),
+                    None => Err(io::Error::new(io::ErrorKind::InvalidData, "Failed to parse RegionHandshake")),
+                }
+            },
+            (0, 11) => { // AgentUpdate
+                tracing::info!("[SL_CODEC] 📥 AgentUpdate message (type 11)");
+                // This is a placeholder. The actual parsing logic would go here.
+                // For now, we'll just acknowledge we received it.
+                Ok((header, HandshakeMessage::AgentUpdate{
+                    agent_id: Uuid::nil().to_string(),
+                    session_id: Uuid::nil().to_string(),
+                    position: (0.0, 0.0, 0.0),
+                    camera_at: (0.0, 0.0, 0.0),
+                    camera_eye: (0.0, 0.0, 0.0),
+                    controls: 0,
+                }))
+            },
+            (0, 250) => { // AgentMovementComplete
+                tracing::info!("[SL_CODEC] 📥 High frequency AgentMovementComplete message (type 250)");
+                if data.len() >= body_offset + 32 {
+                    let agent_id = Uuid::from_slice(&data[body_offset..body_offset+16]).map(|u| u.to_string()).unwrap_or_default();
+                    let session_id = Uuid::from_slice(&data[body_offset+16..body_offset+32]).map(|u| u.to_string()).unwrap_or_default();
+                    Ok((header, HandshakeMessage::AgentMovementComplete { agent_id, session_id }))
+                } else {
+                    Err(io::Error::new(io::ErrorKind::InvalidData, "AgentMovementComplete packet too short"))
+                }
+            },
+
+            // Medium Frequency
+            (1, 6) => { // ACK list
+                tracing::info!("[SL_CODEC] 📥 Medium frequency ACK list message (type 6)");
+                 if data.len() >= body_offset + 4 {
+                    let acked_seq = u32::from_be_bytes(data[body_offset..body_offset+4].try_into().unwrap());
+                    Ok((header, HandshakeMessage::Ack { sequence_id: acked_seq }))
+                } else {
+                    Err(io::Error::new(io::ErrorKind::InvalidData, "ACK list packet too short"))
+                }
+            },
+            // Low Frequency
+            (2, 1) => { // RegionHandshake
+                tracing::info!("[SL_CODEC] 📥 Low frequency RegionHandshake message (type 1)");
+                match super::region_handshake::parse_region_handshake(&data[body_offset..]) {
+                    Some(region_data) => Ok((header, HandshakeMessage::RegionHandshake {
+                        region_name: region_data.region_name,
+                        region_id: region_data.region_id,
+                        region_flags: region_data.region_flags,
+                        water_height: region_data.water_height,
+                        sim_access: region_data.sim_access,
+                    })),
+                    None => Err(io::Error::new(io::ErrorKind::InvalidData, "Failed to parse RegionHandshake")),
+                }
+            },
+            (2, 3) => { // UseCircuitCode
+                tracing::info!("[SL_CODEC] 📥 UseCircuitCode message");
+                if data.len() >= body_offset + 36 {
+                    let circuit_code = u32::from_le_bytes(data[body_offset..body_offset+4].try_into().unwrap());
+                    let session_id = Uuid::from_slice(&data[body_offset+4..body_offset+20]).map(|u| u.to_string()).unwrap_or_default();
+                    let agent_id = Uuid::from_slice(&data[body_offset+20..body_offset+36]).map(|u| u.to_string()).unwrap_or_default();
+                    Ok((header, HandshakeMessage::UseCircuitCode { agent_id, session_id, circuit_code }))
+                } else {
+                     Err(io::Error::new(io::ErrorKind::InvalidData, "UseCircuitCode packet too short"))
+                }
+            },
+            (2, 150) => { // UseCircuitCodeReply
+                 tracing::info!("[SL_CODEC] 📥 UseCircuitCodeReply message");
+                 if data.len() >= body_offset + 1 {
+                     let success = data[body_offset] != 0;
+                     Ok((header, HandshakeMessage::UseCircuitCodeReply(success)))
+                 } else {
+                     Err(io::Error::new(io::ErrorKind::InvalidData, "UseCircuitCodeReply packet too short"))
+                 }
+            },
+             (2, 387) => { // AgentDataUpdate
+                tracing::info!("[SL_CODEC] 📥 AgentDataUpdate message (type 387)");
+                if data.len() >= body_offset + 16 {
+                    let agent_id = Uuid::from_slice(&data[body_offset..body_offset+16]).map(|u| u.to_string()).unwrap_or_default();
+                    Ok((header, HandshakeMessage::AgentDataUpdate { agent_id }))
+                } else {
+                    Err(io::Error::new(io::ErrorKind::InvalidData, "AgentDataUpdate packet too short"))
+                }
+            },
+
+             (2, 322) => { // OnlineNotification
+                tracing::info!("[SL_CODEC] 📥 OnlineNotification message (type 322)");
+                if data.len() >= body_offset + 1 {
+                    let agent_block_count = data[body_offset];
+                    let mut agent_ids = Vec::new();
+                    let mut offset = body_offset + 1;
+
+                    for _ in 0..agent_block_count {
+                        if offset + 16 <= data.len() {
+                            if let Ok(uuid) = Uuid::from_slice(&data[offset..offset+16]) {
+                                agent_ids.push(uuid.to_string());
+                            }
+                            offset += 16;
+                        }
+                    }
+                    Ok((header, HandshakeMessage::OnlineNotification { agent_ids }))
+                } else {
+                    Err(io::Error::new(io::ErrorKind::InvalidData, "OnlineNotification packet too short"))
+                }
+            },
+
+             (2, 138) => { // HealthMessage
+                tracing::info!("[SL_CODEC] 📥 HealthMessage (type 138)");
+                Ok((header, HandshakeMessage::HealthMessage))
+            },
+
+             (2, 250) => { // AgentMovementComplete
+                tracing::info!("[SL_CODEC] 📥 Low frequency AgentMovementComplete message (type 250)");
+                if data.len() >= body_offset + 32 {
+                    let agent_id = Uuid::from_slice(&data[body_offset..body_offset+16]).map(|u| u.to_string()).unwrap_or_default();
+                    let session_id = Uuid::from_slice(&data[body_offset+16..body_offset+32]).map(|u| u.to_string()).unwrap_or_default();
+                    Ok((header, HandshakeMessage::AgentMovementComplete { agent_id, session_id }))
+                } else {
+                    Err(io::Error::new(io::ErrorKind::InvalidData, "AgentMovementComplete packet too short"))
+                }
+            },
+
+             (2, 249) => { // AgentMovementComplete
+                tracing::info!("[SL_CODEC] 📥 Low frequency AgentMovementComplete message (type 249)");
+                if data.len() >= body_offset + 32 {
+                    let agent_id = Uuid::from_slice(&data[body_offset..body_offset+16]).map(|u| u.to_string()).unwrap_or_default();
+                    let session_id = Uuid::from_slice(&data[body_offset+16..body_offset+32]).map(|u| u.to_string()).unwrap_or_default();
+                    Ok((header, HandshakeMessage::AgentMovementComplete { agent_id, session_id }))
+                } else {
+                    Err(io::Error::new(io::ErrorKind::InvalidData, "AgentMovementComplete packet too short"))
+                }
+            },
+
+            // Fixed Frequency
+            (3, 0xFFFFFFFB) => { // PacketAck
+                tracing::info!("[SL_CODEC] 📥 PacketAck message");
+                if data.len() >= body_offset + 5 {
+                    let _num_packets = data[body_offset];
+                    let acked_seq = u32::from_be_bytes(data[body_offset+1..body_offset+5].try_into().unwrap());
+                    Ok((header, HandshakeMessage::Ack { sequence_id: acked_seq }))
+                } else {
+                    Err(io::Error::new(io::ErrorKind::InvalidData, "PacketAck packet too short"))
+                }
+            },
+
+            _ => {
+                tracing::warn!("[SL_CODEC] ❌ Unsupported or unknown message type. Freq: {}, ID: 0x{:X}", frequency, id);
+                Err(io::Error::new(io::ErrorKind::InvalidData, "Unsupported or unknown message type"))
             }
         }
-
-        tracing::warn!("[SL_CODEC] ❌ Unsupported or unknown message type");
-        Err(io::Error::new(io::ErrorKind::InvalidData, "Unsupported or unknown message type"))
     }
 
     /// Test function to demonstrate debug messages
