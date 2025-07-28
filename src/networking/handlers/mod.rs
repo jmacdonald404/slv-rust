@@ -16,6 +16,7 @@ use tracing::{debug, warn};
 pub mod login_handlers;
 pub mod agent_handlers;
 pub mod region_handlers;
+pub mod system;
 
 /// Context provided to packet handlers
 #[derive(Debug)]
