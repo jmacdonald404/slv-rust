@@ -1,4 +1,5 @@
 use crate::ui::{UiState, LoginProgress, LoginResult, LoginUiState, UdpConnectionProgress};
+use crate::networking::auth::{LoginCredentials, AuthenticationService, Grid};
 
 pub fn start_login(ui_state: &mut UiState) {
     ui_state.login_progress = LoginProgress::InProgress;
@@ -6,10 +7,11 @@ pub fn start_login(ui_state: &mut UiState) {
     
     let username = ui_state.login_state.username.clone();
     let password = ui_state.login_state.password.clone();
+    let selected_grid = ui_state.login_state.selected_grid.clone();
     let result_tx = ui_state.login_result_tx.clone();
     
     ui_state.login_task = Some(ui_state.runtime_handle.spawn(async move {
-        match perform_login(&username, &password).await {
+        match perform_login(&username, &password, selected_grid).await {
             Ok(_) => {
                 let _ = result_tx.send(LoginResult { result: Ok(()) });
             }
@@ -22,35 +24,19 @@ pub fn start_login(ui_state: &mut UiState) {
     }));
 }
 
-pub async fn perform_login(username: &str, password: &str) -> Result<(), crate::networking::NetworkError> {
-    use crate::networking::client::{Client, ClientConfig};
-    use std::net::SocketAddr;
-    use uuid::Uuid;
+pub async fn perform_login(username: &str, password: &str, grid: Grid) -> Result<(), crate::networking::NetworkError> {
+    // Create login credentials
+    let credentials = LoginCredentials::new(username.to_string(), password.to_string())
+        .with_grid(grid)
+        .with_start_location("last".to_string());
     
-    // Simulate login server authentication
-    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    // Create authentication service
+    let mut auth_service = AuthenticationService::new();
     
-    // For now, just validate non-empty credentials
-    if username.is_empty() || password.is_empty() {
-        return Err(crate::networking::NetworkError::HandshakeTimeout);
-    }
+    // Perform login
+    let _client = auth_service.login(credentials).await?;
     
-    // Create client config
-    let config = ClientConfig {
-        agent_id: Uuid::new_v4(),
-        session_id: Uuid::new_v4(),
-        ..Default::default()
-    };
-    
-    // Create networking client
-    let client = Client::new(config).await?;
-    
-    // Connect to simulator (simulating SL main grid)
-    let simulator_address = "127.0.0.1:9000".parse::<SocketAddr>().unwrap();
-    let circuit_code = 12345;
-    
-    client.connect(simulator_address, circuit_code).await?;
-    
+    // Login successful
     Ok(())
 }
 

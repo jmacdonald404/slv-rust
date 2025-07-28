@@ -1,4 +1,6 @@
 use crate::ui::{UiState, LoginProgress};
+use crate::ui::components::{FormField, StyledButton, ButtonStyle, StatusMessage, StatusLevel, form_section};
+use crate::networking::auth::{Grid, available_grids};
 use eframe::egui;
 use egui::{RichText, Vec2};
 
@@ -31,52 +33,70 @@ pub fn show_login_screen(ctx: &egui::Context, ui_state: &mut UiState) {
 }
 
 fn show_login_form(ui: &mut egui::Ui, ui_state: &mut UiState) {
-    egui::Frame::group(ui.style())
-        .inner_margin(20.0)
-        .show(ui, |ui| {
-            ui.set_max_width(300.0);
-            
-            // Username field
-            ui.label("Username:");
-            ui.text_edit_singleline(&mut ui_state.login_state.username);
-            ui.add_space(10.0);
-            
-            // Password field
-            ui.label("Password:");
-            let password_edit = egui::TextEdit::singleline(&mut ui_state.login_state.password)
-                .password(true);
-            ui.add(password_edit);
-            ui.add_space(10.0);
-            
-            // Grid selection
-            show_grid_selection(ui);
-            ui.add_space(15.0);
-            
-            // Login button
-            show_login_button(ui, ui_state);
-            
-            // Progress and status
-            show_login_status(ui, ui_state);
-        });
+    form_section(ui, 300.0, |ui| {
+        // Username field with validation
+        let username_error = validate_username(&ui_state.login_state.username);
+        let mut username_field = FormField::new("Username:", &mut ui_state.login_state.username)
+            .placeholder("FirstName LastName");
+        
+        if let Some(error) = username_error {
+            username_field = username_field.validation_error(error);
+        }
+        username_field.show(ui);
+        
+        // Password field with validation
+        let password_error = validate_password(&ui_state.login_state.password);
+        let mut password_field = FormField::new("Password:", &mut ui_state.login_state.password)
+            .password();
+        
+        if let Some(error) = password_error {
+            password_field = password_field.validation_error(error);
+        }
+        password_field.show(ui);
+        
+        // Grid selection
+        show_grid_selection(ui, ui_state);
+        ui.add_space(15.0);
+        
+        // Login button
+        show_login_button(ui, ui_state);
+        
+        // Progress and status
+        show_login_status(ui, ui_state);
+    });
 }
 
-fn show_grid_selection(ui: &mut egui::Ui) {
+fn show_grid_selection(ui: &mut egui::Ui, ui_state: &mut UiState) {
     ui.label("Grid:");
+    
+    let grids = available_grids();
+    let selected_text = ui_state.login_state.selected_grid.name();
+    
     egui::ComboBox::from_label("")
-        .selected_text("Second Life Main Grid")
+        .selected_text(selected_text)
         .show_ui(ui, |ui| {
-            ui.selectable_value(&mut (), (), "Second Life Main Grid");
-            ui.selectable_value(&mut (), (), "Second Life Beta Grid");
-            ui.selectable_value(&mut (), (), "OpenSimulator");
+            for grid in grids {
+                ui.selectable_value(&mut ui_state.login_state.selected_grid, grid.clone(), grid.name());
+            }
         });
+    ui.add_space(10.0);
 }
 
 fn show_login_button(ui: &mut egui::Ui, ui_state: &mut UiState) {
-    let login_enabled = !ui_state.login_state.username.is_empty() 
-        && !ui_state.login_state.password.is_empty()
-        && matches!(ui_state.login_progress, LoginProgress::Idle);
+    let form_valid = validate_username(&ui_state.login_state.username).is_none()
+        && validate_password(&ui_state.login_state.password).is_none()
+        && !ui_state.login_state.username.is_empty()
+        && !ui_state.login_state.password.is_empty();
     
-    if ui.add_enabled(login_enabled, egui::Button::new("Login").min_size(Vec2::new(280.0, 30.0))).clicked() {
+    let login_enabled = form_valid && matches!(ui_state.login_progress, LoginProgress::Idle);
+    
+    if StyledButton::new("Login")
+        .style(ButtonStyle::Primary)
+        .min_size(Vec2::new(280.0, 30.0))
+        .enabled(login_enabled)
+        .show(ui)
+        .clicked() 
+    {
         super::logic::start_login(ui_state);
     }
 }
@@ -85,12 +105,15 @@ fn show_login_status(ui: &mut egui::Ui, ui_state: &mut UiState) {
     match &ui_state.login_progress {
         LoginProgress::InProgress => {
             ui.add_space(10.0);
-            ui.spinner();
-            ui.label("Logging in...");
+            crate::ui::components::show_spinner_with_text(ui, "Logging in...");
         }
         LoginProgress::Error(error) => {
             ui.add_space(10.0);
-            ui.colored_label(egui::Color32::RED, format!("Error: {}", error));
+            StatusMessage::error(format!("Error: {}", error)).show(ui);
+        }
+        LoginProgress::Success => {
+            ui.add_space(10.0);
+            StatusMessage::success("Login successful!").show(ui);
         }
         _ => {}
     }
@@ -98,6 +121,30 @@ fn show_login_status(ui: &mut egui::Ui, ui_state: &mut UiState) {
     // Status message
     if !ui_state.login_state.status_message.is_empty() {
         ui.add_space(10.0);
-        ui.label(&ui_state.login_state.status_message);
+        StatusMessage::info(&ui_state.login_state.status_message).show(ui);
     }
+}
+
+fn validate_username(username: &str) -> Option<&'static str> {
+    if username.trim().is_empty() {
+        return None; // Don't show error for empty field
+    }
+    
+    if !username.contains(' ') {
+        return Some("Username must be in format 'FirstName LastName'");
+    }
+    
+    None
+}
+
+fn validate_password(password: &str) -> Option<&'static str> {
+    if password.trim().is_empty() {
+        return None; // Don't show error for empty field
+    }
+    
+    if password.len() < 4 {
+        return Some("Password must be at least 4 characters");
+    }
+    
+    None
 }

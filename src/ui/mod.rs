@@ -28,6 +28,7 @@ pub struct AgentState {
 pub mod app;
 pub mod login;
 pub mod main_app;
+pub mod components;
 
 // Legacy modules (kept for compatibility)
 pub mod main_window;
@@ -53,6 +54,7 @@ impl UiContext {
 pub struct LoginState {
     pub username: String,
     pub password: String,
+    pub selected_grid: crate::networking::auth::Grid,
     pub status_message: String,
     pub prefs_modal_open: bool,
     pub session_info: Option<()>,
@@ -65,6 +67,7 @@ impl Default for LoginState {
         Self {
             username: String::new(),
             password: String::new(),
+            selected_grid: crate::networking::auth::Grid::default(),
             status_message: String::new(),
             prefs_modal_open: false,
             session_info: None,
