@@ -26,7 +26,7 @@ impl Default for MyApp {
 
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &eframe::egui::Context, _frame: &mut eframe::Frame) {
-        ui::main_window::show_main_window(ctx, &mut self.ui_state);
+        ui::app::show_main_window(ctx, &mut self.ui_state);
     }
 }
 

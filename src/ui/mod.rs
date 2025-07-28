@@ -24,6 +24,12 @@ pub struct AgentState {
     pub default_object_perm_masks: (i32, i32, i32), // (Everyone, Group, NextOwner)
 }
 
+// New organized structure
+pub mod app;
+pub mod login;
+pub mod main_app;
+
+// Legacy modules (kept for compatibility)
 pub mod main_window;
 pub mod chat;
 pub mod inventory;
