@@ -106,6 +106,7 @@ pub enum UiEvent {
 }
 
 pub struct UiState {
+    pub runtime_handle: tokio::runtime::Handle,
     pub chat_input: String,
     pub chat_messages: VecDeque<String>,
     pub inventory_items: Vec<String>,
@@ -181,6 +182,7 @@ impl Default for UiState {
         // Generate a random free 5-digit UDP port for the session
         let session_udp_port = 0;
         Self {
+            runtime_handle: tokio::runtime::Handle::current(),
             chat_input: String::new(),
             chat_messages: VecDeque::from(vec!["Welcome to slv-rust!".to_string()]),
             inventory_items: vec!["Test Item 1".to_string(), "Test Item 2".to_string()],

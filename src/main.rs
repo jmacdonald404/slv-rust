@@ -11,6 +11,7 @@ mod config;
 mod world;
 mod app;
 
+
 struct MyApp {
     ui_state: ui::UiState,
 }
@@ -37,26 +38,33 @@ fn test_generated_messages() {
 }
 
 fn main() -> eframe::Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let _guard = runtime.enter();
+
     logging::init_logging();
     // test stdout and stderr
     println!("PRINT TEST: If you see this, stdout works!");
     eprintln!("EPRINT TEST: If you see this, stderr works!");
     println!("VERSION: {}", VERSION);
-    
-    // SL_CODEC debug messages tested and working! 
+
+    // SL_CODEC debug messages tested and working!
     // Test our generated message system
     println!("=== TESTING GENERATED MESSAGE SYSTEM ===");
     // networking::protocol::sl_compatibility::SLMessageCodec::test_debug_messages(); // Removed
-    
+
     // Test generated message creation
     test_generated_messages();
-    
+
     println!("=== STARTING EGUI ===");
-    
+
     let options = eframe::NativeOptions {
         ..Default::default()
     };
-    
+
     eframe::run_native(
         "slv-rust",
         options,
