@@ -14,3 +14,16 @@ badexample.txt
 example.txt
 homunculus/
 jeffnote.md
+
+# Exclude all .txt and .md files in root except README.md
+/*.txt
+/*.md
+!README.md
+
+# Analysis and documentation files
+*_plan.md
+*_flow.md
+protocol_implementation.md
+int.md
+perf.md
+err.md
