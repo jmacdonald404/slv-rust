@@ -1,5 +1,5 @@
 use crate::ui::UiState;
-use crate::networking::commands::NetworkCommand;
+// use crate::networking::commands::NetworkCommand; // Removed
 use crate::world::*;
 use std::sync::Arc;
 use std::net::SocketAddr;
@@ -20,7 +20,7 @@ pub struct RenderContext<'a> {
 /// Main application structure that manages communication between UI, networking, and world systems
 pub struct App {
     // Network communication channels
-    network_command_sender: mpsc::UnboundedSender<NetworkCommand>,
+    // network_command_sender: mpsc::UnboundedSender<NetworkCommand>, // Removed
     
     // Event receivers from the network layer
     chat_event_receiver: mpsc::UnboundedReceiver<ChatEvent>,
@@ -45,7 +45,7 @@ impl App {
     /// Create a new App instance and return the channel endpoints for the network layer
     pub fn new(ui_state: UiState) -> (Self, AppNetworkChannels) {
         // Create network command channel
-        let (network_command_sender, network_command_receiver) = mpsc::unbounded_channel();
+        // let (network_command_sender, network_command_receiver) = mpsc::unbounded_channel(); // Removed
         
         // Create event channels
         let (chat_sender, chat_event_receiver) = mpsc::unbounded_channel();
@@ -58,7 +58,6 @@ impl App {
         let (keep_alive_sender, keep_alive_receiver) = mpsc::unbounded_channel();
         
         let app = Self {
-            network_command_sender,
             chat_event_receiver,
             object_update_receiver,
             agent_movement_receiver,
@@ -74,7 +73,6 @@ impl App {
         };
         
         let network_channels = AppNetworkChannels {
-            command_receiver: network_command_receiver,
             chat_sender,
             object_update_sender,
             agent_movement_sender,
@@ -89,20 +87,18 @@ impl App {
     }
     
     /// Send a command to the network layer
-    pub fn send_network_command(&self, command: NetworkCommand) {
-        if let Err(e) = self.network_command_sender.send(command) {
-            tracing::error!("Failed to send network command: {}", e);
-        }
-    }
+    // pub fn send_network_command(&self, command: NetworkCommand) { // Removed
+        // Functionality removed
+    // }
     
     /// Send a chat message
     pub fn send_chat(&self, message: String) {
-        self.send_network_command(NetworkCommand::local_chat(message));
+        // self.send_network_command(NetworkCommand::local_chat(message)); // Removed
     }
     
     /// Update agent position
     pub fn update_agent_position(&self, position: (f32, f32, f32), camera_at: (f32, f32, f32), camera_eye: (f32, f32, f32), controls: u32) {
-        self.send_network_command(NetworkCommand::agent_update(position, camera_at, camera_eye, controls));
+        // self.send_network_command(NetworkCommand::agent_update(position, camera_at, camera_eye, controls)); // Removed
     }
     
     /// Process all pending events from the network layer
@@ -170,7 +166,7 @@ impl App {
 
 /// Channel endpoints for the network layer
 pub struct AppNetworkChannels {
-    pub command_receiver: mpsc::UnboundedReceiver<NetworkCommand>,
+    // pub command_receiver: mpsc::UnboundedReceiver<NetworkCommand>, // Removed
     pub chat_sender: mpsc::UnboundedSender<ChatEvent>,
     pub object_update_sender: mpsc::UnboundedSender<ObjectUpdateEvent>,
     pub agent_movement_sender: mpsc::UnboundedSender<AgentMovementCompleteEvent>,

@@ -9,11 +9,8 @@ use winit::window::Window;
 use std::collections::VecDeque;
 use tokio::task::JoinHandle;
 use crossbeam_channel::{unbounded, Sender, Receiver};
-use crate::networking::session;
-use crate::networking::circuit::Circuit;
 use crate::config::settings;
 use crate::ui::proxy::ProxySettings;
-use crate::ui::udp_port::pick_random_udp_port;
 
 #[derive(Debug, Clone, Default)]
 pub struct AgentState {
@@ -32,7 +29,6 @@ pub mod chat;
 pub mod inventory;
 pub mod preferences;
 pub mod proxy;
-pub mod udp_port;
 
 pub struct UiContext {
     pub egui_ctx: EguiContext,
@@ -53,7 +49,7 @@ pub struct LoginState {
     pub password: String,
     pub status_message: String,
     pub prefs_modal_open: bool,
-    pub session_info: Option<session::LoginSessionInfo>,
+    pub session_info: Option<()>,
     pub agree_to_tos_next_login: bool,
     pub read_critical_next_login: bool, // Track if user must accept critical message
 }
@@ -88,7 +84,7 @@ pub enum LoginProgress {
 }
 
 pub struct LoginResult {
-    pub result: Result<session::LoginSessionInfo, String>,
+    pub result: Result<(), String>,
 }
 
 pub enum UdpConnectionProgress {
@@ -120,10 +116,10 @@ pub struct UiState {
     pub login_task: Option<JoinHandle<()>>,
     pub login_result_tx: Sender<LoginResult>,
     pub login_result_rx: Receiver<LoginResult>,
-    pub udp_circuit: Option<std::sync::Arc<tokio::sync::Mutex<Circuit>>>,
+    pub udp_circuit: Option<()>,
     pub udp_progress: UdpConnectionProgress,
-    pub udp_connect_tx: Sender<crate::ui::main_window::UdpConnectResult>,
-    pub udp_connect_rx: Receiver<crate::ui::main_window::UdpConnectResult>,
+    pub udp_connect_tx: Sender<()>,
+    pub udp_connect_rx: Receiver<()>,
     pub udp_connect_task: Option<JoinHandle<()>>,
     pub logout_requested: bool,
     pub chat_event_tx: Option<Sender<(String, String)>>,
@@ -183,7 +179,7 @@ impl Default for UiState {
             preferences = loaded;
         }
         // Generate a random free 5-digit UDP port for the session
-        let session_udp_port = pick_random_udp_port();
+        let session_udp_port = 0;
         Self {
             chat_input: String::new(),
             chat_messages: VecDeque::from(vec!["Welcome to slv-rust!".to_string()]),

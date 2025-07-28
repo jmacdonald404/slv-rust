@@ -3,8 +3,14 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use std::net::{SocketAddr, IpAddr, Ipv4Addr};
 use std::io;
 use tracing::{info, error, debug};
-use crate::networking::transport::UdpSocketExt;
 use async_trait::async_trait;
+
+#[async_trait]
+pub trait UdpSocketExt {
+    async fn send_to(&self, buf: &[u8], target: &SocketAddr) -> std::io::Result<usize>;
+    async fn recv_from(&self, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)>;
+    fn local_addr(&self) -> std::io::Result<SocketAddr>;
+}
 
 pub struct Socks5UdpSocket {
     pub udp_socket: UdpSocket,
