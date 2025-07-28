@@ -1,6 +1,8 @@
 // SLV-Rust: Second Life Viewer in Rust
 // Performance by Default, Scalable by Design
 
+#![allow(warnings)]
+
 pub mod utils;
 pub mod networking;
 pub mod ui;

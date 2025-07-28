@@ -36,9 +36,10 @@ hound = "3.5.1"
 eframe = "0.31"
 
 # --- Serialization ---
-bincode = "2.0.1"
+bincode = "1.3.3"
 serde = { version = "1.0.219", features = ["derive"] }
-uuid = { version = "1.17.0", features = ["v4"] }
+serde_bytes = "0.11"
+uuid = { version = "1.17.0", features = ["v4", "serde"] }
 
 # --- Utilities ---
 anyhow = "1.0"
