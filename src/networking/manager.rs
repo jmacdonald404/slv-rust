@@ -161,17 +161,18 @@ impl NetworkManager {
         debug!("Connecting to circuit at {}", options.address);
         
         // Create circuit
+        let address = options.address;
         let circuit = core.connect_circuit(options).await?;
         
         // Store in circuits map
         {
             let mut circuits = self.circuits.write().await;
-            circuits.insert(options.address, Arc::clone(&circuit));
+            circuits.insert(address, Arc::clone(&circuit));
         }
         
         // Emit circuit connected event
         self.emit_event(NetworkEvent::CircuitConnected { 
-            address: options.address 
+            address 
         });
         
         Ok(circuit)

@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use tracing::{info, debug, error};
 
 /// Example packet handler for RegionHandshake
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct MyRegionHandshakeHandler;
 
 #[async_trait]

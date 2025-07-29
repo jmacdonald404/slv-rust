@@ -68,6 +68,9 @@ pub trait PacketHandler: Send + Sync + Debug {
     fn name(&self) -> &'static str {
         std::any::type_name::<Self>()
     }
+    
+    /// Clone the handler (for handler registry)
+    fn clone_handler(&self) -> Box<dyn PacketHandler>;
 }
 
 /// Typed packet handler for specific packet types
@@ -88,6 +91,11 @@ where
     fn should_handle_typed(&self, packet: &P, context: &HandlerContext) -> bool {
         true
     }
+    
+    /// Get handler name for debugging
+    fn name(&self) -> &'static str {
+        std::any::type_name::<Self>()
+    }
 }
 
 /// Wrapper to adapt TypedPacketHandler to PacketHandler
@@ -104,7 +112,7 @@ where
 impl<P, H> TypedHandlerWrapper<P, H>
 where
     P: Packet + Clone,
-    H: TypedPacketHandler<P>,
+    H: TypedPacketHandler<P> + Clone + 'static,
 {
     fn new(handler: H) -> Self {
         Self {
@@ -118,7 +126,7 @@ where
 impl<P, H> PacketHandler for TypedHandlerWrapper<P, H>
 where
     P: Packet + Clone + 'static,
-    H: TypedPacketHandler<P>,
+    H: TypedPacketHandler<P> + Clone + 'static,
 {
     async fn handle(&self, packet: &PacketWrapper, context: &HandlerContext) -> NetworkResult<()> {
         // Try to deserialize the packet to the expected type
@@ -148,6 +156,10 @@ where
     fn name(&self) -> &'static str {
         self.handler.name()
     }
+    
+    fn clone_handler(&self) -> Box<dyn PacketHandler> {
+        Box::new(TypedHandlerWrapper::new(self.handler.clone()))
+    }
 }
 
 /// Handler configuration
@@ -155,6 +167,15 @@ where
 struct HandlerConfig {
     handler: Box<dyn PacketHandler>,
     priority: i32,
+}
+
+impl Clone for HandlerConfig {
+    fn clone(&self) -> Self {
+        Self {
+            handler: self.handler.clone_handler(),
+            priority: self.priority,
+        }
+    }
 }
 
 /// Packet handler registry managing all packet handlers
@@ -179,7 +200,7 @@ impl HandlerRegistry {
     pub async fn register_handler<P, H>(&self, handler: H)
     where
         P: Packet + Clone + 'static,
-        H: TypedPacketHandler<P> + 'static,
+        H: TypedPacketHandler<P> + Clone + 'static,
     {
         let wrapper = TypedHandlerWrapper::new(handler);
         let priority = wrapper.priority();
@@ -203,7 +224,7 @@ impl HandlerRegistry {
     /// Register a raw packet handler
     pub async fn register_raw_handler<H>(&self, packet_id: u16, handler: H)
     where
-        H: PacketHandler + 'static,
+        H: PacketHandler + Clone + 'static,
     {
         let priority = handler.priority();
         let config = HandlerConfig {
@@ -224,7 +245,7 @@ impl HandlerRegistry {
     /// Register a global handler that processes all packets
     pub async fn register_global_handler<H>(&self, handler: H)
     where
-        H: PacketHandler + 'static,
+        H: PacketHandler + Clone + 'static,
     {
         let priority = handler.priority();
         let config = HandlerConfig {
@@ -233,12 +254,13 @@ impl HandlerRegistry {
         };
         
         let mut global_handlers = self.global_handlers.write().await;
+        let handler_name = config.handler.name();
         global_handlers.push(config);
         
         // Sort by priority (highest first)
         global_handlers.sort_by(|a, b| b.priority.cmp(&a.priority));
         
-        debug!("Registered global handler: {}", config.handler.name());
+        debug!("Registered global handler: {}", handler_name);
     }
     
     /// Process a packet through all relevant handlers
@@ -248,7 +270,7 @@ impl HandlerRegistry {
         // Get handlers for this packet type
         let handlers = {
             let handlers_guard = self.handlers.read().await;
-            handlers_guard.get(&packet_id).cloned().unwrap_or_default()
+            handlers_guard.get(&packet_id).map(|v| v.clone()).unwrap_or_default()
         };
         
         // Get global handlers
@@ -352,7 +374,7 @@ mod tests {
     use crate::networking::packets::generated::RegionHandshake;
     
     // Example typed handler
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     struct RegionHandshakeHandler;
     
     #[async_trait]
