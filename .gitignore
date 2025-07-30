@@ -15,10 +15,7 @@ example.txt
 homunculus/
 jeffnote.md
 
-# Exclude all .txt and .md files in root except README.md
-/*.txt
-/*.md
-!README.md
+
 
 # Analysis and documentation files
 *_plan.md

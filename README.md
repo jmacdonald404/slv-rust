@@ -268,6 +268,13 @@ ui_volume = 0.7
 environment_volume = 0.9
 ```
 
+## Architectural Decision Records
+
+We use Architecture Decision Records (ADRs) to document important architectural decisions. You can find them in the [`docs/adr`](docs/adr) directory.
+
+-   [ADR-0001: Technology Stack Selection](docs/adr/0001-technology-stack-selection.md)
+-   [ADR-0002: Networking Protocol Choice](docs/adr/0002-networking-protocol-choice.md)
+
 ## Development Roadmap
 
 ### Phase 1: Core Infrastructure [v0.1.0-alpha]
@@ -302,7 +309,9 @@ environment_volume = 0.9
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines and coding standards.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines and coding standards. All contributors are expected to adhere to our [Code of Conduct](CODE_OF_CONDUCT.md).
+
+For information on debugging the application, see [DEBUGGING.md](DEBUGGING.md).
 
 ## License
 
