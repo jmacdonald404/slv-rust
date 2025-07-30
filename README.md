@@ -4,6 +4,16 @@
 
 A modern SecondLife viewer implementation built with Rust, focusing on performance, safety, and modularity.
 
+## Mission Critical Principles
+
+**🔥 SEPARATION OF CONCERNS**: This project maintains strict separation of concerns with individual files per component. Each module must be well-documented, self-contained, and easy to maintain. This is non-negotiable for project maintainability and contributor onboarding.
+
+**🔥 SECONDLIFE PROTOCOL COMPLIANCE**: All networking code must strictly respect SecondLife server protocols. Reference implementations in `homunculus/` and `hippolyzer/` directories, along with `message_template.msg`, serve as our authoritative sources. Protocol deviations can result in connection failures or grid bans.
+
+**🔥 DEVELOPMENT JOURNAL**: Maintain a comprehensive journal of roadblocks, recurring bugs, and development bottlenecks in `DEVELOPMENT_JOURNAL.md`. This serves as our source of truth for documenting quirks, solutions, and lessons learned. Every significant issue must be documented with context, attempted solutions, and final resolution.
+
+**🦀 RUST STRENGTHS**: Leverage Rust's type system, memory safety, and zero-cost abstractions. Prefer compile-time guarantees over runtime checks wherever possible.
+
 ## Architecture Overview
 
 ```
@@ -116,55 +126,66 @@ lz4 = { version = "1.25.0", optional = true }
 
 ## Project Structure
 
+**Each component follows strict separation of concerns - one responsibility per file.**
+
 ```
 src/
 ├── main.rs                 # Application entry point
 ├── lib.rs                  # Library root
 ├── config/                 # Configuration management
-│   ├── mod.rs
-│   └── settings.rs
-├── networking/             # Network communication
-│   ├── mod.rs
+│   ├── mod.rs              # Module exports only
+│   └── settings.rs         # Settings loading/validation
+├── networking/             # Network communication (SL protocol compliance)
+│   ├── mod.rs              # Module exports only  
 │   ├── transport.rs        # UDP transport layer
-│   ├── circuit.rs          # Circuit management
+│   ├── circuit.rs          # Circuit management per SL spec
+│   ├── auth/               # Authentication (XML-RPC per homunculus)
+│   │   ├── mod.rs          # Module exports only
+│   │   ├── login.rs        # Login service
+│   │   ├── session.rs      # Session state management
+│   │   └── xmlrpc.rs       # XML-RPC client implementation
 │   ├── protocol/           # SL protocol implementation
-│   │   ├── mod.rs
-│   │   ├── messages.rs     # Message definitions
+│   │   ├── mod.rs          # Module exports only
+│   │   ├── messages.rs     # Message definitions (from message_template.msg)
 │   │   └── codecs.rs       # Serialization/deserialization
-│   └── session.rs          # Session management
+│   └── handlers/           # Message handlers
+│       ├── mod.rs          # Module exports only
+│       └── [handler].rs    # Individual message handlers
 ├── rendering/              # Graphics and rendering
-│   ├── mod.rs
+│   ├── mod.rs              # Module exports only
 │   ├── engine.rs           # Main rendering engine
 │   ├── scene/              # Scene management
-│   │   ├── mod.rs
-│   │   ├── graph.rs        # Scene graph
-│   │   └── culling.rs      # Frustum culling
-│   ├── shaders/            # Shader programs
+│   │   ├── mod.rs          # Module exports only
+│   │   ├── graph.rs        # Scene graph management
+│   │   └── culling.rs      # Frustum culling algorithms
+│   ├── shaders/            # Shader programs (separated by purpose)
 │   ├── materials.rs        # Material system
 │   └── camera.rs           # Camera control
 ├── assets/                 # Asset management
-│   ├── mod.rs
-│   ├── manager.rs          # Asset loading/caching
-│   ├── texture.rs          # Texture processing
-│   ├── mesh.rs             # Mesh loading
-│   └── cache.rs            # Asset caching
+│   ├── mod.rs              # Module exports only
+│   ├── manager.rs          # Asset loading/caching coordinator
+│   ├── texture.rs          # Texture processing (JPEG2000, etc)
+│   ├── mesh.rs             # Mesh loading (Collada, SL formats)
+│   └── cache.rs            # Asset caching strategies
 ├── world/                  # Virtual world systems
-│   ├── mod.rs
+│   ├── mod.rs              # Module exports only
 │   ├── avatar.rs           # Avatar system
 │   ├── objects.rs          # Object management
 │   ├── terrain.rs          # Terrain rendering
 │   └── physics.rs          # Physics integration
 ├── ui/                     # User interface
-│   ├── mod.rs
+│   ├── mod.rs              # Module exports only
 │   ├── main_window.rs      # Main application window
 │   ├── inventory.rs        # Inventory management
 │   ├── chat.rs             # Chat interface
 │   └── preferences.rs      # Settings UI
 └── utils/                  # Utility modules
-    ├── mod.rs
+    ├── mod.rs              # Module exports only
     ├── math.rs             # Mathematical utilities
     └── logging.rs          # Logging setup
 ```
+
+**Documentation Requirements**: Every `.rs` file must include comprehensive module-level documentation explaining its purpose, key types, and integration points.
 
 ## Key Technical Specifications
 
@@ -268,14 +289,14 @@ ui_volume = 0.7
 environment_volume = 0.9
 ```
 
-## Architectural Decision Records
+## Architecture and Planning
 
-We use Architecture Decision Records (ADRs) to document important architectural decisions. You can find them in the [`docs/adr`](docs/adr) directory.
+This project's architecture and development are guided by a set of core documents that outline our technical strategy, design principles, and implementation plan.
 
--   [ADR-0001: Technology Stack Selection](docs/adr/0001-technology-stack-selection.md)
--   [ADR-0002: Networking Protocol Choice](docs/adr/0002-networking-protocol-choice.md)
-
-## Development Roadmap
+-   **[`ARCHITECTURE.md`](./ARCHITECTURE.md):** The canonical source for the project's software architecture, including our Data-Oriented Design philosophy, concurrency model, and the design of the rendering and networking pipelines.
+-   **[`main_plan.md`](./main_plan.md):** The high-level implementation plan for the networking layer, broken down into five distinct phases.
+-   **[`perf.md`](./perf.md):** A detailed expert report on the viability and implementation strategy for achieving a high-performance, Rust-based virtual world viewer. It covers the foundational architecture, rendering pipeline, and advanced asset handling strategies.
+-   **[`docs/adr`](./docs/adr):** A collection of Architecture Decision Records (ADRs) for specific, important technical decisions.
 
 ### Phase 1: Core Infrastructure [v0.1.0-alpha]
 - [x] Basic networking layer

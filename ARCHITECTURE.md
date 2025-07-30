@@ -1,202 +1,91 @@
-# Improved Networking Architecture
+# slv-rust: Architecture
 
-## 🔍 Analysis of Homunculus Architecture
+This document outlines the software architecture for `slv-rust`, a modern SecondLife viewer. It is designed to be a high-performance, modular, and maintainable client, built on the principles of Data-Oriented Design.
 
-After reviewing the homunculus networking code, we identified several excellent patterns that should be adapted for our Rust implementation:
+## Mission Critical Architecture Principles
 
-### Key Strengths from Homunculus
+**🔥 SEPARATION OF CONCERNS**: Every component is isolated in individual files with single responsibilities. This ensures maintainability, testability, and contributor accessibility. No file should contain multiple unrelated functionalities.
 
-#### 1. **Clear Layered Architecture**
+**🔥 SECONDLIFE PROTOCOL COMPLIANCE**: All networking implementations must strictly adhere to SecondLife's official protocols. Reference implementations in `homunculus/` (TypeScript) and `hippolyzer/` (Python), plus `message_template.msg`, are our canonical sources. Protocol violations result in connection failures.
+
+**🔥 DEVELOPMENT JOURNAL**: All architectural decisions, roadblocks, and recurring issues must be documented in `DEVELOPMENT_JOURNAL.md`. This includes performance bottlenecks, protocol quirks, dependency conflicts, and their resolutions. The journal serves as institutional knowledge for future development.
+
+**🦀 RUST ADVANTAGES**: Leverage Rust's type system for compile-time correctness, zero-cost abstractions for performance, and memory safety for reliability. Prefer `Result<T, E>` over panics, use `#[derive]` for boilerplate reduction.
+
+## 1. Core Philosophy: Data-Oriented Design (DOD)
+
+The entire architecture is built upon a Data-Oriented Design philosophy. This is a fundamental shift away from traditional Object-Oriented Programming (OOP).
+
+*   **Why DOD?** Modern CPU performance is dominated by memory latency. DOD structures the program around the data and its transformations, organizing data in contiguous arrays to maximize CPU cache hits. This is the key to unlocking scalable performance, especially in a concurrent environment.
+*   **Implementation:** Instead of an array of `Avatar` objects, we have separate, contiguous arrays for each component: a `positions` array, a `velocities` array, a `mesh_references` array, etc. Systems operate on these arrays, leading to highly predictable memory access patterns.
+
+## 2. Concurrency Model: A Job-Based System
+
+We use a multi-threaded architecture to separate concerns and maximize throughput. The model is divided into two main pools:
+
+*   **Async I/O Pool (`tokio`)**: Manages all I/O-bound tasks, primarily networking (UDP communication with the simulator) and disk access (asset streaming). By using an async runtime, we can handle thousands of concurrent I/O operations without blocking expensive OS threads.
+*   **Compute Job Pool (`rayon`)**: Manages all CPU-bound tasks. Work is broken down into small, independent "jobs" (e.g., "decompress texture," "simplify mesh," "cull objects") which are dynamically scheduled across all available CPU cores. This provides automatic load balancing and scales seamlessly with CPU core count.
+
+| System / Thread Pool | Primary Responsibilities                               | Key Data (Write)                                     | Synchronization          |
+|----------------------|--------------------------------------------------------|------------------------------------------------------|--------------------------|
+| **Main Thread**      | User input, OS window events, final frame coordination | Command Queues for other systems                     | Event Loop, Channels     |
+| **Async I/O Pool**   | Network communication, disk I/O (asset loading)        | Raw Asset Data Buffers                               | Async Tasks, Futures     |
+| **Compute Job Pool** | Asset decompression, mesh parsing, scene updates, culling, physics, render command generation | Asset Caches, Updated Transforms, Visibility Lists | Lock-free Queues, Parallel Iterators |
+
+## 3. Networking Layer: SecondLife Protocol Compliance
+
+The networking layer is designed as a self-contained, modular component that communicates with the rest of the application via asynchronous channels. **CRITICAL**: All implementations must reference `homunculus/` and `hippolyzer/` as authoritative examples.
+
+### 3.1 File Organization (Separation of Concerns)
 ```
-Client (High-level API with domain objects)
-  ↓
-Core (Connection management, circuit coordination)  
-  ↓
-Circuit (Individual simulator connections)
-  ↓
-Socket (UDP transport layer)
-```
-
-#### 2. **Event-Driven Packet Processing**
-- **Delegate System**: Prioritized packet handlers with shared context
-- **Async Event Emitter**: Clean event propagation throughout the system
-- **Context Passing**: Unified access to client, core, circuit, and region state
-
-#### 3. **Robust Acknowledgment System**
-- **Reliable Packets**: Automatic retries with exponential backoff
-- **Sequence Tracking**: Duplicate packet detection and ordering
-- **Batch Acknowledgments**: Efficient batching (up to 255 acks per message)
-- **Timeout Management**: Configurable timeouts with proper cleanup
-
-#### 4. **State Management**
-- **Status Tracking**: Clear state transitions (IDLE → CONNECTING → READY → DISCONNECTING)
-- **Circuit Lifecycle**: Proper handshake sequence and cleanup
-- **Resource Management**: Automatic cleanup with interval-based pruning
-
-## 🚀 Improved Rust Architecture
-
-Our Rust implementation enhances these patterns while leveraging Rust's unique strengths:
-
-### Architecture Overview
-
-```
-NetworkManager (Central orchestration)
-  ├── AuthenticationService (Login & session management)
-  ├── Core (Circuit management) 
-  │   ├── Circuit (Individual connections)
-  │   └── Transport (UDP with SOCKS5 support)
-  └── HandlerRegistry (Event-driven packet processing)
-      └── TypedPacketHandler (Type-safe handlers)
-```
-
-### Key Improvements
-
-#### 1. **Enhanced State Management**
-```rust
-pub enum NetworkStatus {
-    Idle,
-    Authenticating, 
-    Connecting,
-    Connected,
-    Reconnecting,
-    Disconnecting,
-    Disconnected,
-}
-```
-- **Type Safety**: Compile-time guarantees for state transitions
-- **Event Broadcasting**: Reactive updates with tokio broadcast channels
-- **Async State**: Non-blocking state access with RwLock
-
-#### 2. **Type-Safe Packet Handling**
-```rust
-#[async_trait]
-pub trait TypedPacketHandler<P: Packet>: Send + Sync + Debug {
-    async fn handle_typed(&self, packet: &P, context: &HandlerContext) -> NetworkResult<()>;
-    fn priority(&self) -> i32 { 0 }
-    fn should_handle_typed(&self, packet: &P, context: &HandlerContext) -> bool { true }
-}
-```
-- **Compile-Time Safety**: Packet type validation at compile time
-- **Priority System**: Ordered processing with configurable priorities
-- **Conditional Processing**: Handler-specific filtering logic
-
-#### 3. **Resource Management & Memory Safety**
-```rust
-pub struct NetworkManager {
-    circuits: Arc<RwLock<HashMap<SocketAddr, Arc<Circuit>>>>,
-    primary_circuit: Arc<RwLock<Option<Arc<Circuit>>>>,
-    background_tasks: Vec<tokio::task::JoinHandle<()>>,
-}
-```
-- **Ownership Model**: Clear ownership and borrowing rules
-- **Arc/RwLock**: Safe concurrent access to shared state
-- **Automatic Cleanup**: RAII-based resource management
-
-#### 4. **Event-Driven Architecture**
-```rust
-pub enum NetworkEvent {
-    StatusChanged { old: NetworkStatus, new: NetworkStatus },
-    Connected { session: SessionInfo },
-    CircuitConnected { address: SocketAddr },
-    Error { error: NetworkError },
-}
-```
-- **Broadcast Events**: Multiple subscribers with tokio broadcast
-- **Type-Safe Events**: Structured event data with proper typing
-- **Error Propagation**: Comprehensive error handling with context
-
-### Separation of Concerns
-
-#### **Network Manager** (`manager.rs`)
-- **Responsibility**: Central orchestration of all networking operations
-- **Manages**: Authentication, circuit lifecycle, event broadcasting
-- **Interface**: High-level connect/disconnect operations
-
-#### **Authentication Service** (`auth/`)
-- **Responsibility**: Login server communication and session management
-- **Manages**: Credentials, grid selection, session state
-- **Interface**: Login/logout operations with session tracking
-
-#### **Core & Circuits** (`core.rs`, `circuit.rs`)
-- **Responsibility**: UDP connection management and packet acknowledgment
-- **Manages**: Socket operations, reliable packet delivery, retransmission
-- **Interface**: Send/receive operations with reliability guarantees
-
-#### **Handler System** (`handlers/system.rs`)
-- **Responsibility**: Event-driven packet processing
-- **Manages**: Handler registration, priority ordering, context passing
-- **Interface**: Type-safe packet handler registration and dispatch
-
-### Benefits of the Improved Architecture
-
-#### 1. **Maintainability**
-- **Clear Modules**: Each component has a single, well-defined responsibility
-- **Minimal Coupling**: Components communicate through well-defined interfaces
-- **Testability**: Each component can be tested in isolation
-
-#### 2. **Type Safety**
-- **Compile-Time Guarantees**: Packet handlers are type-checked at compile time
-- **State Validation**: Network states and transitions are validated by the compiler
-- **Error Handling**: Comprehensive error types with structured context
-
-#### 3. **Performance**
-- **Zero-Cost Abstractions**: Rust's trait system provides performance without overhead
-- **Memory Efficiency**: Ownership model prevents memory leaks and reduces allocations
-- **Async Efficiency**: Tokio-based async runtime for high-concurrency operations
-
-#### 4. **Extensibility**
-- **Modular Handlers**: Easy to add new packet types and handlers
-- **Event System**: Components can react to network events without tight coupling
-- **Configuration**: Flexible configuration for different grids and connection types
-
-### Usage Example
-
-```rust
-// Create and initialize client
-let mut client = ImprovedClient::new();
-client.initialize().await?;
-
-// Register custom packet handler
-client.handler_registry
-    .register_handler::<MyPacketType, _>(MyPacketHandler)
-    .await;
-
-// Connect with credentials  
-let credentials = LoginCredentials::new(username, password)
-    .with_grid(Grid::SecondLifeMain);
-    
-client.connect(credentials).await?;
-
-// Monitor network events
-let mut events = client.network_manager.subscribe();
-while let Ok(event) = events.recv().await {
-    match event {
-        NetworkEvent::Connected { session } => {
-            println!("Welcome, {}!", session.first_name);
-        }
-        NetworkEvent::Error { error } => {
-            eprintln!("Network error: {}", error);
-        }
-        _ => {}
-    }
-}
+networking/
+├── mod.rs              # Module exports only
+├── transport.rs        # UDP transport (one responsibility)
+├── circuit.rs          # Circuit management (one responsibility) 
+├── auth/
+│   ├── mod.rs          # Module exports only
+│   ├── login.rs        # Authentication service
+│   ├── session.rs      # Session state management
+│   ├── grid.rs         # Grid configuration
+│   └── xmlrpc.rs       # XML-RPC client (matches homunculus/)
+├── protocol/
+│   ├── mod.rs          # Module exports only
+│   ├── messages.rs     # Message definitions (from message_template.msg)
+│   └── codecs.rs       # Serialization (matches protocol spec)
+└── handlers/
+    ├── mod.rs          # Module exports only
+    └── [handler].rs    # Individual message handlers
 ```
 
-## 🔧 Implementation Status
+### 3.2 Implementation Phases
+*   **Phase 1: Protocol Parsing:** A dedicated parser reads the `message_template.msg` file, making it the single source of truth for the SecondLife protocol.
+*   **Phase 2: Code Generation:** A `build.rs` script uses the parsed data to automatically generate all Rust message structs and serialization/deserialization codecs. This eliminates manual, error-prone implementation.
+*   **Phase 3: Connection Management:** A `Circuit` manager handles the UDP connection state, reliability (ACKs, retransmissions), and the handshake sequence, using the auto-generated message code.
+*   **Phase 4: Application Integration:** The networking layer communicates with the main application via `tokio::sync::mpsc` channels:
+    *   **`NetworkCommand` Channel (App -> Net):** The application sends high-level commands (e.g., `SendChat`) to the networking layer.
+    *   **Event Channels (Net -> App):** The networking layer dispatches events (e.g., `ChatEvent`, `ObjectUpdateEvent`) to the relevant application modules.
+*   **Phase 5: Testing:** A multi-layered testing strategy ensures correctness, from unit tests on the parser to end-to-end tests against the live grid.
 
-- ✅ **NetworkManager**: Central orchestration with event broadcasting
-- ✅ **HandlerRegistry**: Type-safe, prioritized packet handling system  
-- ✅ **AuthenticationService**: Grid-aware login with session management
-- ✅ **Event System**: Reactive architecture with broadcast channels
-- ✅ **State Management**: Type-safe state transitions with async access
-- ✅ **Integration Example**: Demonstrates full system usage
+### 3.3 Protocol Reference Requirements
+- **XML-RPC Authentication**: Must match `homunculus/packages/homunculus-core/src/network/authenticator.ts`
+- **Message Format**: Must align with `message_template.msg` specifications
+- **Circuit Handshake**: Must follow examples in `hippolyzer/` implementation
+- **Password Hashing**: MD5 with 16-character truncation as per SecondLife spec
 
-## 🎯 Next Steps
+## 4. Rendering Pipeline: A GPU-Driven Approach
 
-1. **Integration**: Connect the new architecture with existing networking code
-2. **Migration**: Gradually migrate existing handlers to the new system
-3. **Testing**: Comprehensive test suite for all components
-4. **Documentation**: API documentation and usage examples
-5. **Performance**: Benchmarking and optimization
+The rendering pipeline is designed to be "GPU-driven," minimizing CPU bottlenecks and maximizing the GPU's parallel processing power.
 
-This architecture provides a solid foundation for a maintainable, type-safe, and performant Second Life viewer implementation in Rust.
+*   **Graphics API (`wgpu`):** We use `wgpu` as a safe, cross-platform abstraction over modern graphics APIs (Vulkan, Metal, DX12). This gives us the performance benefits of these APIs without the extreme complexity of using them directly.
+*   **GPU-Driven Culling (HZB):** We use Hierarchical-Z Buffer (HZB) culling. A depth pre-pass and a compute shader are used to determine object visibility entirely on the GPU, eliminating CPU-GPU round trips. The result is a compact list of visible objects that can be rendered with a single indirect draw call.
+*   **Clustered Forward Shading (Forward+):** To handle scenes with many dynamic lights, we divide the view frustum into a 3D grid of "clusters." A compute shader assigns lights to these clusters. The pixel shader then only performs lighting calculations for the lights within its cluster, decoupling shading cost from the total number of lights in the scene.
+
+## 5. Asset Handling
+
+The asset system is designed to handle the unpredictable stream of user-generated content without stalling.
+
+*   **Virtual Texturing (VT):** To handle the massive amount of texture data, we use a Virtual Texturing system. All textures are treated as part of a single, enormous virtual texture, which is tiled and stored on disk. A feedback pass determines which tiles are needed, and they are streamed into a fixed-size GPU cache on demand. This decouples the scene's visual complexity from VRAM limitations.
+*   **On-the-Fly Mesh Simplification:** For complex meshes without server-provided Levels of Detail (LoDs), a background job uses the Quadric Edge Collapse Decimation (QED) algorithm to generate simplified versions. The renderer then selects the appropriate LoD based on distance.
+*   **Asynchronous Impostor Generation:** For very distant objects, a background process renders the full 3D mesh to a texture (an "impostor") which is then used to replace the real geometry with a simple, camera-facing quad.
+
+This architecture is designed to be a high-performance, scalable, and maintainable foundation for a modern virtual world viewer.
