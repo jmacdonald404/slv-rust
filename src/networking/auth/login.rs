@@ -1,4 +1,5 @@
 use super::{Grid, SessionInfo, SessionManager};
+use super::xmlrpc::{XmlRpcClient, LoginParameters};
 use crate::networking::{NetworkError, NetworkResult};
 use crate::networking::client::{Client, ClientConfig};
 use std::net::SocketAddr;
@@ -41,23 +42,35 @@ impl LoginCredentials {
             return Err("Password cannot be empty".to_string());
         }
         
-        // Additional validation for username format
-        if !self.username.contains(' ') && self.grid != Grid::OpenSimulator("Local OpenSim".to_string()) {
-            return Err("Username must be in format 'FirstName LastName'".to_string());
+        // For official grids, require FirstName LastName format
+        if self.grid.is_official() && !self.username.contains(' ') {
+            return Err("Username must be in format 'FirstName LastName' for SecondLife grids".to_string());
         }
         
         Ok(())
+    }
+
+    /// Split username into first and last name
+    pub fn split_name(&self) -> (String, String) {
+        let parts: Vec<&str> = self.username.splitn(2, ' ').collect();
+        match parts.as_slice() {
+            [first] => (first.to_string(), "Resident".to_string()),
+            [first, last] => (first.to_string(), last.to_string()),
+            _ => ("Unknown".to_string(), "User".to_string()),
+        }
     }
 }
 
 pub struct AuthenticationService {
     session_manager: SessionManager,
+    xmlrpc_client: XmlRpcClient,
 }
 
 impl AuthenticationService {
     pub fn new() -> Self {
         Self {
             session_manager: SessionManager::new(),
+            xmlrpc_client: XmlRpcClient::new(),
         }
     }
     
@@ -69,7 +82,19 @@ impl AuthenticationService {
         // Step 1: Authenticate with login server
         let login_response = self.authenticate_with_login_server(&credentials).await?;
         
+        if !login_response.success {
+            let reason = login_response.reason
+                .or(login_response.message)
+                .unwrap_or_else(|| "Login failed".to_string());
+            return Err(NetworkError::AuthenticationFailed { reason });
+        }
+        
         // Step 2: Create session info
+        let simulator_address = login_response.simulator_address()
+            .map_err(|e| NetworkError::AuthenticationFailed { 
+                reason: format!("Invalid simulator address: {}", e) 
+            })?;
+
         let session = SessionInfo {
             agent_id: login_response.agent_id,
             session_id: login_response.session_id,
@@ -77,7 +102,7 @@ impl AuthenticationService {
             first_name: login_response.first_name,
             last_name: login_response.last_name,
             circuit_code: login_response.circuit_code,
-            simulator_address: login_response.simulator_address,
+            simulator_address,
             look_at: login_response.look_at,
             start_location: credentials.start_location,
         };
@@ -112,22 +137,20 @@ impl AuthenticationService {
         self.session_manager.is_logged_in()
     }
     
-    async fn authenticate_with_login_server(&self, credentials: &LoginCredentials) -> NetworkResult<LoginResponse> {
-        // Simulate authentication delay
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    async fn authenticate_with_login_server(&self, credentials: &LoginCredentials) -> NetworkResult<super::xmlrpc::LoginResponse> {
+        let (first_name, last_name) = credentials.split_name();
         
-        // For now, simulate successful login with fake data
-        // In a real implementation, this would make HTTP request to login server
-        Ok(LoginResponse {
-            agent_id: Uuid::new_v4(),
-            session_id: Uuid::new_v4(),
-            secure_session_id: Uuid::new_v4(),
-            first_name: credentials.username.split_whitespace().next().unwrap_or("Test").to_string(),
-            last_name: credentials.username.split_whitespace().nth(1).unwrap_or("User").to_string(),
-            circuit_code: 12345,
-            simulator_address: "127.0.0.1:9000".parse().unwrap(),
-            look_at: [1.0, 0.0, 0.0],
-        })
+        let params = LoginParameters::new(&first_name, &last_name, &credentials.password);
+        
+        let login_uri = credentials.grid.login_uri();
+        
+        tracing::info!("Authenticating with {} at {}", credentials.grid.name(), login_uri);
+        
+        self.xmlrpc_client.login_to_simulator(login_uri, params)
+            .await
+            .map_err(|e| NetworkError::AuthenticationFailed { 
+                reason: format!("Login server communication failed: {}", e) 
+            })
     }
 }
 
@@ -135,16 +158,4 @@ impl Default for AuthenticationService {
     fn default() -> Self {
         Self::new()
     }
-}
-
-#[derive(Debug, Clone)]
-struct LoginResponse {
-    agent_id: Uuid,
-    session_id: Uuid,
-    secure_session_id: Uuid,
-    first_name: String,
-    last_name: String,
-    circuit_code: u32,
-    simulator_address: SocketAddr,
-    look_at: [f32; 3],
 }
