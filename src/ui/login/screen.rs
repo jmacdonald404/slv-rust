@@ -71,6 +71,7 @@ fn show_grid_selection(ui: &mut egui::Ui, ui_state: &mut UiState) {
     
     let grids = available_grids();
     let selected_text = ui_state.login_state.selected_grid.name();
+    let previous_grid = ui_state.login_state.selected_grid.clone();
     
     egui::ComboBox::from_label("")
         .selected_text(selected_text)
@@ -79,6 +80,13 @@ fn show_grid_selection(ui: &mut egui::Ui, ui_state: &mut UiState) {
                 ui.selectable_value(&mut ui_state.login_state.selected_grid, grid.clone(), grid.name());
             }
         });
+    
+    // If the grid selection changed, load credentials for the new grid
+    if ui_state.login_state.selected_grid != previous_grid {
+        let selected_grid = ui_state.login_state.selected_grid.clone();
+        ui_state.login_state.load_credentials_for_grid(&selected_grid);
+    }
+    
     ui.add_space(10.0);
 }
 

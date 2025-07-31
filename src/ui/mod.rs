@@ -64,15 +64,58 @@ pub struct LoginState {
 
 impl Default for LoginState {
     fn default() -> Self {
+        let default_grid = crate::networking::auth::Grid::default();
+        
+        // Try to load saved credentials for the default grid
+        let (username, password) = match crate::networking::auth::CredentialStore::new()
+            .load_credentials(default_grid.name()) 
+        {
+            Ok(Some(credentials)) => {
+                tracing::info!("Loaded saved credentials for grid {}", default_grid.name());
+                (credentials.username, credentials.password)
+            }
+            Ok(None) => {
+                tracing::debug!("No saved credentials found for grid {}", default_grid.name());
+                (String::new(), String::new())
+            }
+            Err(e) => {
+                tracing::warn!("Failed to load saved credentials: {}", e);
+                (String::new(), String::new())
+            }
+        };
+        
         Self {
-            username: String::new(),
-            password: String::new(),
-            selected_grid: crate::networking::auth::Grid::default(),
+            username,
+            password,
+            selected_grid: default_grid,
             status_message: String::new(),
             prefs_modal_open: false,
             session_info: None,
             agree_to_tos_next_login: false,
             read_critical_next_login: false,
+        }
+    }
+}
+
+impl LoginState {
+    /// Load credentials for the specified grid and update the login state
+    pub fn load_credentials_for_grid(&mut self, grid: &crate::networking::auth::Grid) {
+        match crate::networking::auth::CredentialStore::new().load_credentials(grid.name()) {
+            Ok(Some(credentials)) => {
+                tracing::info!("Loaded saved credentials for grid {}", grid.name());
+                self.username = credentials.username;
+                self.password = credentials.password;
+            }
+            Ok(None) => {
+                tracing::debug!("No saved credentials found for grid {}", grid.name());
+                self.username.clear();
+                self.password.clear();
+            }
+            Err(e) => {
+                tracing::warn!("Failed to load saved credentials for grid {}: {}", grid.name(), e);
+                self.username.clear();
+                self.password.clear();
+            }
         }
     }
 }
