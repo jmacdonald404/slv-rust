@@ -27,8 +27,8 @@ pub fn start_login(ui_state: &mut UiState) {
 pub async fn perform_login(username: &str, password: &str, grid: Grid) -> Result<(), crate::networking::NetworkError> {
     // Create login credentials
     let credentials = LoginCredentials::new(username.to_string(), password.to_string())
-        .with_grid(grid)
-        .with_start_location("last".to_string());
+        .with_grid(grid);
+        
     
     // Create authentication service
     let mut auth_service = AuthenticationService::new();

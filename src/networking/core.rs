@@ -130,8 +130,8 @@ impl Core {
     }
     
     /// Connect to a simulator
-    pub async fn connect_circuit(&self, options: CircuitOptions) -> NetworkResult<Arc<Circuit>> {
-        debug!("Connecting to circuit at {} with code {}", options.address, options.circuit_code);
+    pub async fn connect_circuit(&self, options: CircuitOptions, handshake_tx: mpsc::Sender<crate::networking::client::HandshakeEvent>) -> NetworkResult<Arc<Circuit>> {
+        info!("Connecting to circuit at {} with code {}", options.address, options.circuit_code);
         
         // Create channels for this circuit
         let packet_sender = self.transport.get_sender();
@@ -181,6 +181,7 @@ impl Core {
                             circuit: Arc::clone(&circuit_clone),
                             agent_id,
                             session_id,
+                            handshake_tx: handshake_tx.clone(),
                         };
                         
                         if let Err(_) = packet_processing_tx.send((packet, context)) {
@@ -199,7 +200,7 @@ impl Core {
         // Start the circuit
         circuit.start().await?;
         
-        debug!("Circuit established to {}", options.address);
+        info!("Circuit established to {}", options.address);
         Ok(circuit)
     }
     
@@ -233,7 +234,7 @@ impl Core {
                 }
             }
             
-            debug!("Disconnected circuit from {}", address);
+            info!("Disconnected circuit from {}", address);
         }
         
         Ok(())
@@ -262,26 +263,25 @@ impl Core {
     
     /// Start packet receiver task
     async fn start_packet_receiver(&self) {
-        let mut packet_rx = self.transport.get_receiver();
         let circuits = Arc::clone(&self.circuits);
         
-        tokio::spawn(async move {
-            while let Some(packet) = packet_rx.recv().await {
-                // Find the circuit this packet belongs to
-                // For now, we'll use a simple approach - in a real implementation,
-                // you'd need to track which packets came from which addresses
-                
-                let circuits_guard = circuits.read().await;
-                if let Some(circuit) = circuits_guard.values().next() {
-                    // Forward packet to the first available circuit
-                    // This is simplified - you'd want proper routing
-                    if let Some(mut circuit_rx) = None::<mpsc::UnboundedReceiver<PacketWrapper>> {
-                        // This is where you'd forward the packet to the circuit
-                        // The actual implementation would require a different architecture
+        // Set up the packet callback (like homunculus socket.receive)
+        self.transport.set_packet_callback(move |packet, src_addr| {
+            let circuits_clone = Arc::clone(&circuits);
+            tokio::spawn(async move {
+                // Find the circuit this packet belongs to by source address
+                let circuits_guard = circuits_clone.read().await;
+                if let Some(circuit) = circuits_guard.get(&src_addr) {
+                    // Forward packet to the appropriate circuit
+                    info!("Received packet from {} for circuit", src_addr);
+                    if let Err(e) = circuit.inject_packet(packet).await {
+                        warn!("Failed to inject packet into circuit {}: {}", src_addr, e);
                     }
+                } else {
+                    info!("Received packet from unknown address: {}", src_addr);
                 }
-            }
-        });
+            });
+        }).await;
     }
     
     /// Set core state and emit event

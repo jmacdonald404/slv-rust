@@ -249,11 +249,11 @@ pub fn run_ui_frame(
         // Since UiRenderer is removed, this loop will effectively do nothing.
         // If textures are managed by eframe's internal state, this loop might be redundant or need a different approach.
         // For now, we'll just log a message.
-        tracing::warn!("Texture update for ID: {:?} (image_delta: <not debug>) - UiRenderer removed, texture updates will not be applied.", id);
+        // tracing::warn!("Texture update for ID: {:?} (image_delta: <not debug>) - UiRenderer removed, texture updates will not be applied.", id);
     }
     for id in &eframe::egui::TexturesDelta::default().free {
         // Similarly, UiRenderer was removed.
-        tracing::warn!("Texture free for ID: {:?} - UiRenderer removed, texture free will not be applied.", id);
+        // tracing::warn!("Texture free for ID: {:?} - UiRenderer removed, texture free will not be applied.", id);
     }
 
     // Draw egui frame
@@ -261,7 +261,7 @@ pub fn run_ui_frame(
     // Since UiRenderer is removed, this call will effectively do nothing.
     // If eframe's egui context itself handles rendering, this might be redundant or need a different approach.
     // For now, we'll just log a message.
-    tracing::warn!("UiRenderer::paint called - UiRenderer removed, rendering will not be performed.");
+    // tracing::warn!("UiRenderer::paint called - UiRenderer removed, rendering will not be performed.");
 }
 
 // TODO: Add stubs for future UI state (e.g., avatar, object selection, notifications)

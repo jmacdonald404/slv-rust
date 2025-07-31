@@ -1,0 +1,52 @@
+title Initial login to world
+
+participant "Viewer" as V
+participant "Initial region" as R
+participant "Login server" as L
+
+group Initial login
+activate V
+V->L: Login request, XMLRPC
+activate L
+L->R: (region advised login coming)
+activate R
+L->V: Login reply
+rbox left of V: Contains initial region IP, port, seed\nregion handle, agent ID\nbut not avatar location in region.
+V-->>R: UseCircuitCode
+V-->>R: CompleteAgentMovement
+V-->>R: UuidNameRequest
+rbox left of V: UuidNameRequest for avatar name.\nProbably unnecessary, but traditional.
+R-->V: RegionHandshake
+rbox left of V: A 2 second delay here before the reply\nreduces interest list errors.\nRef: BUG-233107
+V-->>R: RegionHandshakeReply
+V-->>R: AgentUpdate
+rbox left of V: This first AgentUpdate has a bogus avatar position.\nViewer does not know where the avatar is yet\nbut must send this to get object updates started.\nCause of some interest list bugs.
+V->R: EventQueueGet
+R-->>V: ObjectUpdate
+rbox left of V: The first object update is usually for the avatar.\nThis tells the viewer where the avatar really is.\nPosition of avatar moves in viewer.
+V-->>R: AgentUpdate
+rbox left of V: Viewer tells region where the camera is.\nViewer and region are now in sync.
+end
+
+rbox left of V: Logged in.\nNormal operation from here on.
+
+R-->>V: ObjectUpdate
+R-->>V: ObjectUpdate
+R-->>V: ObjectUpdate
+R->V: (Various event queue events)
+V-->>R: AgentUpdate
+
+Discussion
+
+This is an event sequence diagram of the essential events that take place during a login.
+
+The process starts out with the viewer making a request to the login server. The login server authenticates the user, and determines in which region the user's avatar will enter the world. If the user requested a login to "Last" or "Home", the login server determines the region. The login communicates with the selected region to prepare it to receive the login. If this communication is unsuccessful, usually because that region is offline, the avatar is re-routed to some other region, usually a "safe hub". The viewer can discover this from the SimName field in the RegionHandshake message. Scripted agent controllers should check this, or their bots will pile up at safe hubs.
+
+The login server provides the viewer with the key information needed to connect to a region - IP address, port number, region location (and size for Open Simulator), seed capability (a URL which connects to the initial simulator), plus other useful info. The IP address and port number are used to set up the UDP message circuit. The seed capability is used to establish communications with the simulator over HTTPS, and to locate other servers, such as the asset server system. An HTTPS connection to the EventQueueGet system is established. A region handshake takes place.
+
+It is the AgentUpdate message that really gets things going. That starts the flow of ObjectUpdate messages that tell the viewer about all objects within view range. There's an implicit sequencing problem in the protocol. The AgentUpdate message from viewer to simulator contains the camera location. However, the viewer doesn't know the avatar location until it gets an ObjectUpdate with the avatar's UUID. (The login message reply provides that UUID). So the first AgentUpdate has a bogus avatar position, which will be corrected by a later AgentUpdate. This jump seems to have negative effects on the correctness of the set of objects sent in ObjectUpdate messages. (Ref [2]). Teleports have the same problem.
+Notes
+
+Dashed lines are UDP messages. Solid lines are events received via EventQueueGet, except for the XMLRPC call to the login server.
+
+This documents the successful "happy path". Error conditions are not yet covered. 

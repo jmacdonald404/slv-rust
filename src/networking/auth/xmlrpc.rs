@@ -1,9 +1,12 @@
 use anyhow::{Context, Result};
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use roxmltree;
 use std::net::SocketAddr;
 use uuid::Uuid;
+use crate::utils::math::{Vector3, RegionHandle, parsing as math_parsing};
+use std::time::Duration;
+use tokio::time::sleep;
+use super::types::*;
 
 /// XML-RPC client for SecondLife login servers
 pub struct XmlRpcClient {
@@ -14,7 +17,7 @@ impl XmlRpcClient {
     pub fn new() -> Self {
         Self {
             client: Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
+                .timeout(std::time::Duration::from_secs(45))
                 .user_agent("slv-rust/0.3.0")
                 .build()
                 .expect("Failed to create HTTP client"),
@@ -26,6 +29,7 @@ impl XmlRpcClient {
         let xml_request = self.build_login_request(&params)?;
         
         tracing::info!("Sending XML-RPC login request to {}", url);
+        tracing::debug!("XML-RPC Request Body:\n{}", xml_request);
         
         let response = self.client
             .post(url)
@@ -35,12 +39,15 @@ impl XmlRpcClient {
             .await
             .context("Failed to send login request")?;
 
-        if !response.status().is_success() {
-            anyhow::bail!("Login request failed with status: {}", response.status());
-        }
-
+        let status = response.status();
         let xml_body = response.text().await
             .context("Failed to read login response")?;
+
+        tracing::debug!("XML-RPC Response Body:\n{}", xml_body);
+
+        if !status.is_success() {
+            anyhow::bail!("Login request failed with status: {}. Response: {}", status, xml_body);
+        }
 
         self.parse_login_response(&xml_body)
     }
@@ -68,6 +75,14 @@ impl XmlRpcClient {
         self.add_xml_member(&mut xml, "agree_to_tos", &params.agree_to_tos.to_string());
         self.add_xml_member(&mut xml, "read_critical", &params.read_critical.to_string());
         self.add_xml_member(&mut xml, "viewer_digest", &params.viewer_digest);
+
+        // Add MFA parameters if present
+        if let Some(ref token) = params.mfa_token {
+            self.add_xml_member(&mut xml, "token", token);
+        }
+        if let Some(ref hash) = params.mfa_hash {
+            self.add_xml_member(&mut xml, "mfa_hash", hash);
+        }
 
         // Add options array
         xml.push_str("          <member>\n");
@@ -158,7 +173,15 @@ impl XmlRpcClient {
                 .find(|n| n.tag_name().name() == "value");
 
             if let (Some(name), Some(value_node)) = (name_elem, value_elem) {
-                let value_text = self.extract_value_text(value_node);
+                // Check if this is a complex field that needs special parsing
+                let value_text = if matches!(name, "home_info" | "inventory_root" | "inventory_skeleton" | 
+                                              "buddy_list" | "login_flags" | "premium_packages" | 
+                                              "account_level_benefits") {
+                    self.parse_complex_field(value_node, name)?
+                } else {
+                    self.extract_value_text(value_node)
+                };
+                
                 self.set_response_field(&mut response, name, &value_text)?;
             }
         }
@@ -174,6 +197,34 @@ impl XmlRpcClient {
             boolean_node.text().unwrap_or("0").to_string()
         } else if let Some(int_node) = value_node.children().find(|n| n.tag_name().name() == "int") {
             int_node.text().unwrap_or("0").to_string()
+        } else if let Some(double_node) = value_node.children().find(|n| n.tag_name().name() == "double") {
+            double_node.text().unwrap_or("0.0").to_string()
+        } else if let Some(array_node) = value_node.children().find(|n| n.tag_name().name() == "array") {
+            // Handle arrays - convert to comma-separated string
+            let mut values = Vec::new();
+            for data_node in array_node.children().filter(|n| n.tag_name().name() == "data") {
+                for value_node in data_node.children().filter(|n| n.tag_name().name() == "value") {
+                    let text = self.extract_value_text(value_node);
+                    if !text.is_empty() {
+                        values.push(text);
+                    }
+                }
+            }
+            values.join(",")
+        } else if let Some(struct_node) = value_node.children().find(|n| n.tag_name().name() == "struct") {
+            // Handle structs - convert to JSON-like format for complex parsing
+            let mut pairs = Vec::new();
+            for member_node in struct_node.children().filter(|n| n.tag_name().name() == "member") {
+                let name_node = member_node.children().find(|n| n.tag_name().name() == "name");
+                let value_node = member_node.children().find(|n| n.tag_name().name() == "value");
+                
+                if let (Some(name), Some(value)) = (name_node, value_node) {
+                    let name_text = name.text().unwrap_or("");
+                    let value_text = self.extract_value_text(value);
+                    pairs.push(format!("\"{}\":\"{}\"", name_text, value_text));
+                }
+            }
+            format!("{{{}}}", pairs.join(","))
         } else {
             value_node.text().unwrap_or("").to_string()
         }
@@ -181,23 +232,27 @@ impl XmlRpcClient {
 
     fn set_response_field(&self, response: &mut LoginResponse, name: &str, value: &str) -> Result<()> {
         match name {
+            // Core login fields
             "login" => {
-                response.success = value == "true";
+                response.success = math_parsing::parse_bool(value)
+                    .map_err(|e| anyhow::anyhow!("Invalid login value: {}", e))?;
             }
             "agent_id" => {
-                response.agent_id = Uuid::parse_str(value)
-                    .context("Invalid agent_id UUID")?;
+                response.agent_id = math_parsing::parse_uuid(value)
+                    .map_err(|e| anyhow::anyhow!("Invalid agent_id: {}", e))?;
             }
             "session_id" => {
-                response.session_id = Uuid::parse_str(value)
-                    .context("Invalid session_id UUID")?;
+                response.session_id = math_parsing::parse_uuid(value)
+                    .map_err(|e| anyhow::anyhow!("Invalid session_id: {}", e))?;
             }
             "secure_session_id" => {
-                response.secure_session_id = Uuid::parse_str(value)
-                    .context("Invalid secure_session_id UUID")?;
+                response.secure_session_id = math_parsing::parse_uuid(value)
+                    .map_err(|e| anyhow::anyhow!("Invalid secure_session_id: {}", e))?;
             }
             "first_name" => {
-                response.first_name = value.to_string();
+                // Handle quoted names from Second Life
+                let cleaned = value.trim_matches('"');
+                response.first_name = cleaned.to_string();
             }
             "last_name" => {
                 response.last_name = value.to_string();
@@ -214,19 +269,8 @@ impl XmlRpcClient {
                     .context("Invalid sim_port")?;
             }
             "look_at" => {
-                // Parse look_at array format: r1,0,0 or [1.0, 0.0, 0.0]
-                let coords: Result<Vec<f32>, _> = value
-                    .trim_start_matches(['r', '['])
-                    .trim_end_matches(']')
-                    .split(',')
-                    .map(|s| s.trim().parse())
-                    .collect();
-                
-                if let Ok(coords) = coords {
-                    if coords.len() >= 3 {
-                        response.look_at = [coords[0], coords[1], coords[2]];
-                    }
-                }
+                response.look_at = Vector3::parse_sl_format(value)
+                    .map_err(|e| anyhow::anyhow!("Invalid look_at: {}", e))?;
             }
             "reason" => {
                 response.reason = Some(value.to_string());
@@ -234,12 +278,183 @@ impl XmlRpcClient {
             "message" => {
                 response.message = Some(value.to_string());
             }
+            "seed_capability" => {
+                response.seed_capability = Some(value.to_string());
+            }
+
+            // Additional fields from Second Life
+            "agent_access" => {
+                response.agent_access = Some(value.to_string());
+            }
+            "agent_access_max" => {
+                response.agent_access_max = Some(value.to_string());
+            }
+            "agent_region_access" => {
+                response.agent_region_access = Some(value.to_string());
+            }
+            "agent_appearance_service" => {
+                response.agent_appearance_service = Some(value.to_string());
+            }
+            "agent_flags" => {
+                response.agent_flags = Some(value.parse()
+                    .context("Invalid agent_flags")?);
+            }
+            "max_agent_groups" => {
+                response.max_agent_groups = Some(value.parse()
+                    .context("Invalid max_agent_groups")?);
+            }
+            "openid_url" => {
+                response.openid_url = Some(value.to_string());
+            }
+            "openid_token" => {
+                response.openid_token = Some(value.to_string());
+            }
+            "cof_version" => {
+                response.cof_version = Some(value.parse()
+                    .context("Invalid cof_version")?);
+            }
+            "account_type" => {
+                response.account_type = Some(value.to_string());
+            }
+            "linden_status_code" => {
+                response.linden_status_code = Some(value.to_string());
+            }
+            "max_god_level" => {
+                response.max_god_level = Some(value.parse()
+                    .context("Invalid max_god_level")?);
+            }
+            "god_level" => {
+                response.god_level = Some(value.parse()
+                    .context("Invalid god_level")?);
+            }
+            "seconds_since_epoch" => {
+                response.seconds_since_epoch = Some(value.parse()
+                    .context("Invalid seconds_since_epoch")?);
+            }
+            "start_location" => {
+                // Start location can be either a string ("last", "home") or coordinates
+                if value.contains(',') || value.contains('<') {
+                    // Try to parse as Vector3 coordinates
+                    response.start_location = Some(Vector3::parse_sl_format(value)
+                        .map_err(|e| anyhow::anyhow!("Invalid start_location coordinates: {}", e))?);
+                } else {
+                    // Handle string locations by converting to default coordinates
+                    let default_pos = match value {
+                        "last" => Vector3::new(128.0, 128.0, 0.0), // Default region center
+                        "home" => Vector3::new(128.0, 128.0, 0.0), // Default home position
+                        _ => Vector3::new(128.0, 128.0, 0.0), // Default fallback
+                    };
+                    response.start_location = Some(default_pos);
+                }
+            }
+            "home" => {
+                response.home = Some(Vector3::parse_sl_format(value)
+                    .map_err(|e| anyhow::anyhow!("Invalid home: {}", e))?);
+            }
+            "region_x" => {
+                response.region_x = Some(value.parse()
+                    .context("Invalid region_x")?);
+            }
+            "region_y" => {
+                response.region_y = Some(value.parse()
+                    .context("Invalid region_y")?);
+            }
+            "map_server_url" => {
+                response.map_server_url = Some(value.to_string());
+            }
+            "udp_blacklist" => {
+                response.udp_blacklist = Some(math_parsing::parse_string_array(value));
+            }
+
+            // Complex nested fields (these would need special handling for full parsing)
+            "home_info" | "inventory_root" | "inventory_skeleton" | 
+            "buddy_list" | "login_flags" | "premium_packages" | 
+            "account_level_benefits" => {
+                // For now, log these complex fields for future implementation
+                tracing::debug!("Complex field {} = {} (needs special parsing)", name, value);
+            }
+
             _ => {
                 // Store unknown fields for debugging
                 tracing::debug!("Unknown login response field: {} = {}", name, value);
             }
         }
         Ok(())
+    }
+
+    /// Parse complex nested structures from XML-RPC response
+    fn parse_complex_field(&self, value_node: roxmltree::Node, field_name: &str) -> Result<String> {
+        match field_name {
+            "home_info" => {
+                // Parse home_info structure
+                let mut home_info = std::collections::HashMap::new();
+                for member in value_node.children().filter(|n| n.tag_name().name() == "member") {
+                    let name_elem = member
+                        .children()
+                        .find(|n| n.tag_name().name() == "name")
+                        .and_then(|n| n.text());
+
+                    let value_elem = member
+                        .children()
+                        .find(|n| n.tag_name().name() == "value");
+
+                    if let (Some(name), Some(value_node)) = (name_elem, value_elem) {
+                        let value_text = self.extract_value_text(value_node);
+                        home_info.insert(name.to_string(), value_text);
+                    }
+                }
+                
+                // Convert to JSON-like format
+                let pairs: Vec<String> = home_info
+                    .iter()
+                    .map(|(k, v)| format!("\"{}\":\"{}\"", k, v))
+                    .collect();
+                Ok(format!("{{{}}}", pairs.join(",")))
+            }
+            "inventory_root" | "inventory_skeleton" => {
+                // Parse inventory array
+                let mut items = Vec::new();
+                for data_node in value_node.children().filter(|n| n.tag_name().name() == "data") {
+                    for value_node in data_node.children().filter(|n| n.tag_name().name() == "value") {
+                        let item_text = self.extract_value_text(value_node);
+                        if !item_text.is_empty() {
+                            items.push(item_text);
+                        }
+                    }
+                }
+                Ok(format!("[{}]", items.join(",")))
+            }
+            "buddy_list" => {
+                // Parse buddy list array
+                let mut buddies = Vec::new();
+                for data_node in value_node.children().filter(|n| n.tag_name().name() == "data") {
+                    for value_node in data_node.children().filter(|n| n.tag_name().name() == "value") {
+                        let buddy_text = self.extract_value_text(value_node);
+                        if !buddy_text.is_empty() {
+                            buddies.push(buddy_text);
+                        }
+                    }
+                }
+                Ok(format!("[{}]", buddies.join(",")))
+            }
+            "login_flags" => {
+                // Parse login flags array
+                let mut flags = Vec::new();
+                for data_node in value_node.children().filter(|n| n.tag_name().name() == "data") {
+                    for value_node in data_node.children().filter(|n| n.tag_name().name() == "value") {
+                        let flag_text = self.extract_value_text(value_node);
+                        if !flag_text.is_empty() {
+                            flags.push(flag_text);
+                        }
+                    }
+                }
+                Ok(format!("[{}]", flags.join(",")))
+            }
+            _ => {
+                // Default handling for unknown complex fields
+                Ok(self.extract_value_text(value_node))
+            }
+        }
     }
 }
 
@@ -264,6 +479,8 @@ pub struct LoginParameters {
     pub read_critical: bool,
     pub viewer_digest: String,
     pub options: Vec<String>,
+    pub mfa_token: Option<String>,
+    pub mfa_hash: Option<String>,
 }
 
 impl LoginParameters {
@@ -287,6 +504,8 @@ impl LoginParameters {
                 "buddy-list".to_string(),
                 "login-flags".to_string(),
             ],
+            mfa_token: std::env::var("SL_MFA_TOKEN").ok(),
+            mfa_hash: std::env::var("SL_MFA_HASH").ok(),
         }
     }
 
@@ -320,25 +539,4 @@ impl LoginParameters {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct LoginResponse {
-    pub success: bool,
-    pub agent_id: Uuid,
-    pub session_id: Uuid,
-    pub secure_session_id: Uuid,
-    pub first_name: String,
-    pub last_name: String,
-    pub circuit_code: u32,
-    pub simulator_ip: String,
-    pub simulator_port: u16,
-    pub look_at: [f32; 3],
-    pub reason: Option<String>,
-    pub message: Option<String>,
-}
-
-impl LoginResponse {
-    pub fn simulator_address(&self) -> Result<SocketAddr> {
-        let addr = format!("{}:{}", self.simulator_ip, self.simulator_port);
-        addr.parse().context("Invalid simulator address")
-    }
-}
+// LoginResponse is now defined in types.rs

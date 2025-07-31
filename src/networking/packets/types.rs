@@ -195,4 +195,27 @@ impl LLFixed256 {
 /// 64-bit unsigned integer (little-endian)
 pub type U64 = u64;
 
+/// Color value (4 bytes: R, G, B, A)
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct LLColor {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+    pub a: u8,
+}
+
+impl LLColor {
+    pub fn new(r: u8, g: u8, b: u8, a: u8) -> Self {
+        Self { r, g, b, a }
+    }
+    
+    pub fn white() -> Self {
+        Self::new(255, 255, 255, 255)
+    }
+    
+    pub fn black() -> Self {
+        Self::new(0, 0, 0, 255)
+    }
+}
+
 // LLFixed256 is now defined above

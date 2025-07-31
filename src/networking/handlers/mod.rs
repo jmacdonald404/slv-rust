@@ -11,7 +11,7 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{debug, warn};
+use tracing::{debug, warn, info};
 
 pub mod login_handlers;
 pub mod agent_handlers;
@@ -27,6 +27,8 @@ pub struct HandlerContext {
     pub agent_id: uuid::Uuid,
     /// Session ID
     pub session_id: uuid::Uuid,
+    /// Handshake event sender
+    pub handshake_tx: tokio::sync::mpsc::Sender<crate::networking::client::HandshakeEvent>,
 }
 
 /// Async packet handler trait
@@ -101,7 +103,7 @@ impl PacketHandlerRegistry {
         let packet_type = handler.packet_type();
         let name = handler.name();
         
-        debug!("Registering packet handler for {}: {}", packet_type, name);
+        info!("Registering packet handler for {}: {}", packet_type, name);
         handlers.insert(packet_type, Arc::new(handler));
     }
     
@@ -124,13 +126,15 @@ impl PacketHandlerRegistry {
             crate::networking::packets::PacketFrequency::Fixed => (3 << 16) | (packet.packet_id as u32),
         };
         
+        info!("Processing packet: id={}, frequency={:?}, key={}", packet.packet_id, packet.frequency, packet_key);
+        
         let handlers = self.handlers.read().await;
         
         if let Some(handler) = handlers.get(&packet_key) {
-            debug!("Handling packet type {} with {}", packet_key, handler.name());
+            info!("Handling packet type {} with {}", packet_key, handler.name());
             handler.handle(packet, context).await
         } else {
-            warn!("No handler registered for packet type {}", packet_key);
+            warn!("No handler registered for packet type {} (id={}, frequency={:?})", packet_key, packet.packet_id, packet.frequency);
             // Don't return an error for unhandled packets - just ignore them
             Ok(())
         }
@@ -147,7 +151,21 @@ impl PacketHandlerRegistry {
         self.register_typed(login_handlers::RegionHandshakeHandler::new()).await;
         self.register_typed(agent_handlers::PacketAckHandler::new()).await;
         
-        debug!("Initialized {} default packet handlers", self.handler_count().await);
+        // Register the critical handlers for auth handshake
+        self.register_typed(login_handlers::StartPingCheckHandler::new()).await;
+        self.register_typed(login_handlers::ObjectUpdateHandler::new()).await;
+        self.register_typed(login_handlers::LayerDataHandler::new()).await;
+        self.register_typed(login_handlers::CoarseLocationUpdateHandler::new()).await;
+        
+        // Register additional essential handlers
+        self.register_typed(login_handlers::EconomyDataHandler::new()).await;
+        self.register_typed(login_handlers::UUIDNameReplyHandler::new()).await;
+        self.register_typed(login_handlers::EnableSimulatorHandler::new()).await;
+        
+        // Register the CRITICAL handler for completing handshake
+        self.register_typed(login_handlers::AgentMovementCompleteHandler::new()).await;
+        
+        info!("Initialized {} default packet handlers", self.handler_count().await);
     }
 }
 
@@ -177,14 +195,15 @@ impl PacketProcessor {
         &self,
         mut packet_rx: tokio::sync::mpsc::UnboundedReceiver<(PacketWrapper, HandlerContext)>,
     ) {
-        debug!("Starting packet processor");
+        info!("Starting packet processor");
         
         while let Some((packet, context)) = packet_rx.recv().await {
+            info!("Packet processor received packet: id={}, frequency={:?}", packet.packet_id, packet.frequency);
             if let Err(e) = self.process_packet(packet, context).await {
                 warn!("Error processing packet: {}", e);
             }
         }
         
-        debug!("Packet processor stopped");
+        info!("Packet processor stopped");
     }
 }

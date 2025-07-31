@@ -6,14 +6,16 @@
 mod grid;
 mod login;
 mod session;
+mod types;
 mod xmlrpc;
 
 pub use grid::{Grid, available_grids};
 pub use login::{AuthenticationService, LoginCredentials};
 pub use session::{SessionInfo, SessionManager};
+pub use types::*;
 
 // Re-export for convenience
-pub use xmlrpc::{XmlRpcClient, LoginParameters, LoginResponse};
+pub use xmlrpc::{XmlRpcClient, LoginParameters};
 
 #[cfg(test)]
 mod tests {
@@ -67,7 +69,7 @@ mod tests {
             last_name: "User".to_string(),
             circuit_code: 12345,
             simulator_address: "127.0.0.1:9000".parse().unwrap(),
-            look_at: [1.0, 0.0, 0.0],
+            look_at: crate::utils::math::Vector3::new(1.0, 0.0, 0.0).to_array(),
             start_location: "last".to_string(),
         };
 
@@ -79,3 +81,6 @@ mod tests {
         assert!(!manager.is_logged_in());
     }
 }
+
+#[cfg(test)]
+mod comprehensive_tests;

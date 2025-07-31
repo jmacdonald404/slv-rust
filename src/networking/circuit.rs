@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio::time::timeout;
+use tracing::{debug, warn, info};
 use uuid::Uuid;
 
 /// Circuit options for connecting to a simulator
@@ -266,6 +267,9 @@ impl Circuit {
         let mut serializer = self.serializer.lock().await;
         let (data, sequence) = serializer.serialize(packet, true)?;
         
+        info!("Sending reliable packet: {} bytes, sequence {}, to {}", 
+              data.len(), sequence, self.options.address);
+        
         // Create packet wrapper for acknowledgment tracking
         let wrapper = PacketWrapper::new(packet, Some(true))?;
         
@@ -283,7 +287,10 @@ impl Circuit {
         
         // Wait for acknowledgment with timeout
         match timeout(timeout_duration, resolve_rx).await {
-            Ok(Ok(())) => Ok(()),
+            Ok(Ok(())) => {
+                info!("Reliable packet acknowledged: sequence {}", sequence);
+                Ok(())
+            },
             Ok(Err(_)) => Err(NetworkError::HandshakeTimeout),
             Err(_) => Err(NetworkError::HandshakeTimeout),
         }
@@ -297,7 +304,6 @@ impl Circuit {
         }
         
         // Start background tasks
-        self.start_packet_processor().await;
         self.start_retry_handler().await;
         self.start_ack_sender().await;
         
@@ -318,11 +324,8 @@ impl Circuit {
         if *self.state.read().await == CircuitState::Connected {
             use crate::networking::packets::generated::*;
             let logout = LogoutRequest {
-                agent_data: AgentDataBlock {
-                    agent_id: self.options.agent_id,
-                    session_id: self.options.session_id,
-                    circuit_code: self.options.circuit_code,
-                },
+                agent_id: self.options.agent_id,
+                session_id: self.options.session_id,
             };
             let _ = self.send_reliable(&logout, Duration::from_secs(5)).await;
         }
@@ -339,39 +342,6 @@ impl Circuit {
         Ok(())
     }
     
-    /// Start packet processing task
-    async fn start_packet_processor(&self) {
-        let packet_rx = Arc::clone(&self.packet_rx);
-        let deserializer = Arc::clone(&self.deserializer);
-        let acknowledger = Arc::clone(&self.acknowledger);
-        let event_tx = self.event_tx.clone();
-        let state = Arc::clone(&self.state);
-        
-        tokio::spawn(async move {
-            let mut rx = packet_rx.lock().await;
-            
-            while let Some(wrapper) = rx.recv().await {
-                // Check if circuit is still active
-                if *state.read().await == CircuitState::Disconnected {
-                    break;
-                }
-                
-                // Handle reliable packet acknowledgment
-                if wrapper.reliable {
-                    let mut ack = acknowledger.lock().await;
-                    if ack.is_sequence_new(wrapper.sequence) {
-                        ack.queue_ack(wrapper.sequence);
-                    } else {
-                        // Duplicate packet - ignore
-                        continue;
-                    }
-                }
-                
-                // Emit packet received event
-                let _ = event_tx.send(CircuitEvent::PacketReceived { packet: wrapper });
-            }
-        });
-    }
     
     /// Start retry handler task
     async fn start_retry_handler(&self) {
@@ -442,7 +412,7 @@ impl Circuit {
                     
                     let packet_ack = PacketAck {
                         packets: acks.into_iter()
-                            .map(|id| PacketAckPacketsBlock { id })
+                            .map(|id| PacketsBlock { id })
                             .collect(),
                     };
                     
@@ -461,5 +431,36 @@ impl Circuit {
         for packet_block in &ack_packet.packets {
             ack.handle_ack(packet_block.id);
         }
+    }
+    
+    /// Inject a packet received from the transport layer (like homunculus circuit.receive)
+    pub async fn inject_packet(&self, packet: PacketWrapper) -> NetworkResult<()> {
+        // Following homunculus circuit.receive pattern (lines 107-120)
+        
+        info!("Circuit {} received packet: id={}, frequency={:?}, reliable={}", 
+              self.options.address, packet.packet_id, packet.frequency, packet.reliable);
+        
+        // Handle reliable packets - queue acknowledgment if new
+        if packet.reliable {
+            let mut ack = self.acknowledger.lock().await;
+            if !ack.is_sequence_new(packet.sequence) {
+                // Ignore packets we've already seen (like homunculus line 110)
+                info!("Ignoring duplicate reliable packet with sequence {}", packet.sequence);
+                return Ok(());
+            }
+            ack.queue_ack(packet.sequence);
+        }
+        
+        // Handle acknowledgments embedded in this packet (like homunculus lines 116-120)
+        // Note: In SL protocol, packets can carry acknowledgments for other packets
+        // This is critical for resolving pending reliable packet promises
+        
+        // Check if this packet contains acknowledgments
+        // For now, we'll handle PacketAck packets through the event system
+        // but we should also check for embedded acks in packet headers
+        
+        // Emit packet received event - this will trigger the handlers
+        let _ = self.event_tx.send(CircuitEvent::PacketReceived { packet });
+        Ok(())
     }
 }

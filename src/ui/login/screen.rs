@@ -37,7 +37,7 @@ fn show_login_form(ui: &mut egui::Ui, ui_state: &mut UiState) {
         // Username field with validation
         let username_error = validate_username(&ui_state.login_state.username);
         let mut username_field = FormField::new("Username:", &mut ui_state.login_state.username)
-            .placeholder("FirstName LastName");
+            .placeholder("FirstName, FirstName.LastName, or FirstName LastName");
         
         if let Some(error) = username_error {
             username_field = username_field.validation_error(error);
@@ -130,10 +130,25 @@ fn validate_username(username: &str) -> Option<&'static str> {
         return None; // Don't show error for empty field
     }
     
-    if !username.contains(' ') {
-        return Some("Username must be in format 'FirstName LastName'");
+    let trimmed = username.trim();
+    
+    // Check for valid characters (letters, numbers, spaces, periods)
+    if !trimmed.chars().all(|c| c.is_alphanumeric() || c == ' ' || c == '.') {
+        return Some("Username can only contain letters, numbers, spaces, and periods");
     }
     
+    // Don't allow multiple consecutive spaces or periods
+    if trimmed.contains("  ") || trimmed.contains("..") {
+        return Some("Username cannot contain consecutive spaces or periods");
+    }
+    
+    // Don't allow starting or ending with space or period
+    if trimmed.starts_with(' ') || trimmed.ends_with(' ') || 
+       trimmed.starts_with('.') || trimmed.ends_with('.') {
+        return Some("Username cannot start or end with spaces or periods");
+    }
+    
+    // All formats are valid: firstname, firstname.lastname, firstname lastname
     None
 }
 

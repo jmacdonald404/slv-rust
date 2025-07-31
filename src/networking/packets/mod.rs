@@ -33,7 +33,7 @@ pub enum PacketFrequency {
 /// while maintaining exact protocol compatibility with the official viewer.
 pub trait Packet: Serialize + for<'de> Deserialize<'de> + Debug + Clone + Send + Sync {
     /// Unique packet identifier within its frequency range
-    const ID: u16;
+    const ID: u32;
     
     /// Packet frequency (determines message ID encoding)
     const FREQUENCY: PacketFrequency;
@@ -82,7 +82,7 @@ impl PacketWrapper {
             data,
             reliable: reliable.unwrap_or(P::RELIABLE),
             sequence: 0, // Will be set by circuit
-            packet_id: P::ID,
+            packet_id: P::ID as u16,
             frequency: P::FREQUENCY,
         })
     }
@@ -134,7 +134,7 @@ fn register_packet<P: Packet>(registry: &mut HashMap<u32, PacketInfo>) {
     let key = P::lookup_key();
     let info = PacketInfo {
         name: P::name(),
-        id: P::ID,
+        id: P::ID as u16,
         frequency: P::FREQUENCY,
         reliable: P::RELIABLE,
         zerocoded: P::ZEROCODED,

@@ -132,7 +132,7 @@ where
         // Try to deserialize the packet to the expected type
         // In a real implementation, this would use proper packet deserialization
         // For now, we'll just check the packet ID
-        if packet.packet_id == P::ID {
+        if packet.packet_id as u32 == P::ID {
             // This is a simplified approach - in reality we'd deserialize the packet data
             // let typed_packet = deserialize_packet::<P>(&packet.data)?;
             // For now, create a default instance (this is not ideal but shows the pattern)
@@ -150,7 +150,7 @@ where
     }
     
     fn should_handle(&self, packet: &PacketWrapper, context: &HandlerContext) -> bool {
-        packet.packet_id == P::ID
+        packet.packet_id as u32 == P::ID
     }
     
     fn name(&self) -> &'static str {
@@ -182,7 +182,7 @@ impl Clone for HandlerConfig {
 #[derive(Debug)]
 pub struct HandlerRegistry {
     /// Handlers by packet ID
-    handlers: RwLock<HashMap<u16, Vec<HandlerConfig>>>,
+    handlers: RwLock<HashMap<u32, Vec<HandlerConfig>>>,
     /// Global handlers (process all packets)
     global_handlers: RwLock<Vec<HandlerConfig>>,
 }
@@ -222,7 +222,7 @@ impl HandlerRegistry {
     }
     
     /// Register a raw packet handler
-    pub async fn register_raw_handler<H>(&self, packet_id: u16, handler: H)
+    pub async fn register_raw_handler<H>(&self, packet_id: u32, handler: H)
     where
         H: PacketHandler + Clone + 'static,
     {
@@ -265,7 +265,7 @@ impl HandlerRegistry {
     
     /// Process a packet through all relevant handlers
     pub async fn process_packet(&self, packet: &PacketWrapper, context: &HandlerContext) -> NetworkResult<()> {
-        let packet_id = packet.packet_id;
+        let packet_id = packet.packet_id as u32;
         
         // Get handlers for this packet type
         let handlers = {

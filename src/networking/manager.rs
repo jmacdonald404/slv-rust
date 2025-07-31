@@ -162,7 +162,9 @@ impl NetworkManager {
         
         // Create circuit
         let address = options.address;
-        let circuit = core.connect_circuit(options).await?;
+        // Create handshake channel
+        let (handshake_tx, _handshake_rx) = tokio::sync::mpsc::channel(100);
+        let circuit = core.connect_circuit(options, handshake_tx).await?;
         
         // Store in circuits map
         {

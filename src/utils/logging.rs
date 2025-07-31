@@ -43,7 +43,7 @@ pub fn init_logging() {
             filter = filter.add_directive("slv_rust=debug".parse().unwrap());
             
             // Add filters for winit and other dependencies
-            filter = filter.add_directive("winit=debug".parse().unwrap());
+            // filter = filter.add_directive("winit=debug".parse().unwrap());
             filter = filter.add_directive("pollster=debug".parse().unwrap());
             
             filter

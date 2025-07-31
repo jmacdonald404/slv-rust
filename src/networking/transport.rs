@@ -11,7 +11,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, warn, info};
 
 /// SOCKS5 proxy configuration
 #[derive(Debug, Clone)]
@@ -64,8 +64,8 @@ pub struct UdpTransport {
     send_tx: mpsc::UnboundedSender<(Bytes, SocketAddr)>,
     send_rx: Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<(Bytes, SocketAddr)>>>,
     
-    /// Channel for receiving packets
-    recv_tx: mpsc::UnboundedSender<PacketWrapper>,
+    /// Callback for receiving packets (called directly like homunculus)
+    packet_callback: Arc<tokio::sync::RwLock<Option<Box<dyn Fn(PacketWrapper, SocketAddr) + Send + Sync>>>>,
     
     /// Local socket address
     local_addr: SocketAddr,
@@ -81,14 +81,13 @@ impl UdpTransport {
         // Note: Socket buffer configuration not available on tokio::net::UdpSocket
         // This would require using socket2 crate for more advanced socket options
         
-        debug!("UDP transport bound to {}", local_addr);
+        info!("UDP transport bound to {}", local_addr);
         
         let socket = Arc::new(socket);
         let deserializer = Arc::new(PacketDeserializer::new());
         
         // Create channels
         let (send_tx, send_rx) = mpsc::unbounded_channel();
-        let (recv_tx, _) = mpsc::unbounded_channel();
         
         Ok(Self {
             socket,
@@ -96,7 +95,7 @@ impl UdpTransport {
             deserializer,
             send_tx,
             send_rx: Arc::new(tokio::sync::Mutex::new(send_rx)),
-            recv_tx,
+            packet_callback: Arc::new(tokio::sync::RwLock::new(None)),
             local_addr,
         })
     }
@@ -111,12 +110,13 @@ impl UdpTransport {
         self.send_tx.clone()
     }
     
-    /// Get receiver for incoming packets
-    pub fn get_receiver(&self) -> mpsc::UnboundedReceiver<PacketWrapper> {
-        let (tx, rx) = mpsc::unbounded_channel();
-        // Replace the internal receiver
-        // Note: In a real implementation, you'd want a way to manage multiple receivers
-        rx
+    /// Set packet callback (called when packets are received, like homunculus)
+    pub async fn set_packet_callback<F>(&self, callback: F) 
+    where 
+        F: Fn(PacketWrapper, SocketAddr) + Send + Sync + 'static
+    {
+        let mut cb = self.packet_callback.write().await;
+        *cb = Some(Box::new(callback));
     }
     
     /// Start the transport (begin processing packets)
@@ -125,12 +125,13 @@ impl UdpTransport {
         self.start_packet_sender().await;
         self.start_packet_receiver().await;
         
-        debug!("UDP transport started on {}", self.local_addr);
+        info!("UDP transport started on {}", self.local_addr);
         Ok(())
     }
     
     /// Send a packet directly
     pub async fn send_packet(&self, data: Bytes, dest: SocketAddr) -> NetworkResult<()> {
+        info!("Transport sending {} bytes to {}", data.len(), dest);
         if let Some(ref proxy) = self.config.proxy {
             self.send_via_proxy(data, dest, proxy).await
         } else {
@@ -151,7 +152,7 @@ impl UdpTransport {
             );
         }
         
-        debug!("Sent {} bytes to {}", bytes_sent, dest);
+        info!("Sent {} bytes to {}", bytes_sent, dest);
         Ok(())
     }
     
@@ -199,7 +200,7 @@ impl UdpTransport {
     async fn start_packet_receiver(&self) {
         let socket = Arc::clone(&self.socket);
         let deserializer = Arc::clone(&self.deserializer);
-        let recv_tx = self.recv_tx.clone();
+        let packet_callback = Arc::clone(&self.packet_callback);
         let max_packet_size = self.config.max_packet_size;
         
         tokio::spawn(async move {
@@ -208,14 +209,27 @@ impl UdpTransport {
             loop {
                 match socket.recv_from(&mut buffer).await {
                     Ok((len, src)) => {
-                        debug!("Received {} bytes from {}", len, src);
+                        info!("Received {} bytes from {}", len, src);
+                        
+                        // Debug: log first few bytes
+                        if len > 0 {
+                            let hex_data: String = buffer[..std::cmp::min(len, 16)]
+                                .iter()
+                                .map(|b| format!("{:02x}", b))
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            info!("First 16 bytes: {}", hex_data);
+                        }
                         
                         // Parse the packet
                         match deserializer.parse_raw(&buffer[..len]) {
                             Ok(packet_wrapper) => {
-                                if let Err(_) = recv_tx.send(packet_wrapper) {
-                                    // Receiver dropped - exit
-                                    break;
+                                info!("Successfully parsed packet: id={}, frequency={:?}, reliable={}", 
+                                      packet_wrapper.packet_id, packet_wrapper.frequency, packet_wrapper.reliable);
+                                // Call the callback directly (like homunculus socket.receive)
+                                let cb_guard = packet_callback.read().await;
+                                if let Some(ref callback) = *cb_guard {
+                                    callback(packet_wrapper, src);
                                 }
                             }
                             Err(e) => {
@@ -236,7 +250,7 @@ impl UdpTransport {
                 }
             }
             
-            debug!("UDP receiver task exiting");
+            info!("UDP receiver task exiting");
         });
     }
     

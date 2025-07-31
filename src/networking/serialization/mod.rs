@@ -7,6 +7,7 @@ use crate::networking::{NetworkError, NetworkResult};
 use crate::networking::packets::{Packet, PacketFrequency, PacketWrapper};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use std::collections::HashMap;
+use tracing::info;
 
 pub mod packet_buffer;
 pub mod zerocode;
@@ -55,7 +56,7 @@ impl PacketSerializer {
         
         // Build header
         let sequence = self.next_sequence();
-        self.write_header(&mut buffer, P::ID, P::FREQUENCY, reliable, P::ZEROCODED, sequence);
+        self.write_header(&mut buffer, P::ID.try_into().unwrap(), P::FREQUENCY, reliable, P::ZEROCODED, sequence);
         
         // Append packet data
         buffer.extend_from_slice(&final_data);
@@ -197,8 +198,13 @@ impl PacketDeserializer {
         let reliable = (flags & ACK_FLAG) != 0;
         let zerocoded = (flags & ZEROCODED_FLAG) != 0;
         
+        info!("Parsing packet: flags=0x{:02x}, sequence={}, reliable={}, zerocoded={}", 
+               flags, sequence, reliable, zerocoded);
+        
         // Parse message ID and determine frequency
         let (packet_id, frequency) = self.parse_message_id(&mut buffer)?;
+        
+        info!("Parsed message ID: {} ({:?})", packet_id, frequency);
         
         // Get remaining packet data
         let mut packet_data = buffer.remaining_bytes().to_vec();
@@ -248,7 +254,7 @@ impl PacketDeserializer {
     /// Deserialize a PacketWrapper into a specific packet type
     pub fn deserialize<P: Packet>(&self, wrapper: &PacketWrapper) -> NetworkResult<P> {
         // Verify packet type matches
-        if wrapper.packet_id != P::ID || wrapper.frequency != P::FREQUENCY {
+        if u32::from(wrapper.packet_id) != P::ID || wrapper.frequency != P::FREQUENCY {
             return Err(NetworkError::PacketDecode {
                 reason: format!(
                     "Packet type mismatch: expected {}:{:?}, got {}:{:?}",

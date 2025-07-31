@@ -1,6 +1,8 @@
 use uuid::Uuid;
 use std::net::SocketAddr;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use crate::utils::math::Vector3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionInfo {
@@ -11,8 +13,10 @@ pub struct SessionInfo {
     pub last_name: String,
     pub circuit_code: u32,
     pub simulator_address: SocketAddr,
-    pub look_at: [f32; 3],
+    pub look_at: Vector3,
     pub start_location: String,
+    pub seed_capability: Option<String>,
+    pub capabilities: Option<HashMap<String, String>>,
 }
 
 impl SessionInfo {

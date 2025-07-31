@@ -43,11 +43,26 @@ pub enum NetworkError {
     #[error("Handshake timeout")]
     HandshakeTimeout,
     
+    #[error("Handshake failed: {reason}")]
+    HandshakeFailed { reason: String },
+    
     #[error("Authentication failed: {reason}")]
     AuthenticationFailed { reason: String },
     
+    #[error("Login server rejected credentials: {reason}")]
+    LoginRejected { reason: String },
+    
+    #[error("Simulator connection failed: {reason}")]
+    SimulatorConnectionFailed { reason: String },
+    
+    #[error("Region handshake failed: {reason}")]
+    RegionHandshakeFailed { reason: String },
+    
     #[error("Transport error: {reason}")]
     Transport { reason: String },
+
+    #[error("{reason}")]
+    Other { reason: String },
 }
 
 pub type NetworkResult<T> = Result<T, NetworkError>;
