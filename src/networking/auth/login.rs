@@ -331,6 +331,11 @@ impl AuthenticationService {
         client.connect(session.simulator_address, session.circuit_code).await?;
         
         // Step 6: Store credentials in keychain after successful connection
+        tracing::info!("About to store credentials in keychain...");
+        
+        // Run keychain test first
+        super::keychain_test::test_keychain();
+        
         if let Err(e) = self.credential_store.store_credentials(credentials) {
             tracing::warn!("Failed to store credentials in keychain: {}", e);
             // Don't fail the login if keychain storage fails

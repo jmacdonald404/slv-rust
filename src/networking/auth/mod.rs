@@ -5,6 +5,7 @@
 
 mod grid;
 mod keychain;
+mod keychain_test;
 mod login;
 mod session;
 mod types;
@@ -12,6 +13,7 @@ mod xmlrpc;
 
 pub use grid::{Grid, available_grids};
 pub use keychain::CredentialStore;
+pub use keychain_test::test_keychain;
 pub use login::{AuthenticationService, LoginCredentials};
 pub use session::{SessionInfo, SessionManager};
 pub use types::*;
