@@ -289,7 +289,21 @@ impl AuthenticationService {
             }
         }
         
-        // Step 2: Create session info
+        // Step 2: Store credentials in keychain after successful XML-RPC login
+        tracing::info!("Login successful, storing credentials in keychain...");
+        
+        // Run keychain test first
+        super::keychain_test::test_keychain();
+        
+        if let Err(e) = self.credential_store.store_credentials(credentials) {
+            tracing::warn!("Failed to store credentials in keychain: {}", e);
+            // Don't fail the login if keychain storage fails
+        } else {
+            tracing::info!("Successfully stored credentials in keychain for grid {}", 
+                          credentials.grid.name());
+        }
+
+        // Step 3: Create session info
         let simulator_address = login_response.simulator_address()
             .map_err(|e| {
                 let error_msg = format!("Invalid simulator address: {}", e);
@@ -315,10 +329,10 @@ impl AuthenticationService {
             },
         };
         
-        // Step 3: Start session
+        // Step 4: Start session
         self.session_manager.start_session(session.clone());
         
-        // Step 4: Create networking client
+        // Step 5: Create networking client
         let config = ClientConfig {
             agent_id: session.agent_id,
             session_id: session.session_id,
@@ -327,22 +341,8 @@ impl AuthenticationService {
         
         let client = Client::new(config, session.clone()).await?;
         
-        // Step 5: Connect to simulator
+        // Step 6: Connect to simulator
         client.connect(session.simulator_address, session.circuit_code).await?;
-        
-        // Step 6: Store credentials in keychain after successful connection
-        tracing::info!("About to store credentials in keychain...");
-        
-        // Run keychain test first
-        super::keychain_test::test_keychain();
-        
-        if let Err(e) = self.credential_store.store_credentials(credentials) {
-            tracing::warn!("Failed to store credentials in keychain: {}", e);
-            // Don't fail the login if keychain storage fails
-        } else {
-            tracing::info!("Successfully stored credentials in keychain for grid {}", 
-                          credentials.grid.name());
-        }
         
         Ok(client)
     }
