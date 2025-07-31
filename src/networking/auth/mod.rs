@@ -4,12 +4,14 @@
 //! using XML-RPC protocol, session management, and grid configuration.
 
 mod grid;
+mod keychain;
 mod login;
 mod session;
 mod types;
 mod xmlrpc;
 
 pub use grid::{Grid, available_grids};
+pub use keychain::CredentialStore;
 pub use login::{AuthenticationService, LoginCredentials};
 pub use session::{SessionInfo, SessionManager};
 pub use types::*;

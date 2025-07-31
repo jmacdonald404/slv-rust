@@ -1,4 +1,4 @@
-use super::{Grid, SessionInfo, SessionManager};
+use super::{Grid, SessionInfo, SessionManager, CredentialStore};
 use super::xmlrpc::{XmlRpcClient, LoginParameters};
 use crate::networking::{NetworkError, NetworkResult};
 use crate::networking::client::{Client, ClientConfig};
@@ -90,6 +90,7 @@ impl LoginCredentials {
 pub struct AuthenticationService {
     session_manager: SessionManager,
     xmlrpc_client: XmlRpcClient,
+    credential_store: CredentialStore,
 }
 
 impl AuthenticationService {
@@ -97,6 +98,7 @@ impl AuthenticationService {
         Self {
             session_manager: SessionManager::new(),
             xmlrpc_client: XmlRpcClient::new(),
+            credential_store: CredentialStore::new(),
         }
     }
 
@@ -328,6 +330,15 @@ impl AuthenticationService {
         // Step 5: Connect to simulator
         client.connect(session.simulator_address, session.circuit_code).await?;
         
+        // Step 6: Store credentials in keychain after successful connection
+        if let Err(e) = self.credential_store.store_credentials(credentials) {
+            tracing::warn!("Failed to store credentials in keychain: {}", e);
+            // Don't fail the login if keychain storage fails
+        } else {
+            tracing::info!("Successfully stored credentials in keychain for grid {}", 
+                          credentials.grid.name());
+        }
+        
         Ok(client)
     }
     
@@ -341,6 +352,33 @@ impl AuthenticationService {
     
     pub fn is_logged_in(&self) -> bool {
         self.session_manager.is_logged_in()
+    }
+
+    pub fn has_stored_credentials(&self, grid_name: &str) -> bool {
+        self.credential_store.has_stored_credentials(grid_name)
+    }
+
+    pub fn load_stored_credentials(&self, grid_name: &str) -> Option<LoginCredentials> {
+        match self.credential_store.load_credentials(grid_name) {
+            Ok(credentials) => credentials,
+            Err(e) => {
+                tracing::warn!("Failed to load stored credentials for grid {}: {}", grid_name, e);
+                None
+            }
+        }
+    }
+
+    pub fn delete_stored_credentials(&self, grid_name: &str) -> bool {
+        match self.credential_store.delete_credentials(grid_name) {
+            Ok(()) => {
+                tracing::info!("Successfully deleted stored credentials for grid {}", grid_name);
+                true
+            }
+            Err(e) => {
+                tracing::warn!("Failed to delete stored credentials for grid {}: {}", grid_name, e);
+                false
+            }
+        }
     }
     
     async fn authenticate_with_login_server(&self, credentials: &LoginCredentials) -> NetworkResult<super::LoginResponse> {

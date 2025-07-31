@@ -15,6 +15,18 @@ example.txt
 homunculus/
 jeffnote.md
 
+# Security: Never commit credential files
+*.credentials
+*.keychain
+*.keyring
+*.password
+*credentials.txt
+*passwords.txt
+auth_config.json
+login_config.json
+.credentials/
+credentials/
+
 
 
 
