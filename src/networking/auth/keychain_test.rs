@@ -32,10 +32,13 @@ pub fn test_keychain() {
             }
             
             // Clean up
-            if store.delete_stored_credentials("second life") {
-                println!("✅ Successfully deleted test credentials");
-            } else {
-                println!("❌ Failed to delete test credentials");
+            match store.delete_credentials("second life") {
+                Ok(()) => {
+                    println!("✅ Successfully deleted test credentials");
+                }
+                Err(e) => {
+                    println!("❌ Failed to delete test credentials: {}", e);
+                }
             }
         }
         Err(e) => {
