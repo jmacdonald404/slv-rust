@@ -101,8 +101,8 @@ impl CredentialStore {
         let username_entry = Entry::new(&self.service_name, &username_key)?;
         let password_entry = Entry::new(&self.service_name, &password_key)?;
         
-        let username_result = username_entry.delete_password();
-        let password_result = password_entry.delete_password();
+        let username_result = username_entry.delete_credential();
+        let password_result = password_entry.delete_credential();
         
         match (username_result, password_result) {
             (Ok(()), Ok(())) => {
