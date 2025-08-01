@@ -6,7 +6,7 @@
 
 ## Context
 
-The SecondLife protocol is built on top of UDP, which provides low-latency communication but lacks the reliability and connection management features of TCP. A key architectural decision for `slv-rust` is how to handle the transport layer for SecondLife's UDP-based protocol. We need a solution that is performant, reliable, and provides modern features like encryption and congestion control.
+The SecondLife protocol is built on top of UDP, which provides low-latency communication but lacks the reliability and connection management features of TCP. A key architectural decision for `slv-rust` is how to handle the transport layer for SecondLife's UDP-based protocol. We need a solution that is performant, reliable, and provides modern features like encryption and congestion control. For a detailed technical analysis of the Second Life protocol, refer to `secondlife-protocol-technical-analysis.md`.
 
 The options are:
 1.  Implement a custom reliability layer on top of raw UDP.

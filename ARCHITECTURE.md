@@ -34,7 +34,7 @@ We use a multi-threaded architecture to separate concerns and maximize throughpu
 
 ## 3. Networking Layer: SecondLife Protocol Compliance
 
-The networking layer is designed as a self-contained, modular component that communicates with the rest of the application via asynchronous channels. **CRITICAL**: All implementations must reference `homunculus/` and `hippolyzer/` as authoritative examples.
+The networking layer is designed as a self-contained, modular component that communicates with the rest of the application via asynchronous channels. **CRITICAL**: All implementations must reference `homunculus/` and `hippolyzer/` as authoritative examples. For a detailed technical analysis of the Second Life protocol, refer to `secondlife-protocol-technical-analysis.md`.
 
 ### 3.1 File Organization (Separation of Concerns)
 ```

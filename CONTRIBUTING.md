@@ -35,7 +35,7 @@ If you're new to the project, a great place to start is by looking at the [open 
 - **Clear module boundaries**: Use `mod.rs` files only for exports, never for implementation
 
 ### SecondLife Protocol Compliance
-- **Reference implementations**: Always consult `homunculus/` (TypeScript) and `hippolyzer/` (Python) before implementing networking features
+- **Reference implementations**: Always consult `homunculus/` (TypeScript) and `hippolyzer/` (Python) before implementing networking features. For a comprehensive understanding of the protocol, refer to `secondlife-protocol-technical-analysis.md`.
 - **Message format adherence**: Use `message_template.msg` as the canonical source for all protocol messages
 - **Authentication**: Follow XML-RPC patterns from `homunculus/packages/homunculus-core/src/network/authenticator.ts`
 

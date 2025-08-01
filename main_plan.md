@@ -1,6 +1,6 @@
 # Networking Layer Implementation Plan
 
-This document outlines the high-level plan to complete the networking layer for the `slv-rust` viewer. The core principle of this plan is to build a robust, maintainable, and accurate implementation by using the `message_template.msg` file as the single source of truth for the Second Life protocol.
+This document outlines the high-level plan to complete the networking layer for the `slv-rust` viewer. The core principle of this plan is to build a robust, maintainable, and accurate implementation by using the `message_template.msg` file as the single source of truth for the Second Life protocol. For a detailed technical analysis of the Second Life protocol, refer to `secondlife-protocol-technical-analysis.md`.
 
 The implementation is broken down into five major phases, each with its own detailed plan.
 

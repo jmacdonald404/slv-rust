@@ -9,7 +9,7 @@
 The `slv-rust` project aims to be a modern, performant, and cross-platform SecondLife viewer. The choice of core technologies for networking, rendering, and UI is critical to achieving these goals. The decision must consider the trade-offs between performance, safety, community support, and development velocity.
 
 The primary requirements are:
--   **Networking**: High-performance, asynchronous I/O to handle the real-time nature of SecondLife's UDP-based protocol.
+-   **Networking**: High-performance, asynchronous I/O to handle the real-time nature of SecondLife's UDP-based protocol. For a detailed technical analysis of the Second Life protocol, refer to `secondlife-protocol-technical-analysis.md`.
 -   **Rendering**: A modern graphics API that can target multiple platforms (Windows, macOS, Linux) and provides good performance.
 -   **UI**: A flexible and easy-to-use UI framework for building the complex user interface of a SecondLife viewer.
 

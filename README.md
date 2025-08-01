@@ -294,6 +294,7 @@ environment_volume = 0.9
 This project's architecture and development are guided by a set of core documents that outline our technical strategy, design principles, and implementation plan.
 
 -   **[`ARCHITECTURE.md`](./ARCHITECTURE.md):** The canonical source for the project's software architecture, including our Data-Oriented Design philosophy, concurrency model, and the design of the rendering and networking pipelines.
+-   **[`secondlife-protocol-technical-analysis.md`](./secondlife-protocol-technical-analysis.md):** A detailed technical analysis of the Second Life protocol architecture, covering its hybrid design, communication protocols, and server-side ecosystem.
 -   **[`main_plan.md`](./main_plan.md):** The high-level implementation plan for the networking layer, broken down into five distinct phases.
 -   **[`perf.md`](./perf.md):** A detailed expert report on the viability and implementation strategy for achieving a high-performance, Rust-based virtual world viewer. It covers the foundational architecture, rendering pipeline, and advanced asset handling strategies.
 -   **[`docs/adr`](./docs/adr):** A collection of Architecture Decision Records (ADRs) for specific, important technical decisions.
