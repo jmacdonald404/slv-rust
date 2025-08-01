@@ -102,7 +102,7 @@ impl Default for ClientConfig {
             session_id: Uuid::new_v4(),
             default_timeout: std::time::Duration::from_secs(30),
             session_info: None,
-            prefer_quic: true, // ADR-0002: Use QUIC as primary transport
+            prefer_quic: false, // Use UDP to match SL protocol specification (custom reliable UDP)
         }
     }
 }
@@ -254,17 +254,51 @@ impl Client {
         Ok(client)
     }
     
-    /// Create a new client with Hippolyzer proxy configuration
+    /// Create a new client with Hippolyzer proxy configuration (auto-detects proxy mode)
     pub async fn new_with_hippolyzer_proxy(mut config: ClientConfig, session_info: SessionInfo) -> NetworkResult<Self> {
+        use crate::networking::proxy::{ProxyConfig, ProxyMode};
+        
+        // Configure for Hippolyzer with auto-detected proxy mode
+        let proxy_config = ProxyConfig::hippolyzer_default();
+        let mode = &proxy_config.mode;
+        
+        info!("🔧 Creating client with Hippolyzer proxy support");
+        info!("   SOCKS5 proxy: 127.0.0.1:9061");
+        info!("   HTTP proxy: 127.0.0.1:9062");
+        info!("   Detected proxy mode: {:?}", mode);
+        
+        match mode {
+            ProxyMode::WinHippoAutoProxy => {
+                info!("🔧 Using WinHippoAutoProxy transparent mode");
+                info!("   📋 Make sure WinHippoAutoProxy is running before connecting");
+                info!("   📋 Download from: https://github.com/SaladDais/WinHippoAutoProxy");
+            }
+            ProxyMode::ManualSocks5 => {
+                info!("🔧 Using manual SOCKS5 implementation");
+                info!("   📋 Application will handle SOCKS5 protocol directly");
+            }
+            ProxyMode::Direct => {
+                info!("🔧 No proxy configured - using direct connection");
+            }
+        }
+        
+        config.transport.proxy = Some(proxy_config);
+        Self::new(config, session_info).await
+    }
+    
+    /// Create a new client with Hippolyzer proxy using a specific proxy mode
+    pub async fn new_with_hippolyzer_proxy_mode(mut config: ClientConfig, session_info: SessionInfo, mode: crate::networking::proxy::ProxyMode) -> NetworkResult<Self> {
         use crate::networking::proxy::ProxyConfig;
         
-        // Configure for Hippolyzer default ports
-        config.transport.proxy = Some(ProxyConfig::hippolyzer_default());
+        // Configure for Hippolyzer with forced proxy mode
+        let proxy_config = ProxyConfig::hippolyzer_with_mode(mode.clone());
         
-        info!("Creating client with Hippolyzer proxy support");
-        info!("SOCKS5 proxy: 127.0.0.1:9061");
-        info!("HTTP proxy: 127.0.0.1:9062");
+        info!("🔧 Creating client with Hippolyzer proxy support (forced mode)");
+        info!("   SOCKS5 proxy: 127.0.0.1:9061");
+        info!("   HTTP proxy: 127.0.0.1:9062");
+        info!("   Forced proxy mode: {:?}", mode);
         
+        config.transport.proxy = Some(proxy_config);
         Self::new(config, session_info).await
     }
     
@@ -544,34 +578,9 @@ impl Client {
         circuit.send_reliable(&uuid_name_request, self.config.default_timeout).await?;
         info!("Sent UUIDNameRequest");
         
-        // Step 4: Send AgentThrottle - CRITICAL for receiving server data
-        // Bandwidth allocation based on homunculus reference (500KB total)
-        let throttles = vec![
-            50_000u32,  // resend (10% of 500KB)
-            86_000u32,  // land/terrain (17.2%)  
-            25_000u32,  // wind (5%)
-            25_000u32,  // cloud (5%)
-            117_000u32, // task/objects (23.4%)
-            117_000u32, // texture (23.4%) 
-            80_000u32,  // asset (16%)
-        ];
-        
-        let throttle_bytes: Vec<u8> = throttles.iter()
-            .flat_map(|&x| x.to_le_bytes())
-            .collect();
-        
-        let agent_throttle = AgentThrottle {
-            agent_id: self.session_info.agent_id,
-            session_id: self.session_info.session_id,
-            circuit_code: circuit.circuit_code(),
-            gen_counter: 0,
-            throttles: crate::networking::packets::types::LLVariable1::new(throttle_bytes),
-        };
-        
-        circuit.send_reliable(&agent_throttle, self.config.default_timeout).await?;
-        info!("🚦 Sent AgentThrottle with bandwidth allocation");
-        
-        // Step 5: Send AgentFOV - Field of view configuration
+        // Step 4: Send AgentFOV - Field of view configuration  
+        // NOTE: AgentThrottle and AgentHeightWidth are sent AFTER RegionHandshakeReply
+        // in the RegionHandshakeHandler, following the official protocol sequence
         let agent_fov = AgentFOV {
             agent_id: self.session_info.agent_id,
             session_id: self.session_info.session_id,
@@ -582,19 +591,6 @@ impl Client {
         
         circuit.send_reliable(&agent_fov, self.config.default_timeout).await?;
         info!("👁️ Sent AgentFOV with 72-degree field of view");
-        
-        // Step 6: Send AgentHeightWidth - Viewport dimensions
-        let agent_height_width = AgentHeightWidth {
-            agent_id: self.session_info.agent_id,
-            session_id: self.session_info.session_id,
-            circuit_code: circuit.circuit_code(),
-            gen_counter: 0,
-            height: 1920,
-            width: 1080,
-        };
-        
-        circuit.send_reliable(&agent_height_width, self.config.default_timeout).await?;
-        info!("📐 Sent AgentHeightWidth with 1080x1920 viewport");
         
         info!("✅ All critical handshake packets sent");
         info!("Server will respond with:");
@@ -709,13 +705,25 @@ impl Client {
                                             }
                                         }
                                         
-                                        // Check for specific event types critical for handshake
+                                        // Process specific event types critical for region transitions
                                         if text.contains("EnableSimulator") {
-                                            info!("EventQueueGet: EnableSimulator event received");
+                                            info!("🌐 EventQueueGet: EnableSimulator event received - neighbor region available");
+                                            Self::handle_enable_simulator_event(&text).await;
                                         } else if text.contains("CrossedRegion") {
-                                            info!("EventQueueGet: CrossedRegion event received");
-                                        } else if text.contains("TeleportProgress") || text.contains("TeleportFinish") {
-                                            info!("EventQueueGet: Teleport event received");
+                                            info!("🎉 EventQueueGet: CrossedRegion event received - region transition complete");
+                                            Self::handle_crossed_region_event(&text).await;
+                                        } else if text.contains("TeleportProgress") {
+                                            info!("✈️ EventQueueGet: TeleportProgress event received");
+                                            Self::handle_teleport_progress_event(&text).await;
+                                        } else if text.contains("TeleportFinish") {
+                                            info!("✅ EventQueueGet: TeleportFinish event received - teleport complete");
+                                            Self::handle_teleport_finish_event(&text).await;
+                                        } else if text.contains("DisableSimulator") {
+                                            info!("🌌 EventQueueGet: DisableSimulator event received - neighbor region offline");
+                                            Self::handle_disable_simulator_event(&text).await;
+                                        } else {
+                                            debug!("📧 EventQueueGet: Other event received: {}", 
+                                                  text.lines().next().unwrap_or("<unknown>"));
                                         }
                                         
                                         consecutive_errors = 0; // Reset error counter
@@ -765,6 +773,52 @@ impl Client {
         });
 
         Ok(())
+    }
+    
+    /// Handle EnableSimulator event - establishes connection to neighboring region
+    async fn handle_enable_simulator_event(event_xml: &str) {
+        // EnableSimulator contains IP, Port, and RegionHandle for neighbor region
+        // Example: <key>IP</key><integer>3232235777</integer><key>Port</key><integer>9000</integer>
+        debug!("EnableSimulator event: {}", event_xml);
+        
+        // TODO: Parse LLSD XML to extract IP/Port/Handle and establish neighbor circuit
+        // This is critical for region crossings and seeing into adjacent regions
+        info!("🔗 TODO: Implement neighbor region circuit establishment");
+    }
+    
+    /// Handle CrossedRegion event - completes region transition
+    async fn handle_crossed_region_event(event_xml: &str) {
+        debug!("CrossedRegion event: {}", event_xml);
+        
+        // CrossedRegion indicates successful handoff to new region
+        // The client should now consider the new region as primary
+        info!("✅ Region crossing completed successfully");
+    }
+    
+    /// Handle TeleportProgress event - teleport status update
+    async fn handle_teleport_progress_event(event_xml: &str) {
+        debug!("TeleportProgress event: {}", event_xml);
+        info!("📍 Teleport in progress...");
+    }
+    
+    /// Handle TeleportFinish event - teleport completion
+    async fn handle_teleport_finish_event(event_xml: &str) {
+        debug!("TeleportFinish event: {}", event_xml);
+        
+        // TeleportFinish signals client should begin rendering new location
+        // Contains final position and region information
+        info!("🎯 Teleport completed - should begin rendering new location");
+        
+        // TODO: Parse event data to extract final position and establish new primary circuit
+    }
+    
+    /// Handle DisableSimulator event - neighbor region going offline
+    async fn handle_disable_simulator_event(event_xml: &str) {
+        debug!("DisableSimulator event: {}", event_xml);
+        
+        // DisableSimulator indicates a neighbor region is going offline
+        // Should close any circuits to that region
+        info!("🔌 Neighbor region disabled - should close relevant circuits");
     }
     
     /// Start background tasks
