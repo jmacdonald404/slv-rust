@@ -36,8 +36,8 @@ impl Socks5UdpSocket {
 
         // UDP ASSOCIATE
         let bind_addr = match local_port {
-            Some(port) => format!("0.0.0.0:{}", port),
-            None => "0.0.0.0:0".to_string(),
+            Some(port) => format!("127.0.0.1:{}", port),
+            None => "127.0.0.1:0".to_string(),
         };
         let local_udp = UdpSocket::bind(&bind_addr).await?;
         let local_addr = local_udp.local_addr()?;

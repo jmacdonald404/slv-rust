@@ -225,7 +225,7 @@ impl Socks5UdpClient {
         }
         
         // Create local UDP socket
-        let udp_socket = UdpSocket::bind("0.0.0.0:0").await?;
+        let udp_socket = UdpSocket::bind("127.0.0.1:0").await?;
         {
             let mut socket_guard = self.udp_socket.lock().await;
             *socket_guard = Some(udp_socket);
@@ -329,8 +329,8 @@ impl Socks5UdpClient {
             Socks5AddressType::Ipv4 as u8, // Address type
         ];
         
-        // Client's UDP address (0.0.0.0:0 to let proxy choose)
-        request.extend_from_slice(&[0, 0, 0, 0]); // 0.0.0.0
+        // Client's UDP address (127.0.0.1:0 for localhost binding)
+        request.extend_from_slice(&[127, 0, 0, 1]); // 127.0.0.1
         request.extend_from_slice(&[0, 0]); // Port 0
         
         stream.write_all(&request).await?;

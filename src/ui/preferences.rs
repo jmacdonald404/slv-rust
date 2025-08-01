@@ -66,7 +66,7 @@ pub fn show_preferences_panel(ctx: &eframe::egui::Context, prefs: &mut Preferenc
                 use std::time::Duration;
                 let addr = "127.0.0.1:54321";
                 let msg = b"slv-rust test";
-                let result = match UdpSocket::bind("0.0.0.0:0") {
+                let result = match UdpSocket::bind("127.0.0.1:0") {
                     Ok(socket) => {
                         socket.set_write_timeout(Some(Duration::from_secs(1))).ok();
                         match socket.send_to(msg, addr) {
@@ -99,7 +99,7 @@ pub fn show_preferences_panel(ctx: &eframe::egui::Context, prefs: &mut Preferenc
                     use tokio::time::timeout;
                     let addr = "127.0.0.1:54322";
                     let msg = b"slv-rust async test";
-                    match UdpSocket::bind("0.0.0.0:0").await {
+                    match UdpSocket::bind("127.0.0.1:0").await {
                         Ok(socket) => {
                             // Set a timeout for send
                             match timeout(Duration::from_secs(1), socket.send_to(msg, addr)).await {

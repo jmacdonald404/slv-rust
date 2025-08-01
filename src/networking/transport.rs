@@ -17,7 +17,7 @@ use tracing::{debug, error, warn, info};
 /// UDP transport configuration
 #[derive(Debug, Clone)]
 pub struct TransportConfig {
-    /// Local bind address (0.0.0.0:0 for any)
+    /// Local bind address (127.0.0.1:0 for localhost)
     pub bind_addr: SocketAddr,
     /// Optional SOCKS5 proxy configuration
     pub proxy: Option<ProxyConfig>,
@@ -32,7 +32,7 @@ pub struct TransportConfig {
 impl Default for TransportConfig {
     fn default() -> Self {
         Self {
-            bind_addr: "0.0.0.0:0".parse().unwrap(),
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
             proxy: None,
             max_packet_size: 1500,
             recv_buffer_size: 64 * 1024,
@@ -87,15 +87,25 @@ impl UdpTransport {
         // Create channels
         let (send_tx, send_rx) = mpsc::unbounded_channel();
         
-        // Initialize proxy clients if configured
+        // Initialize proxy clients based on proxy mode
         let socks5_client = if let Some(ref proxy_config) = config.proxy {
-            if let Some(socks5_addr) = proxy_config.socks5_addr {
-                let client = Socks5UdpClient::new(
-                    socks5_addr,
-                    proxy_config.username.clone(),
-                    proxy_config.password.clone(),
-                );
-                Some(client)
+            if proxy_config.requires_manual_socks5() {
+                // Only create SOCKS5 client for manual mode
+                if let Some(socks5_addr) = proxy_config.socks5_addr {
+                    info!("🔧 Initializing manual SOCKS5 client for {}", socks5_addr);
+                    let client = Socks5UdpClient::new(
+                        socks5_addr,
+                        proxy_config.username.clone(),
+                        proxy_config.password.clone(),
+                    );
+                    Some(client)
+                } else {
+                    None
+                }
+            } else if proxy_config.is_transparent_proxy() {
+                info!("🔧 Using transparent proxy mode - no manual SOCKS5 client needed");
+                info!("   WinHippoAutoProxy will handle SOCKS5 protocol transparently");
+                None
             } else {
                 None
             }
@@ -158,14 +168,28 @@ impl UdpTransport {
     
     /// Start the transport (begin processing packets)
     pub async fn start(&self) -> NetworkResult<()> {
-        // Connect to SOCKS5 proxy if configured
-        if let Some(socks5_client) = self.socks5_client.read().await.as_ref() {
-            info!("Connecting to SOCKS5 proxy...");
-            if let Err(e) = socks5_client.connect().await {
-                error!("Failed to connect to SOCKS5 proxy: {}", e);
-                return Err(e);
+        // Handle proxy initialization based on mode
+        if let Some(ref proxy_config) = self.config.proxy {
+            match proxy_config.mode {
+                crate::networking::proxy::ProxyMode::ManualSocks5 => {
+                    // Connect to SOCKS5 proxy if using manual mode
+                    if let Some(socks5_client) = self.socks5_client.read().await.as_ref() {
+                        info!("🔗 Connecting to SOCKS5 proxy in manual mode...");
+                        if let Err(e) = socks5_client.connect().await {
+                            error!("Failed to connect to SOCKS5 proxy: {}", e);
+                            return Err(e);
+                        }
+                        info!("✅ Successfully connected to SOCKS5 proxy");
+                    }
+                }
+                crate::networking::proxy::ProxyMode::WinHippoAutoProxy => {
+                    info!("🔗 Using WinHippoAutoProxy transparent mode - no manual connection needed");
+                    info!("   Ensure WinHippoAutoProxy is running and configured for Hippolyzer");
+                }
+                crate::networking::proxy::ProxyMode::Direct => {
+                    info!("🔗 Using direct connection (no proxy)");
+                }
             }
-            info!("Successfully connected to SOCKS5 proxy");
         }
         
         // Start background tasks
@@ -179,8 +203,23 @@ impl UdpTransport {
     /// Send a packet directly
     pub async fn send_packet(&self, data: Bytes, dest: SocketAddr) -> NetworkResult<()> {
         info!("Transport sending {} bytes to {}", data.len(), dest);
-        if self.config.proxy.is_some() {
-            self.send_via_socks5(data, dest).await
+        
+        if let Some(ref proxy_config) = self.config.proxy {
+            match proxy_config.mode {
+                crate::networking::proxy::ProxyMode::ManualSocks5 => {
+                    // Use manual SOCKS5 implementation
+                    self.send_via_socks5(data, dest).await
+                }
+                crate::networking::proxy::ProxyMode::WinHippoAutoProxy => {
+                    // Send directly to destination - WinHippoAutoProxy will intercept
+                    info!("📤 Sending packet directly to {} (WinHippoAutoProxy will handle SOCKS5)", dest);
+                    self.send_direct(data, dest).await
+                }
+                crate::networking::proxy::ProxyMode::Direct => {
+                    // Direct connection, no proxy
+                    self.send_direct(data, dest).await
+                }
+            }
         } else {
             self.send_direct(data, dest).await
         }
@@ -222,20 +261,36 @@ impl UdpTransport {
         let socket = Arc::clone(&self.socket);
         let send_rx = Arc::clone(&self.send_rx);
         let socks5_client = Arc::clone(&self.socks5_client);
-        let has_proxy = self.config.proxy.is_some();
+        let proxy_config = self.config.proxy.clone();
+        let has_proxy = proxy_config.is_some();
         
         tokio::spawn(async move {
             let mut rx = send_rx.lock().await;
             
             while let Some((data, dest)) = rx.recv().await {
                 let result = if has_proxy {
-                    let socks5_guard = socks5_client.read().await;
-                    if let Some(client) = socks5_guard.as_ref() {
-                        client.send_to(&data, dest).await
-                    } else {
-                        Err(NetworkError::Transport {
-                            reason: "SOCKS5 proxy not available".to_string()
-                        })
+                    // Check proxy mode to determine how to send
+                    let proxy_cfg = proxy_config.as_ref().unwrap();
+                    match proxy_cfg.mode {
+                        crate::networking::proxy::ProxyMode::ManualSocks5 => {
+                            // Use SOCKS5 client for manual mode
+                            let socks5_guard = socks5_client.read().await;
+                            if let Some(client) = socks5_guard.as_ref() {
+                                client.send_to(&data, dest).await
+                            } else {
+                                Err(NetworkError::Transport {
+                                    reason: "SOCKS5 proxy not available in manual mode".to_string()
+                                })
+                            }
+                        }
+                        crate::networking::proxy::ProxyMode::WinHippoAutoProxy => {
+                            // Send directly - WinHippoAutoProxy will intercept
+                            Self::send_direct_static(&socket, data, dest).await
+                        }
+                        crate::networking::proxy::ProxyMode::Direct => {
+                            // Direct send
+                            Self::send_direct_static(&socket, data, dest).await
+                        }
                     }
                 } else {
                     Self::send_direct_static(&socket, data, dest).await
@@ -255,26 +310,60 @@ impl UdpTransport {
         let deserializer = Arc::clone(&self.deserializer);
         let packet_callback = Arc::clone(&self.packet_callback);
         let max_packet_size = self.config.max_packet_size;
-        let has_proxy = self.config.proxy.is_some();
+        let proxy_config = self.config.proxy.clone();
+        let has_proxy = proxy_config.is_some();
         
         tokio::spawn(async move {
             let mut buffer = vec![0u8; max_packet_size];
             
             loop {
                 let (len, src) = if has_proxy {
-                    // Receive through SOCKS5 proxy
-                    let socks5_guard = socks5_client.read().await;
-                    if let Some(client) = socks5_guard.as_ref() {
-                        match client.recv_from(&mut buffer).await {
-                            Ok((len, src)) => (len, src),
-                            Err(e) => {
-                                error!("SOCKS5 receive error: {}", e);
-                                continue;
+                    let proxy_cfg = proxy_config.as_ref().unwrap();
+                    match proxy_cfg.mode {
+                        crate::networking::proxy::ProxyMode::ManualSocks5 => {
+                            // Receive through SOCKS5 proxy in manual mode
+                            let socks5_guard = socks5_client.read().await;
+                            if let Some(client) = socks5_guard.as_ref() {
+                                match client.recv_from(&mut buffer).await {
+                                    Ok((len, src)) => (len, src),
+                                    Err(e) => {
+                                        error!("SOCKS5 receive error: {}", e);
+                                        continue;
+                                    }
+                                }
+                            } else {
+                                error!("SOCKS5 client not available in manual mode");
+                                break;
                             }
                         }
-                    } else {
-                        error!("SOCKS5 client not available");
-                        break;
+                        crate::networking::proxy::ProxyMode::WinHippoAutoProxy => {
+                            // Direct reception - WinHippoAutoProxy will unwrap SOCKS5 headers
+                            match socket.recv_from(&mut buffer).await {
+                                Ok((len, src)) => (len, src),
+                                Err(e) => {
+                                    error!("UDP receive error in transparent proxy mode: {}", e);
+                                    if e.kind() == std::io::ErrorKind::ConnectionReset ||
+                                       e.kind() == std::io::ErrorKind::ConnectionAborted {
+                                        continue;
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                        crate::networking::proxy::ProxyMode::Direct => {
+                            // Direct UDP reception
+                            match socket.recv_from(&mut buffer).await {
+                                Ok((len, src)) => (len, src),
+                                Err(e) => {
+                                    error!("UDP receive error: {}", e);
+                                    if e.kind() == std::io::ErrorKind::ConnectionReset ||
+                                       e.kind() == std::io::ErrorKind::ConnectionAborted {
+                                        continue;
+                                    }
+                                    break;
+                                }
+                            }
+                        }
                     }
                 } else {
                     // Direct UDP reception
