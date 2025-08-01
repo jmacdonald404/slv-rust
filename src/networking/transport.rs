@@ -150,7 +150,7 @@ impl UdpTransport {
     /// Set packet callback (called when packets are received, like homunculus)
     pub async fn set_packet_callback<F>(&self, callback: F) 
     where 
-        F: Fn(PacketWrapper, SocketAddr) + Send + Sync + 'static
+        F: Fn(PacketWrapper, SocketAddr) + Send + Sync + Clone + 'static
     {
         let mut cb = self.packet_callback.write().await;
         *cb = Some(Box::new(callback));

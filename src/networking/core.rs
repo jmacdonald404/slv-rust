@@ -8,6 +8,7 @@ use crate::networking::circuit::{Circuit, CircuitEvent, CircuitOptions};
 use crate::networking::handlers::{HandlerContext, PacketHandlerRegistry, PacketProcessor};
 use crate::networking::packets::PacketWrapper;
 use crate::networking::transport::{TransportConfig, UdpTransport};
+use crate::networking::quic_transport::{QuicTransport, QuicTransportConfig};
 use bytes::Bytes;
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -26,13 +27,45 @@ pub enum CoreState {
     Disconnected,
 }
 
-/// Core networking controller
+/// Transport type following ADR-0002
+pub enum TransportType {
+    Quic(Arc<QuicTransport>),
+    Udp(Arc<UdpTransport>),
+}
+
+impl TransportType {
+    pub fn get_sender(&self) -> mpsc::UnboundedSender<(Bytes, SocketAddr)> {
+        match self {
+            TransportType::Quic(transport) => transport.get_sender(),
+            TransportType::Udp(transport) => transport.get_sender(),
+        }
+    }
+    
+    pub async fn start(&self) -> NetworkResult<()> {
+        match self {
+            TransportType::Quic(transport) => transport.start().await,
+            TransportType::Udp(transport) => transport.start().await,
+        }
+    }
+    
+    pub async fn set_packet_callback<F>(&self, callback: F) 
+    where 
+        F: Fn(PacketWrapper, SocketAddr) + Send + Sync + Clone + 'static
+    {
+        match self {
+            TransportType::Quic(transport) => transport.set_packet_callback(callback).await,
+            TransportType::Udp(transport) => transport.set_packet_callback(callback).await,
+        }
+    }
+}
+
+/// Core networking controller following ADR-0002 transport selection
 pub struct Core {
     /// Current state
     state: Arc<RwLock<CoreState>>,
     
-    /// UDP transport
-    transport: Arc<UdpTransport>,
+    /// Primary transport (QUIC or UDP fallback)
+    transport: Arc<TransportType>,
     
     /// Active circuits (address -> circuit)
     circuits: Arc<RwLock<HashMap<SocketAddr, Arc<Circuit>>>>,
@@ -67,11 +100,36 @@ pub enum CoreEvent {
 }
 
 impl Core {
-    /// Create a new core
-    pub async fn new(transport_config: TransportConfig) -> NetworkResult<Self> {
-        // Create transport
-        let transport = Arc::new(UdpTransport::new(transport_config).await?);
+    /// Create a new core with QUIC transport (ADR-0002)
+    pub async fn new_with_quic(quic_config: QuicTransportConfig, udp_config: TransportConfig) -> NetworkResult<Self> {
+        info!("🔐 Creating core with QUIC transport following ADR-0002");
         
+        // Try to create QUIC transport first
+        let transport = match QuicTransport::new(quic_config).await {
+            Ok(quic_transport) => {
+                info!("✅ QUIC transport initialized successfully");
+                Arc::new(TransportType::Quic(Arc::new(quic_transport)))
+            }
+            Err(e) => {
+                warn!("⚠️ QUIC transport failed, falling back to UDP: {}", e);
+                let udp_transport = UdpTransport::new(udp_config).await?;
+                Arc::new(TransportType::Udp(Arc::new(udp_transport)))
+            }
+        };
+        
+        Self::new_with_transport(transport).await
+    }
+    
+    /// Create a new core with UDP transport (fallback)
+    pub async fn new(transport_config: TransportConfig) -> NetworkResult<Self> {
+        info!("Creating core with UDP transport (fallback mode)");
+        let transport = Arc::new(UdpTransport::new(transport_config).await?);
+        let transport_type = Arc::new(TransportType::Udp(transport));
+        Self::new_with_transport(transport_type).await
+    }
+    
+    /// Create core with specified transport type
+    async fn new_with_transport(transport: Arc<TransportType>) -> NetworkResult<Self> {
         // Create handler registry and initialize default handlers
         let handler_registry = Arc::new(PacketHandlerRegistry::new());
         handler_registry.init_default_handlers().await;

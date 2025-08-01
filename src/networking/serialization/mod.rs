@@ -83,13 +83,14 @@ impl PacketSerializer {
             wrapper.data.clone()
         };
         
-        // Build header with wrapper's sequence
-        self.write_header(&mut buffer, 
-                         wrapper.packet_id, 
-                         wrapper.frequency, 
-                         wrapper.reliable, 
-                         packet_info.zerocoded,
-                         wrapper.sequence);
+        // Build header with wrapper's sequence and resent flag
+        self.write_header_with_flags(&mut buffer, 
+                                   wrapper.packet_id, 
+                                   wrapper.frequency, 
+                                   wrapper.reliable, 
+                                   packet_info.zerocoded,
+                                   wrapper.resent,
+                                   wrapper.sequence);
         
         // Append packet data
         buffer.extend_from_slice(&final_data);
@@ -114,6 +115,18 @@ impl PacketSerializer {
                    reliable: bool,
                    zerocoded: bool,
                    sequence: u32) {
+        self.write_header_with_flags(buffer, packet_id, frequency, reliable, zerocoded, false, sequence);
+    }
+    
+    /// Write Second Life packet header with explicit resent flag control
+    /// Format: [flags:1] [sequence:4] [extra:1] [message_id:1-4]
+    fn write_header_with_flags(&self, buffer: &mut BytesMut, 
+                              packet_id: u16, 
+                              frequency: PacketFrequency,
+                              reliable: bool,
+                              zerocoded: bool,
+                              resent: bool,
+                              sequence: u32) {
         // Flags byte
         let mut flags = 0u8;
         if reliable {
@@ -121,6 +134,9 @@ impl PacketSerializer {
         }
         if zerocoded {
             flags |= ZEROCODED_FLAG;
+        }
+        if resent {
+            flags |= RESENT_FLAG;
         }
         buffer.put_u8(flags);
         
@@ -217,6 +233,7 @@ impl PacketDeserializer {
         Ok(PacketWrapper {
             data: packet_data,
             reliable,
+            resent: false, // Will be updated from packet header flags if needed
             sequence,
             packet_id,
             frequency,

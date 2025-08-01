@@ -11,6 +11,7 @@ pub mod packets;
 pub mod serialization;
 pub mod handlers;
 pub mod transport;
+pub mod quic_transport;
 pub mod socks5_udp;
 pub mod auth;
 pub mod manager;
@@ -23,6 +24,7 @@ pub use circuit::Circuit;
 pub use packets::{Packet, PacketFrequency};
 pub use serialization::{PacketSerializer, PacketDeserializer};
 pub use transport::UdpTransport;
+pub use quic_transport::QuicTransport;
 
 // Error types
 use thiserror::Error;

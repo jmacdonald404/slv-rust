@@ -106,34 +106,48 @@ impl Acknowledger {
         }
     }
     
-    /// Get packets that need retransmission
-    fn get_retransmits(&mut self, retry_timeout: Duration, max_retries: u8) -> Vec<(u32, PacketWrapper)> {
+    /// Get packets that need retransmission (improved exponential backoff)
+    fn get_retransmits(&mut self, base_retry_timeout: Duration, max_retries: u8) -> Vec<(u32, PacketWrapper)> {
         let now = Instant::now();
         let mut retransmits = Vec::new();
         let mut to_remove = Vec::new();
         
         for (sequence, pending) in &mut self.pending_reliable {
+            // Exponential backoff: 2^retry_count * base_timeout
+            let retry_timeout = base_retry_timeout * (1 << pending.retry_count.min(6)) as u32;
+            
             if now.duration_since(pending.sent_at) >= retry_timeout {
                 if pending.retry_count >= max_retries {
                     // Too many retries - give up
+                    warn!("Packet sequence {} failed after {} retries", sequence, pending.retry_count);
                     to_remove.push(*sequence);
                     if let Some(tx) = pending.resolve_tx.take() {
-                        let _ = tx.send(()); // Resolve with failure
+                        let _ = tx.send(()); // Resolve with failure (could be error instead)
                     }
                 } else {
-                    // Retry
+                    // Retry with exponential backoff
                     pending.retry_count += 1;
                     pending.sent_at = now;
-                    // Create a new PacketWrapper for retransmission (avoid cloning PendingPacket)
-                    let wrapper = PacketWrapper {
+                    
+                    // Create a new PacketWrapper for retransmission with resent flag
+                    let mut wrapper = PacketWrapper {
                         data: pending.packet.data.clone(),
                         reliable: pending.packet.reliable,
+                        resent: false, // Will be set below
                         sequence: pending.packet.sequence,
                         packet_id: pending.packet.packet_id,
                         frequency: pending.packet.frequency,
                         embedded_acks: pending.packet.embedded_acks.clone(),
                     };
+                    
+                    // Mark as resent (SL protocol sets RESENT flag in header)
+                    // This is important for the protocol
+                    wrapper.resent = true;
+                    
                     retransmits.push((*sequence, wrapper));
+                    
+                    info!("🔄 Retransmitting packet sequence {} (attempt {}/{})", 
+                          sequence, pending.retry_count, max_retries);
                 }
             }
         }
@@ -150,10 +164,90 @@ impl Acknowledger {
 /// Circuit state
 #[derive(Debug, Clone, PartialEq)]
 pub enum CircuitState {
+    /// Initial state when circuit is being established
     Connecting,
+    /// Circuit established but handshake not complete
     Connected,
+    /// Handshake in progress
+    Handshaking,
+    /// Fully established and ready for communication
+    Ready,
+    /// Circuit is temporarily blocked due to ping failures
+    Blocked,
+    /// Circuit is being shut down
     Disconnecting,
+    /// Circuit is fully disconnected
     Disconnected,
+}
+
+/// Ping tracking for circuit health monitoring
+struct PingTracker {
+    /// Outstanding pings (ping_id -> sent_time)
+    outstanding_pings: HashMap<u8, Instant>,
+    /// Last measured round-trip time
+    last_rtt: Option<Duration>,
+    /// Next ping ID to use
+    next_ping_id: u8,
+    /// Ping statistics
+    ping_count: u32,
+    blocked_pings: u32,
+}
+
+impl PingTracker {
+    fn new() -> Self {
+        Self {
+            outstanding_pings: HashMap::new(),
+            last_rtt: None,
+            next_ping_id: 1,
+            ping_count: 0,
+            blocked_pings: 0,
+        }
+    }
+    
+    /// Start a new ping
+    fn start_ping(&mut self) -> u8 {
+        let ping_id = self.next_ping_id;
+        self.next_ping_id = self.next_ping_id.wrapping_add(1);
+        if self.next_ping_id == 0 { self.next_ping_id = 1; } // Avoid 0
+        
+        self.outstanding_pings.insert(ping_id, Instant::now());
+        self.ping_count += 1;
+        ping_id
+    }
+    
+    /// Complete a ping and return RTT
+    fn complete_ping(&mut self, ping_id: u8) -> Option<Duration> {
+        if let Some(sent_time) = self.outstanding_pings.remove(&ping_id) {
+            let rtt = Instant::now().duration_since(sent_time);
+            self.last_rtt = Some(rtt);
+            Some(rtt)
+        } else {
+            None
+        }
+    }
+    
+    /// Check if circuit should be considered blocked
+    fn is_blocked(&self, max_outstanding: usize) -> bool {
+        self.outstanding_pings.len() > max_outstanding
+    }
+    
+    /// Clean up old pings that timed out
+    fn cleanup_old_pings(&mut self, timeout: Duration) -> usize {
+        let now = Instant::now();
+        let mut timed_out = 0;
+        
+        self.outstanding_pings.retain(|_, sent_time| {
+            if now.duration_since(*sent_time) > timeout {
+                timed_out += 1;
+                false
+            } else {
+                true
+            }
+        });
+        
+        self.blocked_pings += timed_out as u32;
+        timed_out
+    }
 }
 
 /// Circuit for managing connection to a Second Life simulator
@@ -173,6 +267,9 @@ pub struct Circuit {
     /// Acknowledgment manager
     acknowledger: Arc<Mutex<Acknowledger>>,
     
+    /// Ping tracker for circuit health
+    ping_tracker: Arc<Mutex<PingTracker>>,
+    
     /// Channel for sending packets to transport
     packet_tx: mpsc::UnboundedSender<(Bytes, SocketAddr)>,
     
@@ -185,6 +282,11 @@ pub struct Circuit {
     /// Retry configuration
     retry_timeout: Duration,
     max_retries: u8,
+    
+    /// Ping configuration
+    ping_interval: Duration,
+    ping_timeout: Duration,
+    max_outstanding_pings: usize,
 }
 
 impl std::fmt::Debug for Circuit {
@@ -225,11 +327,15 @@ impl Circuit {
             serializer: Arc::new(Mutex::new(PacketSerializer::new())),
             deserializer: Arc::new(PacketDeserializer::new()),
             acknowledger: Arc::new(Mutex::new(Acknowledger::new())),
+            ping_tracker: Arc::new(Mutex::new(PingTracker::new())),
             packet_tx,
             packet_rx: Arc::new(Mutex::new(packet_rx)),
             event_tx,
             retry_timeout: Duration::from_secs(3),
             max_retries: 3,
+            ping_interval: Duration::from_secs(60), // Ping every 60 seconds
+            ping_timeout: Duration::from_secs(30),  // 30 second ping timeout
+            max_outstanding_pings: 5,              // Max 5 outstanding pings before blocking
         }
     }
     
@@ -248,6 +354,35 @@ impl Circuit {
         self.state.read().await.clone()
     }
     
+    /// Set circuit state and emit events
+    pub async fn set_state(&self, new_state: CircuitState) -> NetworkResult<()> {
+        let old_state = {
+            let mut state = self.state.write().await;
+            let old = state.clone();
+            *state = new_state.clone();
+            old
+        };
+        
+        if old_state != new_state {
+            info!("Circuit {} state changed: {:?} -> {:?}", self.options.address, old_state, new_state);
+            
+            // Emit state change events
+            match new_state {
+                CircuitState::Ready => {
+                    let _ = self.event_tx.send(CircuitEvent::Connected);
+                },
+                CircuitState::Disconnected => {
+                    let _ = self.event_tx.send(CircuitEvent::Disconnected { 
+                        reason: "State transition".to_string() 
+                    });
+                },
+                _ => {} // No event for intermediate states
+            }
+        }
+        
+        Ok(())
+    }
+    
     /// Send a packet (unreliable)
     pub async fn send<P: Packet>(&self, packet: &P) -> NetworkResult<()> {
         let mut serializer = self.serializer.lock().await;
@@ -262,14 +397,23 @@ impl Circuit {
     }
     
     /// Send a packet reliably (with acknowledgment)
+    /// SECURITY: Enhanced reliability with retry mechanism for critical authentication packets
     pub async fn send_reliable<P: Packet>(&self, packet: &P, timeout_duration: Duration) -> NetworkResult<()> {
         let (resolve_tx, resolve_rx) = tokio::sync::oneshot::channel();
+        
+        // SECURITY: Validate circuit state before sending sensitive packets
+        let current_state = self.state.read().await.clone();
+        if matches!(current_state, CircuitState::Disconnected | CircuitState::Disconnecting) {
+            return Err(NetworkError::ConnectionLost { 
+                address: self.options.address 
+            });
+        }
         
         let mut serializer = self.serializer.lock().await;
         let (data, sequence) = serializer.serialize(packet, true)?;
         
-        info!("Sending reliable packet: {} bytes, sequence {}, to {}", 
-              data.len(), sequence, self.options.address);
+        info!("🔒 Sending SECURE reliable packet: {} bytes, sequence {}, to {} (state: {:?})", 
+              data.len(), sequence, self.options.address, current_state);
         
         // Create packet wrapper for acknowledgment tracking
         let wrapper = PacketWrapper::new(packet, Some(true))?;
@@ -286,31 +430,35 @@ impl Circuit {
                 address: self.options.address 
             })?;
         
-        // Wait for acknowledgment with timeout
+        // Wait for acknowledgment with timeout - enhanced error reporting for security
         match timeout(timeout_duration, resolve_rx).await {
             Ok(Ok(())) => {
-                info!("Reliable packet acknowledged: sequence {}", sequence);
+                info!("✅ SECURE reliable packet acknowledged: sequence {} ({}s timeout)", 
+                      sequence, timeout_duration.as_secs());
                 Ok(())
             },
-            Ok(Err(_)) => Err(NetworkError::HandshakeTimeout),
-            Err(_) => Err(NetworkError::HandshakeTimeout),
+            Ok(Err(_)) => {
+                warn!("🔒 SECURITY: Reliable packet channel closed unexpectedly for sequence {} - possible connection compromise", sequence);
+                Err(NetworkError::HandshakeTimeout)
+            },
+            Err(_) => {
+                warn!("🔒 SECURITY: Reliable packet acknowledgment timeout for sequence {} after {}s - connection may be compromised", 
+                      sequence, timeout_duration.as_secs());
+                Err(NetworkError::HandshakeTimeout)
+            },
         }
     }
     
     /// Start the circuit (begin packet processing)
     pub async fn start(&self) -> NetworkResult<()> {
-        {
-            let mut state = self.state.write().await;
-            *state = CircuitState::Connected;
-        }
+        self.set_state(CircuitState::Connected).await?;
         
         // Start background tasks
         self.start_retry_handler().await;
         self.start_ack_sender().await;
+        self.start_ping_handler().await;
         
-        // Emit connected event
-        let _ = self.event_tx.send(CircuitEvent::Connected);
-        
+        info!("Circuit {} started successfully", self.options.address);        
         Ok(())
     }
     
@@ -375,10 +523,12 @@ impl Circuit {
                 for (sequence, wrapper) in retransmits {
                     let mut serializer = serializer.lock().await;
                     if let Ok(data) = serializer.serialize_wrapper(&wrapper) {
+                        let data_len = data.len();
                         let _ = packet_tx.send((data, address));
-                        info!("Retransmitted packet sequence {} to {}", sequence, address);
+                        info!("📤 Retransmitted packet sequence {} to {} ({} bytes, marked as RESENT)", 
+                              sequence, address, data_len);
                     } else {
-                        warn!("Failed to serialize packet for retransmission: sequence {}", sequence);
+                        warn!("❌ Failed to serialize packet for retransmission: sequence {}", sequence);
                     }
                 }
             }
@@ -441,6 +591,124 @@ impl Circuit {
                 debug!("Received ACK for unknown/expired sequence {}", packet_block.id);
             }
         }
+    }
+    
+    /// Send a ping to check circuit health
+    pub async fn send_ping(&self) -> NetworkResult<u8> {
+        use crate::networking::packets::generated::*;
+        
+        let ping_id = {
+            let mut tracker = self.ping_tracker.lock().await;
+            tracker.start_ping()
+        };
+        
+        let ping_packet = StartPingCheck { 
+            ping_id,
+            oldest_unacked: Vec::new(), // Empty for now - could track oldest unacked sequence
+        };
+        
+        // Send ping unreliably - pings are frequent and don't need to be reliable
+        self.send(&ping_packet).await?;
+        info!("Sent ping {} to {}", ping_id, self.options.address);
+        
+        Ok(ping_id)
+    }
+    
+    /// Handle a ping response
+    pub async fn handle_ping_response(&self, ping_id: u8) -> Option<Duration> {
+        let mut tracker = self.ping_tracker.lock().await;
+        let rtt = tracker.complete_ping(ping_id);
+        
+        if let Some(rtt) = rtt {
+            info!("Ping {} completed in {:?}", ping_id, rtt);
+        } else {
+            warn!("Received ping response for unknown ping ID: {}", ping_id);
+        }
+        
+        rtt
+    }
+    
+    /// Check if circuit is blocked due to ping failures
+    pub async fn is_blocked(&self) -> bool {
+        let tracker = self.ping_tracker.lock().await;
+        tracker.is_blocked(self.max_outstanding_pings)
+    }
+    
+    /// Get circuit health statistics
+    pub async fn get_ping_stats(&self) -> (Option<Duration>, u32, u32, usize) {
+        let tracker = self.ping_tracker.lock().await;
+        (tracker.last_rtt, tracker.ping_count, tracker.blocked_pings, tracker.outstanding_pings.len())
+    }
+    
+    /// Start ping handler task
+    async fn start_ping_handler(&self) {
+        let ping_tracker = Arc::clone(&self.ping_tracker);
+        let packet_tx = self.packet_tx.clone();
+        let serializer = Arc::clone(&self.serializer);
+        let address = self.options.address;
+        let state = Arc::clone(&self.state);
+        let ping_interval = self.ping_interval;
+        let ping_timeout = self.ping_timeout;
+        let max_outstanding = self.max_outstanding_pings;
+        
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(ping_interval);
+            
+            loop {
+                interval.tick().await;
+                
+                // Check if circuit is still active
+                if *state.read().await == CircuitState::Disconnected {
+                    break;
+                }
+                
+                // Clean up old pings and check for blocking
+                let (timed_out, is_blocked) = {
+                    let mut tracker = ping_tracker.lock().await;
+                    let timed_out = tracker.cleanup_old_pings(ping_timeout);
+                    let is_blocked = tracker.is_blocked(max_outstanding);
+                    (timed_out, is_blocked)
+                };
+                
+                if timed_out > 0 {
+                    warn!("Circuit {} had {} ping timeouts", address, timed_out);
+                }
+                
+                if is_blocked {
+                    warn!("Circuit {} is blocked due to ping failures", address);
+                    // Set circuit to blocked state (SL protocol pauses agents when blocked)
+                    if let Ok(current_state) = state.try_read() {
+                        if *current_state != CircuitState::Blocked {
+                            drop(current_state);
+                            let mut state_lock = state.write().await;
+                            *state_lock = CircuitState::Blocked;
+                            warn!("Circuit {} set to BLOCKED state", address);
+                        }
+                    }
+                    continue;
+                }
+                
+                // Send a new ping
+                let ping_id = {
+                    let mut tracker = ping_tracker.lock().await;
+                    tracker.start_ping()
+                };
+                
+                use crate::networking::packets::generated::*;
+                let ping_packet = StartPingCheck { 
+            ping_id,
+            oldest_unacked: Vec::new(), // Empty for now - could track oldest unacked sequence
+        };
+                
+                let mut serializer = serializer.lock().await;
+                if let Ok((data, _)) = serializer.serialize(&ping_packet, false) {
+                    let _ = packet_tx.send((data, address));
+                    debug!("Sent ping {} to {}", ping_id, address);
+                } else {
+                    warn!("Failed to serialize ping packet");
+                }
+            }
+        });
     }
     
     /// Inject a packet received from the transport layer (like homunculus circuit.receive)

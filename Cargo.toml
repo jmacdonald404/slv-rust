@@ -60,6 +60,7 @@ thiserror = "2.0"
 toml = "0.8"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+url = "2.5.0"
 
 # --- HTTP & XML ---
 quick-xml = { version = "0.31", features = ["serialize"] }

@@ -124,7 +124,7 @@ impl StartPingCheckHandler {
 #[async_trait]
 impl TypedPacketHandler<StartPingCheck> for StartPingCheckHandler {
     async fn handle_typed(&self, packet: StartPingCheck, context: &HandlerContext) -> NetworkResult<()> {
-        info!("Received StartPingCheck from {} with PingID: {}", 
+        debug!("Received StartPingCheck from {} with PingID: {}", 
                context.circuit.address(), packet.ping_id);
         
         // Respond with CompletePingCheck
@@ -134,7 +134,29 @@ impl TypedPacketHandler<StartPingCheck> for StartPingCheckHandler {
         
         // Send the ping reply immediately (unreliable)
         context.circuit.send(&reply).await?;
-        info!("Sent CompletePingCheck reply with PingID: {}", packet.ping_id);
+        debug!("Sent CompletePingCheck reply with PingID: {}", packet.ping_id);
+        
+        Ok(())
+    }
+}
+
+/// Handler for CompletePingCheck packets - ping response
+pub struct CompletePingCheckHandler;
+
+impl CompletePingCheckHandler {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[async_trait]
+impl TypedPacketHandler<CompletePingCheck> for CompletePingCheckHandler {
+    async fn handle_typed(&self, packet: CompletePingCheck, context: &HandlerContext) -> NetworkResult<()> {
+        debug!("Received CompletePingCheck from {} with PingID: {}", 
+               context.circuit.address(), packet.ping_id);
+        
+        // Handle ping response
+        context.circuit.handle_ping_response(packet.ping_id).await;
         
         Ok(())
     }
@@ -351,6 +373,9 @@ impl TypedPacketHandler<AgentMovementComplete> for AgentMovementCompleteHandler 
         }
         
         info!("🎉 Handshake sequence completed successfully! Connection should now be stable.");
+        
+        // Set circuit to Ready state
+        context.circuit.set_state(crate::networking::circuit::CircuitState::Ready).await?;
         
         context.handshake_tx.send(HandshakeEvent::AgentMovementComplete).await
             .map_err(|e| NetworkError::Other { reason: format!("Failed to send AgentMovementComplete event: {}", e) })?;

@@ -263,10 +263,12 @@ impl XmlRpcClient {
             }
             "sim_ip" => {
                 response.simulator_ip = value.to_string();
+                tracing::info!("XML-RPC Response: sim_ip = {}", value);
             }
             "sim_port" => {
                 response.simulator_port = value.parse()
                     .context("Invalid sim_port")?;
+                tracing::info!("XML-RPC Response: sim_port = {}", value);
             }
             "look_at" => {
                 response.look_at = Vector3::parse_sl_format(value)

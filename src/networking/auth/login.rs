@@ -303,13 +303,66 @@ impl AuthenticationService {
                           credentials.grid.name());
         }
 
-        // Step 3: Create session info
-        let simulator_address = login_response.simulator_address()
-            .map_err(|e| {
-                let error_msg = format!("Invalid simulator address: {}", e);
+        // Step 3: Create session info - prioritize capabilities hostname
+        let simulator_address = if let Some(ref seed_url) = login_response.seed_capability {
+            if let Ok(url) = url::Url::parse(seed_url) {
+                if let Some(host) = url.host_str() {
+                    tracing::info!("🔍 Capabilities URL parsed successfully");
+                    tracing::info!("🔍 Extracted hostname: '{}'", host);
+                    tracing::info!("🔍 Hostname length: {} chars", host.len());
+                    tracing::info!("🔍 Port from XML-RPC: {}", login_response.simulator_port);
+                    
+                    // Use capabilities hostname with XML-RPC provided port
+                    let preferred_addr = format!("{}:{}", host, login_response.simulator_port);
+                    tracing::info!("🎯 Constructed address: '{}'", preferred_addr);
+                    
+                    // Resolve hostname to socket address
+                    use std::net::ToSocketAddrs;
+                    preferred_addr.to_socket_addrs()
+                        .map_err(|e| {
+                            let error_msg = format!("Failed to resolve hostname '{}': {}", preferred_addr, e);
+                            tracing::error!("{}", error_msg);
+                            NetworkError::SimulatorConnectionFailed { reason: error_msg }
+                        })?
+                        .next()
+                        .ok_or_else(|| {
+                            let error_msg = format!("No addresses resolved for hostname '{}'", preferred_addr);
+                            tracing::error!("{}", error_msg);
+                            NetworkError::SimulatorConnectionFailed { reason: error_msg }
+                        })?
+                } else {
+                    // Fallback to XML-RPC address
+                    let xmlrpc_addr = login_response.simulator_address().map_err(|e| {
+                        let error_msg = format!("Could not resolve any simulator address: {}", e);
+                        tracing::error!("{}", error_msg);
+                        NetworkError::SimulatorConnectionFailed { reason: error_msg }
+                    })?;
+                    tracing::warn!("⚠️ Using XML-RPC address as fallback: {} (from sim_ip={}, sim_port={})", 
+                                  xmlrpc_addr, login_response.simulator_ip, login_response.simulator_port);
+                    xmlrpc_addr
+                }
+            } else {
+                // Fallback to XML-RPC address
+                let xmlrpc_addr = login_response.simulator_address().map_err(|e| {
+                    let error_msg = format!("Could not resolve any simulator address: {}", e);
+                    tracing::error!("{}", error_msg);
+                    NetworkError::SimulatorConnectionFailed { reason: error_msg }
+                })?;
+                tracing::warn!("⚠️ Using XML-RPC address as fallback: {} (from sim_ip={}, sim_port={})", 
+                              xmlrpc_addr, login_response.simulator_ip, login_response.simulator_port);
+                xmlrpc_addr
+            }
+        } else {
+            // No capabilities URL - use XML-RPC address
+            let xmlrpc_addr = login_response.simulator_address().map_err(|e| {
+                let error_msg = format!("No simulator address available: {}", e);
                 tracing::error!("{}", error_msg);
                 NetworkError::SimulatorConnectionFailed { reason: error_msg }
             })?;
+            tracing::warn!("⚠️ No capabilities URL, using XML-RPC address: {} (from sim_ip={}, sim_port={})", 
+                          xmlrpc_addr, login_response.simulator_ip, login_response.simulator_port);
+            xmlrpc_addr
+        };
 
         let session = SessionInfo {
             agent_id: login_response.agent_id,
@@ -322,7 +375,7 @@ impl AuthenticationService {
             look_at: login_response.look_at,
             start_location: credentials.start_location.clone(),
             seed_capability: login_response.seed_capability.clone(),
-            capabilities: if let Some(seed_cap_url) = login_response.seed_capability {
+            capabilities: if let Some(ref seed_cap_url) = login_response.seed_capability {
                 Some(self.fetch_capabilities(&seed_cap_url).await?)
             } else {
                 None
@@ -341,8 +394,56 @@ impl AuthenticationService {
         
         let client = Client::new(config, session.clone()).await?;
         
-        // Step 6: Connect to simulator
-        client.connect(session.simulator_address, session.circuit_code).await?;
+        // Step 6: Connect to simulator with fallback
+        match client.connect(session.simulator_address, session.circuit_code).await {
+            Ok(()) => {
+                tracing::info!("Successfully connected to primary simulator address: {}", session.simulator_address);
+            }
+            Err(e) => {
+                tracing::warn!("Primary simulator connection failed: {}. Attempting fallback...", e);
+                
+                // Fallback: try connecting to capabilities hostname with common SL ports
+                if let Some(ref seed_url) = login_response.seed_capability {
+                    if let Ok(url) = url::Url::parse(seed_url) {
+                        if let Some(host) = url.host_str() {
+                            // Try common Second Life UDP ports
+                            let fallback_ports = [9000, 9001, 9002, 12043, 13000, 13001];
+                            let mut connected = false;
+                            
+                            for &port in &fallback_ports {
+                                let fallback_addr = format!("{}:{}", host, port);
+                                tracing::info!("Trying fallback simulator address: {}", fallback_addr);
+                                
+                                if let Ok(addr) = fallback_addr.parse() {
+                                    match client.connect(addr, session.circuit_code).await {
+                                        Ok(()) => {
+                                            tracing::info!("✅ Successfully connected to fallback simulator: {}", fallback_addr);
+                                            connected = true;
+                                            break;
+                                        }
+                                        Err(fallback_error) => {
+                                            tracing::debug!("Fallback {} failed: {}", fallback_addr, fallback_error);
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            if !connected {
+                                return Err(NetworkError::SimulatorConnectionFailed { 
+                                    reason: format!("Both primary ({}) and all fallback addresses failed", session.simulator_address)
+                                });
+                            }
+                        } else {
+                            return Err(e);
+                        }
+                    } else {
+                        return Err(e);
+                    }
+                } else {
+                    return Err(e);
+                }
+            }
+        }
         
         Ok(client)
     }

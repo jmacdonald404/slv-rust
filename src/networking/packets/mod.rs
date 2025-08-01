@@ -66,6 +66,7 @@ pub trait Packet: Serialize + for<'de> Deserialize<'de> + Debug + Clone + Send +
 pub struct PacketWrapper {
     pub data: Vec<u8>,
     pub reliable: bool,
+    pub resent: bool,
     pub sequence: u32,
     pub packet_id: u16,
     pub frequency: PacketFrequency,
@@ -82,6 +83,7 @@ impl PacketWrapper {
         Ok(PacketWrapper {
             data,
             reliable: reliable.unwrap_or(P::RELIABLE),
+            resent: false,
             sequence: 0, // Will be set by circuit
             packet_id: P::ID as u16,
             frequency: P::FREQUENCY,

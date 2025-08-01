@@ -1,0 +1,22 @@
+025-08-01T07:31:50.349470Z  INFO tokio-runtime-worker ThreadId(12) slv_rust::networking::client: src\networking\client.rs:435: Starting handshake with simulator following homunculus protocol
+2025-08-01T07:31:50.349673Z  INFO tokio-runtime-worker ThreadId(12) slv_rust::networking::client: src\networking\client.rs:436: 🔍 Testing server responsiveness at 54.188.152.101:13027
+2025-08-01T07:31:50.349843Z  INFO tokio-runtime-worker ThreadId(12) slv_rust::networking::client: src\networking\client.rs:445: 📦 UseCircuitCode details:
+2025-08-01T07:31:50.349996Z  INFO tokio-runtime-worker ThreadId(12) slv_rust::networking::client: src\networking\client.rs:446:   Circuit Code: 536815320
+2025-08-01T07:31:50.350150Z  INFO tokio-runtime-worker ThreadId(12) slv_rust::networking::client: src\networking\client.rs:448:   Agent ID: 84c4017d...7ad0ebd7
+2025-08-01T07:31:50.350298Z  INFO tokio-runtime-worker ThreadId(12) slv_rust::networking::client: src\networking\client.rs:451:   Session ID: 3fb694fa...24d228f5
+2025-08-01T07:31:50.350530Z  INFO tokio-runtime-worker ThreadId(12) slv_rust::networking::client: src\networking\client.rs:472: 🔐 Attempting secure UseCircuitCode transmission (attempt 1/3) with 10s timeout
+2025-08-01T07:31:50.350810Z  INFO tokio-runtime-worker ThreadId(12) slv_rust::networking::circuit: src\networking\circuit.rs:414: 🔒 Sending SECURE reliable packet: 62 bytes, sequence 1, to 54.188.152.101:13027 (sta
+te: Connected)
+2025-08-01T07:31:50.351081Z  INFO tokio-runtime-worker ThreadId(12) slv_rust::networking::transport: src\networking\transport.rs:181: Transport sending 62 bytes to 54.188.152.101:13027
+2025-08-01T07:31:50.351340Z  INFO tokio-runtime-worker ThreadId(12) slv_rust::networking::transport: src\networking\transport.rs:202: Sent 62 bytes to 54.188.152.101:13027
+2025-08-01T07:32:00.361558Z  WARN tokio-runtime-worker ThreadId(11) slv_rust::networking::circuit: src\networking\circuit.rs:444: 🔒 SECURITY: Reliable packet acknowledgment timeout for sequence 1 after 10s - connec
+tion may be compromised
+2025-08-01T07:32:00.361912Z  WARN tokio-runtime-worker ThreadId(11) slv_rust::networking::client: src\networking\client.rs:485: ⚠️ UseCircuitCode reliable send failed on attempt 1: Handshake timeout
+2025-08-01T07:32:00.362214Z  INFO tokio-runtime-worker ThreadId(12) slv_rust::networking::transport: src\networking\transport.rs:181: Transport sending 16 bytes to 54.188.152.101:13027
+2025-08-01T07:32:00.362218Z  INFO tokio-runtime-worker ThreadId(11) slv_rust::networking::circuit: src\networking\circuit.rs:526: Retransmitted packet sequence 1 to 54.188.152.101:13027
+2025-08-01T07:32:00.362478Z  INFO tokio-runtime-worker ThreadId(12) slv_rust::networking::transport: src\networking\transport.rs:202: Sent 16 bytes to 54.188.152.101:13027
+2025-08-01T07:32:00.362634Z  INFO tokio-runtime-worker ThreadId(11) slv_rust::networking::circuit: src\networking\circuit.rs:526: Retransmitted packet sequence 1 to 54.188.152.101:13027
+2025-08-01T07:32:00.362758Z  INFO tokio-runtime-worker ThreadId(12) slv_rust::networking::transport: src\networking\transport.rs:181: Transport sending 62 bytes to 54.188.152.101:13027
+2025-08-01T07:32:00.363122Z  INFO tokio-runtime-worker ThreadId(12) slv_rust::networking::transport: src\networking\transport.rs:202: Sent 62 bytes to 54.188.152.101:13027
+2025-08-01T07:32:00.363276Z  INFO tokio-runtime-worker ThreadId(12) slv_rust::networking::transport: src\networking\transport.rs:181: Transport sending 62 bytes to 54.188.152.101:13027
+2025-08-01T07:32:00.363441Z  INFO tokio-runtime-worker ThreadId(12) slv_rust::networking::transport: src\networking\transport.rs:202: Sent 62 bytes to 54.188.152.101:13027
