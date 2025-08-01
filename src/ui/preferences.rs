@@ -50,6 +50,11 @@ pub fn show_preferences_panel(ctx: &eframe::egui::Context, prefs: &mut Preferenc
         ui.label("Network:");
         changed |= ui.add(eframe::egui::Slider::new(&mut prefs.max_bandwidth, 500..=5000).text("Max Bandwidth (KB/s)")).changed();
         changed |= ui.add(eframe::egui::Slider::new(&mut prefs.timeout, 5..=120).text("Timeout (s)")).changed();
+        
+        ui.separator();
+        ui.label("Proxy Settings (Hippolyzer Support):");
+        // Note: This version uses a simpler proxy configuration
+        // Full proxy settings are available in the main app preferences
         // --- UDP Test Button ---
         if ui.button("Test UDP Send").clicked() && !prefs.udp_test_in_progress {
             prefs.udp_test_in_progress = true;

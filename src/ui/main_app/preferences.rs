@@ -14,6 +14,8 @@ pub fn show_preferences_modal(ctx: &egui::Context, ui_state: &mut UiState) {
             ui.separator();
             show_network_settings(ui, ui_state);
             ui.separator();
+            show_proxy_settings(ui, ui_state);
+            ui.separator();
             show_audio_settings(ui, ui_state);
             ui.separator();
             show_preferences_buttons(ui, ui_state);
@@ -44,6 +46,72 @@ fn show_network_settings(ui: &mut egui::Ui, ui_state: &mut UiState) {
     ui.add(egui::Slider::new(&mut ui_state.preferences.timeout, 10..=60).text("Timeout (seconds)"));
 }
 
+fn show_proxy_settings(ui: &mut egui::Ui, ui_state: &mut UiState) {
+    ui.heading("Proxy Settings (Hippolyzer Support)");
+    
+    ui.checkbox(&mut ui_state.proxy_settings.enabled, "Enable Proxy");
+    
+    if ui_state.proxy_settings.enabled {
+        ui.indent("proxy_indent", |ui| {
+            ui.horizontal(|ui| {
+                ui.label("SOCKS5 Host:");
+                ui.text_edit_singleline(&mut ui_state.proxy_settings.socks5_host);
+            });
+            
+            ui.horizontal(|ui| {
+                ui.label("SOCKS5 Port:");
+                ui.add(egui::DragValue::new(&mut ui_state.proxy_settings.socks5_port)
+                    .range(1..=65535)
+                    .speed(1));
+            });
+            
+            ui.horizontal(|ui| {
+                ui.label("HTTP Host:");
+                ui.text_edit_singleline(&mut ui_state.proxy_settings.http_host);
+            });
+            
+            ui.horizontal(|ui| {
+                ui.label("HTTP Port:");
+                ui.add(egui::DragValue::new(&mut ui_state.proxy_settings.http_port)
+                    .range(1..=65535)
+                    .speed(1));
+            });
+            
+            ui.checkbox(&mut ui_state.proxy_settings.disable_cert_validation, "Disable Certificate Validation");
+            
+            ui.separator();
+            
+            // Hippolyzer preset button
+            if ui.button("Set Hippolyzer Defaults").clicked() {
+                ui_state.proxy_settings.socks5_host = "127.0.0.1".to_string();
+                ui_state.proxy_settings.socks5_port = 9061;
+                ui_state.proxy_settings.http_host = "127.0.0.1".to_string();
+                ui_state.proxy_settings.http_port = 9062;
+                ui_state.proxy_settings.disable_cert_validation = true;
+            }
+            
+            // Platform-specific warnings
+            ui.separator();
+            ui.label("⚠️ Platform Notes:");
+            
+            #[cfg(target_os = "windows")]
+            ui.colored_label(
+                egui::Color32::from_rgb(255, 165, 0),
+                "Windows: Use WinHippoAutoProxy wrapper instead of these settings"
+            );
+            
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            ui.colored_label(
+                egui::Color32::from_rgb(0, 200, 0),
+                "Linux/macOS: These settings will configure SOCKS5/HTTP proxy support"
+            );
+            
+            ui.label("💡 For asset optimization, set no_proxy env var:");
+            ui.monospace("no_proxy=\"asset-cdn.glb.agni.lindenlab.com\"");
+        });
+    }
+}
+
 fn show_audio_settings(ui: &mut egui::Ui, ui_state: &mut UiState) {
     ui.heading("Audio");
     ui.checkbox(&mut ui_state.preferences.enable_sound, "Enable Sound");
@@ -53,7 +121,12 @@ fn show_audio_settings(ui: &mut egui::Ui, ui_state: &mut UiState) {
 fn show_preferences_buttons(ui: &mut egui::Ui, ui_state: &mut UiState) {
     ui.horizontal(|ui| {
         if ui.button("Save").clicked() {
-            // TODO: Save preferences to file
+            if let Err(e) = crate::config::settings::save_general_settings(
+                &ui_state.preferences, 
+                &ui_state.proxy_settings
+            ) {
+                eprintln!("Failed to save preferences: {}", e);
+            }
             ui_state.login_state.prefs_modal_open = false;
         }
         if ui.button("Cancel").clicked() {
