@@ -148,7 +148,7 @@ impl PacketHandlerRegistry {
     /// Initialize default handlers
     pub async fn init_default_handlers(&self) {
         // Register built-in handlers
-        self.register_typed(login_handlers::RegionHandshakeHandler::new()).await;
+        self.register_typed(region_handlers::RegionHandshakeHandler::new()).await;
         self.register_typed(agent_handlers::PacketAckHandler::new()).await;
         
         // Register the critical handlers for auth handshake

@@ -318,68 +318,11 @@ impl TypedPacketHandler<AgentMovementComplete> for AgentMovementCompleteHandler 
         debug!("Agent position: {:?}", packet.position);
         debug!("Channel version: {:?}", packet.channel_version);
         
-        // This is the CRITICAL step that homunculus does in agent-movement-complete-delegate.ts
-        // Send essential post-handshake packets following homunculus pattern
+        // Configuration packets (AgentFOV, AgentThrottle, AgentHeightWidth) are now sent
+        // earlier in the handshake sequence in client.rs to match homunculus timing.
+        // This handler focuses on the post-movement completion sequence.
         
-        // 1. AgentFOV (field of view)
-        let agent_fov = AgentFOV {
-            agent_id: context.agent_id,
-            session_id: context.session_id,
-            circuit_code: context.circuit.circuit_code(),
-            gen_counter: 0,
-            vertical_angle: 1.2566370964050293f32, // ~72 degrees in radians
-        };
-        
-        // 2. AgentThrottle (bandwidth configuration)
-        let throttle_data = {
-            // Following homunculus throttle values from agent-movement-complete-delegate.ts
-            let total_throttle = 500.0 * 1024.0f32; // 500KB base
-            let throttles = [
-                total_throttle * 0.1f32,   // resend (10%)
-                total_throttle * 0.052f32, // land (5.2%) 
-                total_throttle * 0.05f32,  // wind (5%)
-                total_throttle * 0.05f32,  // cloud (5%)
-                total_throttle * 0.234f32, // task (23.4%)
-                total_throttle * 0.234f32, // texture (23.4%)
-                total_throttle * 0.16f32,  // asset (16%)
-            ];
-            
-            let mut data = Vec::with_capacity(28);
-            for throttle in &throttles {
-                data.extend_from_slice(&throttle.to_le_bytes());
-            }
-            data
-        };
-        
-        let agent_throttle = AgentThrottle {
-            agent_id: context.agent_id,
-            session_id: context.session_id,
-            circuit_code: context.circuit.circuit_code(),
-            gen_counter: 0,
-            throttles: crate::networking::packets::types::LLVariable1::new(throttle_data),
-        };
-        
-        // 3. AgentHeightWidth (avatar dimensions)
-        let agent_height_width = AgentHeightWidth {
-            agent_id: context.agent_id,
-            session_id: context.session_id,
-            circuit_code: context.circuit.circuit_code(),
-            gen_counter: 0,
-            height: 1920, // Following homunculus values
-            width: 1080,
-        };
-        
-        // Send all three packets reliably in sequence
-        context.circuit.send_reliable(&agent_fov, std::time::Duration::from_secs(5)).await?;
-        debug!("Sent AgentFOV");
-        
-        context.circuit.send_reliable(&agent_throttle, std::time::Duration::from_secs(5)).await?;
-        debug!("Sent AgentThrottle");
-        
-        context.circuit.send_reliable(&agent_height_width, std::time::Duration::from_secs(5)).await?;
-        debug!("Sent AgentHeightWidth");
-        
-        // 4. Send initial AgentUpdate packets (following homunculus pattern)
+        // Send initial AgentUpdate packets (following homunculus pattern)
         // This sequence handles the "squatting animation" issue homunculus mentions
         let control_flags_sequence = [0, 0x40000000, 0]; // NONE, FINISH_ANIM, NONE
         

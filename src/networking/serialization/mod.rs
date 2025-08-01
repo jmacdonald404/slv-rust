@@ -65,7 +65,7 @@ impl PacketSerializer {
     }
     
     /// Serialize a packet wrapper (used for resends with same sequence)
-    pub fn serialize_wrapper(&self, wrapper: &PacketWrapper) -> NetworkResult<Bytes> {
+    pub fn serialize_wrapper(&mut self, wrapper: &PacketWrapper) -> NetworkResult<Bytes> {
         let mut buffer = BytesMut::new();
         
         // Apply zerocoding if needed (check if original packet was zerocoded)
@@ -220,6 +220,7 @@ impl PacketDeserializer {
             sequence,
             packet_id,
             frequency,
+            embedded_acks: None, // TODO: Parse embedded ACKs from packet header
         })
     }
     

@@ -69,6 +69,7 @@ pub struct PacketWrapper {
     pub sequence: u32,
     pub packet_id: u16,
     pub frequency: PacketFrequency,
+    pub embedded_acks: Option<Vec<u32>>,
 }
 
 impl PacketWrapper {
@@ -84,6 +85,7 @@ impl PacketWrapper {
             sequence: 0, // Will be set by circuit
             packet_id: P::ID as u16,
             frequency: P::FREQUENCY,
+            embedded_acks: None,
         })
     }
     

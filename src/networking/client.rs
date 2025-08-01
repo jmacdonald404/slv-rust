@@ -41,7 +41,7 @@ pub struct ObjectUpdateEventBody {
     pub position: [f32; 3],
 }
 
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 /// Client configuration
@@ -94,7 +94,7 @@ pub struct Client {
     /// Session information
     session_info: SessionInfo,
 
-    /// HTTP client for EventQueueGet
+    /// HTTP client for EventQueueGet (may be proxied)
     http_client: reqwest::Client,
 }
 
@@ -134,6 +134,61 @@ impl Client {
         // Create networking core
         let core = Arc::new(Core::new(config.transport.clone()).await?);
         
+        // Create HTTP client, possibly with proxy support
+        let http_client = if let Some(ref proxy_config) = config.transport.proxy {
+            if let Some(http_addr) = proxy_config.http_addr {
+                info!("Configuring HTTP client to use proxy at {}", http_addr);
+                
+                let proxy_url = format!("http://{}", http_addr);
+                let mut proxy = reqwest::Proxy::http(&proxy_url)
+                    .map_err(|e| NetworkError::Transport {
+                        reason: format!("Failed to create HTTP proxy: {}", e)
+                    })?;
+                
+                // Add authentication if provided
+                if let (Some(username), Some(password)) = (&proxy_config.username, &proxy_config.password) {
+                    proxy = proxy.basic_auth(username, password);
+                }
+                
+                let mut client_builder = reqwest::Client::builder().proxy(proxy);
+                
+                // Load CA certificate if provided
+                if let Some(ca_path) = &proxy_config.ca_cert_path {
+                    match std::fs::read(ca_path) {
+                        Ok(cert_data) => {
+                            match reqwest::Certificate::from_pem(&cert_data) {
+                                Ok(cert) => {
+                                    info!("Loaded CA certificate from {} for HTTP client", ca_path);
+                                    client_builder = client_builder.add_root_certificate(cert);
+                                }
+                                Err(e) => {
+                                    warn!("Failed to parse CA certificate from {}: {}. Using danger_accept_invalid_certs instead.", ca_path, e);
+                                    client_builder = client_builder.danger_accept_invalid_certs(true);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Failed to read CA certificate from {}: {}. Using danger_accept_invalid_certs instead.", ca_path, e);
+                            client_builder = client_builder.danger_accept_invalid_certs(true);
+                        }
+                    }
+                } else {
+                    // No CA cert provided, accept invalid certs (required for Hippolyzer's self-signed certs)
+                    client_builder = client_builder.danger_accept_invalid_certs(true);
+                }
+                
+                client_builder
+                    .build()
+                    .map_err(|e| NetworkError::Transport {
+                        reason: format!("Failed to create HTTP client with proxy: {}", e)
+                    })?
+            } else {
+                reqwest::Client::new()
+            }
+        } else {
+            reqwest::Client::new()
+        };
+        
         // Create event channels
         let (event_tx, _) = mpsc::unbounded_channel();
         let (handshake_tx, handshake_rx) = mpsc::channel(100);
@@ -147,13 +202,27 @@ impl Client {
             handshake_rx: Arc::new(RwLock::new(handshake_rx)),
             _background_tasks: Vec::new(),
             session_info,
-            http_client: reqwest::Client::new(),
+            http_client,
         };
         
         // Start background tasks
         client.start_background_tasks().await;
         
         Ok(client)
+    }
+    
+    /// Create a new client with Hippolyzer proxy configuration
+    pub async fn new_with_hippolyzer_proxy(mut config: ClientConfig, session_info: SessionInfo) -> NetworkResult<Self> {
+        use crate::networking::proxy::ProxyConfig;
+        
+        // Configure for Hippolyzer default ports
+        config.transport.proxy = Some(ProxyConfig::hippolyzer_default());
+        
+        info!("Creating client with Hippolyzer proxy support");
+        info!("SOCKS5 proxy: 127.0.0.1:9061");
+        info!("HTTP proxy: 127.0.0.1:9062");
+        
+        Self::new(config, session_info).await
     }
     
     /// Get current state
@@ -271,11 +340,34 @@ impl Client {
         let use_circuit_code = UseCircuitCode {
             code: circuit.circuit_code(),
             session_id: self.session_info.session_id,
-            id: self.session_info.agent_id.as_bytes().to_vec(),
+            id: self.session_info.agent_id.as_bytes().to_vec(), // Convert UUID to bytes
         };
         
-        circuit.send_reliable(&use_circuit_code, self.config.default_timeout).await?;
-        info!("Sent UseCircuitCode");
+        info!("📦 UseCircuitCode details:");
+        info!("  Circuit Code: {}", circuit.circuit_code());
+        info!("  Agent ID: {}", self.session_info.agent_id);
+        info!("  Session ID: {}", self.session_info.session_id);
+        
+        // Send UseCircuitCode reliably but with shorter timeout to avoid hanging
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(5), 
+            circuit.send_reliable(&use_circuit_code, std::time::Duration::from_secs(5))
+        ).await {
+            Ok(Ok(())) => info!("✅ UseCircuitCode sent and acknowledged"),
+            Ok(Err(e)) => {
+                info!("⚠️ UseCircuitCode send failed, trying unreliable: {}", e);
+                circuit.send(&use_circuit_code).await?;
+                info!("📤 UseCircuitCode sent unreliably as fallback");
+            },
+            Err(_) => {
+                info!("⏰ UseCircuitCode reliable send timed out, trying unreliable");
+                circuit.send(&use_circuit_code).await?;
+                info!("📤 UseCircuitCode sent unreliably as fallback");
+            }
+        }
+        
+        // Small delay to ensure UseCircuitCode is processed by server
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         
         // Step 2: Send CompleteAgentMovement - critical for main region handshake
         // This triggers the server to send RegionHandshake AND AgentMovementComplete
@@ -286,7 +378,7 @@ impl Client {
         };
         
         circuit.send_reliable(&complete_agent_movement, self.config.default_timeout).await?;
-        info!("Sent CompleteAgentMovement");
+        info!("🚀 Sent CompleteAgentMovement - server should now respond with RegionHandshake");
         
         // Step 3: Send UUIDNameRequest for essential avatar data
         let uuid_name_request = UUIDNameRequest {
@@ -298,16 +390,68 @@ impl Client {
         circuit.send_reliable(&uuid_name_request, self.config.default_timeout).await?;
         info!("Sent UUIDNameRequest");
         
-        info!("Initial handshake packets sent");
+        // Step 4: Send AgentThrottle - CRITICAL for receiving server data
+        // Bandwidth allocation based on homunculus reference (500KB total)
+        let throttles = vec![
+            50_000u32,  // resend (10% of 500KB)
+            86_000u32,  // land/terrain (17.2%)  
+            25_000u32,  // wind (5%)
+            25_000u32,  // cloud (5%)
+            117_000u32, // task/objects (23.4%)
+            117_000u32, // texture (23.4%) 
+            80_000u32,  // asset (16%)
+        ];
+        
+        let throttle_bytes: Vec<u8> = throttles.iter()
+            .flat_map(|&x| x.to_le_bytes())
+            .collect();
+        
+        let agent_throttle = AgentThrottle {
+            agent_id: self.session_info.agent_id,
+            session_id: self.session_info.session_id,
+            circuit_code: circuit.circuit_code(),
+            gen_counter: 0,
+            throttles: crate::networking::packets::types::LLVariable1::new(throttle_bytes),
+        };
+        
+        circuit.send_reliable(&agent_throttle, self.config.default_timeout).await?;
+        info!("🚦 Sent AgentThrottle with bandwidth allocation");
+        
+        // Step 5: Send AgentFOV - Field of view configuration
+        let agent_fov = AgentFOV {
+            agent_id: self.session_info.agent_id,
+            session_id: self.session_info.session_id,
+            circuit_code: circuit.circuit_code(),
+            gen_counter: 0,
+            vertical_angle: 1.2566370964050293, // ~72 degrees (homunculus standard)
+        };
+        
+        circuit.send_reliable(&agent_fov, self.config.default_timeout).await?;
+        info!("👁️ Sent AgentFOV with 72-degree field of view");
+        
+        // Step 6: Send AgentHeightWidth - Viewport dimensions
+        let agent_height_width = AgentHeightWidth {
+            agent_id: self.session_info.agent_id,
+            session_id: self.session_info.session_id,
+            circuit_code: circuit.circuit_code(),
+            gen_counter: 0,
+            height: 1920,
+            width: 1080,
+        };
+        
+        circuit.send_reliable(&agent_height_width, self.config.default_timeout).await?;
+        info!("📐 Sent AgentHeightWidth with 1080x1920 viewport");
+        
+        info!("✅ All critical handshake packets sent");
         info!("Server will respond with:");
         info!("  1. RegionHandshake (handled by RegionHandshakeHandler)");
         info!("  2. AgentMovementComplete (handled by AgentMovementCompleteHandler)");
         info!("The AgentMovementCompleteHandler will complete the full handshake sequence");
         
-        // Step 4: Start EventQueueGet
+        // Step 7: Start EventQueueGet
         self.start_event_queue_get().await?;
 
-        // Step 5: Wait for RegionHandshake and AgentMovementComplete
+        // Step 8: Wait for RegionHandshake and AgentMovementComplete
         let mut region_handshake_received = false;
         let mut agent_movement_complete_received = false;
 

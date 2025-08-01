@@ -6,21 +6,13 @@
 use crate::networking::{NetworkError, NetworkResult};
 use crate::networking::packets::PacketWrapper;
 use crate::networking::serialization::PacketDeserializer;
+use crate::networking::proxy::{ProxyConfig, Socks5UdpClient, HttpProxyClient};
 use bytes::Bytes;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tracing::{debug, error, warn, info};
-
-/// SOCKS5 proxy configuration
-#[derive(Debug, Clone)]
-pub struct ProxyConfig {
-    pub host: String,
-    pub port: u16,
-    pub username: Option<String>,
-    pub password: Option<String>,
-}
 
 /// UDP transport configuration
 #[derive(Debug, Clone)]
@@ -51,11 +43,17 @@ impl Default for TransportConfig {
 
 /// UDP transport for Second Life protocol
 pub struct UdpTransport {
-    /// UDP socket
+    /// UDP socket (used for direct connections)
     socket: Arc<UdpSocket>,
     
     /// Transport configuration
     config: TransportConfig,
+    
+    /// SOCKS5 UDP client (when proxy is enabled)
+    socks5_client: Arc<tokio::sync::RwLock<Option<Socks5UdpClient>>>,
+    
+    /// HTTP proxy client (when proxy is enabled)
+    http_proxy_client: Arc<tokio::sync::RwLock<Option<HttpProxyClient>>>,
     
     /// Packet deserializer
     deserializer: Arc<PacketDeserializer>,
@@ -89,9 +87,48 @@ impl UdpTransport {
         // Create channels
         let (send_tx, send_rx) = mpsc::unbounded_channel();
         
+        // Initialize proxy clients if configured
+        let socks5_client = if let Some(ref proxy_config) = config.proxy {
+            if let Some(socks5_addr) = proxy_config.socks5_addr {
+                let client = Socks5UdpClient::new(
+                    socks5_addr,
+                    proxy_config.username.clone(),
+                    proxy_config.password.clone(),
+                );
+                Some(client)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        
+        let http_proxy_client = if let Some(ref proxy_config) = config.proxy {
+            if let Some(http_addr) = proxy_config.http_addr {
+                match HttpProxyClient::new_with_ca_cert(
+                    http_addr,
+                    proxy_config.username.clone(),
+                    proxy_config.password.clone(),
+                    proxy_config.ca_cert_path.clone(),
+                ) {
+                    Ok(client) => Some(client),
+                    Err(e) => {
+                        warn!("Failed to create HTTP proxy client: {}", e);
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        
         Ok(Self {
             socket,
             config,
+            socks5_client: Arc::new(tokio::sync::RwLock::new(socks5_client)),
+            http_proxy_client: Arc::new(tokio::sync::RwLock::new(http_proxy_client)),
             deserializer,
             send_tx,
             send_rx: Arc::new(tokio::sync::Mutex::new(send_rx)),
@@ -121,6 +158,16 @@ impl UdpTransport {
     
     /// Start the transport (begin processing packets)
     pub async fn start(&self) -> NetworkResult<()> {
+        // Connect to SOCKS5 proxy if configured
+        if let Some(socks5_client) = self.socks5_client.read().await.as_ref() {
+            info!("Connecting to SOCKS5 proxy...");
+            if let Err(e) = socks5_client.connect().await {
+                error!("Failed to connect to SOCKS5 proxy: {}", e);
+                return Err(e);
+            }
+            info!("Successfully connected to SOCKS5 proxy");
+        }
+        
         // Start background tasks
         self.start_packet_sender().await;
         self.start_packet_receiver().await;
@@ -132,8 +179,8 @@ impl UdpTransport {
     /// Send a packet directly
     pub async fn send_packet(&self, data: Bytes, dest: SocketAddr) -> NetworkResult<()> {
         info!("Transport sending {} bytes to {}", data.len(), dest);
-        if let Some(ref proxy) = self.config.proxy {
-            self.send_via_proxy(data, dest, proxy).await
+        if self.config.proxy.is_some() {
+            self.send_via_socks5(data, dest).await
         } else {
             self.send_direct(data, dest).await
         }
@@ -157,34 +204,39 @@ impl UdpTransport {
     }
     
     /// Send packet via SOCKS5 proxy
-    async fn send_via_proxy(&self, data: Bytes, dest: SocketAddr, proxy: &ProxyConfig) -> NetworkResult<()> {
-        // For now, use the existing SOCKS5 UDP implementation
-        // In a full implementation, we'd maintain persistent SOCKS5 connections
-        // and integrate with the socks5_udp module properly
-        
-        // This is a simplified version - in practice you'd want to:
-        // 1. Maintain a pool of SOCKS5 connections
-        // 2. Use the existing Socks5UdpSocket implementation
-        // 3. Handle connection failures and retries
-        
-        warn!("SOCKS5 proxy support not fully implemented yet");
-        Err(NetworkError::Transport { 
-            reason: "SOCKS5 proxy support not fully implemented".to_string() 
-        })
+    async fn send_via_socks5(&self, data: Bytes, dest: SocketAddr) -> NetworkResult<()> {
+        let socks5_guard = self.socks5_client.read().await;
+        if let Some(socks5_client) = socks5_guard.as_ref() {
+            socks5_client.send_to(&data, dest).await?;
+            info!("Sent {} bytes via SOCKS5 proxy to {}", data.len(), dest);
+            Ok(())
+        } else {
+            Err(NetworkError::Transport {
+                reason: "SOCKS5 proxy not configured".to_string()
+            })
+        }
     }
     
     /// Start packet sender task
     async fn start_packet_sender(&self) {
         let socket = Arc::clone(&self.socket);
         let send_rx = Arc::clone(&self.send_rx);
-        let config = self.config.clone();
+        let socks5_client = Arc::clone(&self.socks5_client);
+        let has_proxy = self.config.proxy.is_some();
         
         tokio::spawn(async move {
             let mut rx = send_rx.lock().await;
             
             while let Some((data, dest)) = rx.recv().await {
-                let result = if let Some(ref proxy) = config.proxy {
-                    Self::send_via_proxy_static(&socket, data, dest, proxy).await
+                let result = if has_proxy {
+                    let socks5_guard = socks5_client.read().await;
+                    if let Some(client) = socks5_guard.as_ref() {
+                        client.send_to(&data, dest).await
+                    } else {
+                        Err(NetworkError::Transport {
+                            reason: "SOCKS5 proxy not available".to_string()
+                        })
+                    }
                 } else {
                     Self::send_direct_static(&socket, data, dest).await
                 };
@@ -199,53 +251,71 @@ impl UdpTransport {
     /// Start packet receiver task
     async fn start_packet_receiver(&self) {
         let socket = Arc::clone(&self.socket);
+        let socks5_client = Arc::clone(&self.socks5_client);
         let deserializer = Arc::clone(&self.deserializer);
         let packet_callback = Arc::clone(&self.packet_callback);
         let max_packet_size = self.config.max_packet_size;
+        let has_proxy = self.config.proxy.is_some();
         
         tokio::spawn(async move {
             let mut buffer = vec![0u8; max_packet_size];
             
             loop {
-                match socket.recv_from(&mut buffer).await {
-                    Ok((len, src)) => {
-                        info!("Received {} bytes from {}", len, src);
-                        
-                        // Debug: log first few bytes
-                        if len > 0 {
-                            let hex_data: String = buffer[..std::cmp::min(len, 16)]
-                                .iter()
-                                .map(|b| format!("{:02x}", b))
-                                .collect::<Vec<_>>()
-                                .join(" ");
-                            info!("First 16 bytes: {}", hex_data);
-                        }
-                        
-                        // Parse the packet
-                        match deserializer.parse_raw(&buffer[..len]) {
-                            Ok(packet_wrapper) => {
-                                info!("Successfully parsed packet: id={}, frequency={:?}, reliable={}", 
-                                      packet_wrapper.packet_id, packet_wrapper.frequency, packet_wrapper.reliable);
-                                // Call the callback directly (like homunculus socket.receive)
-                                let cb_guard = packet_callback.read().await;
-                                if let Some(ref callback) = *cb_guard {
-                                    callback(packet_wrapper, src);
-                                }
-                            }
+                let (len, src) = if has_proxy {
+                    // Receive through SOCKS5 proxy
+                    let socks5_guard = socks5_client.read().await;
+                    if let Some(client) = socks5_guard.as_ref() {
+                        match client.recv_from(&mut buffer).await {
+                            Ok((len, src)) => (len, src),
                             Err(e) => {
-                                warn!("Failed to parse packet from {}: {}", src, e);
+                                error!("SOCKS5 receive error: {}", e);
+                                continue;
                             }
+                        }
+                    } else {
+                        error!("SOCKS5 client not available");
+                        break;
+                    }
+                } else {
+                    // Direct UDP reception
+                    match socket.recv_from(&mut buffer).await {
+                        Ok((len, src)) => (len, src),
+                        Err(e) => {
+                            error!("UDP receive error: {}", e);
+                            if e.kind() == std::io::ErrorKind::ConnectionReset ||
+                               e.kind() == std::io::ErrorKind::ConnectionAborted {
+                                continue;
+                            }
+                            break;
+                        }
+                    }
+                };
+                
+                info!("Received {} bytes from {}", len, src);
+                
+                // Debug: log first few bytes
+                if len > 0 {
+                    let hex_data: String = buffer[..std::cmp::min(len, 16)]
+                        .iter()
+                        .map(|b| format!("{:02x}", b))
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    info!("First 16 bytes: {}", hex_data);
+                }
+                
+                // Parse the packet
+                match deserializer.parse_raw(&buffer[..len]) {
+                    Ok(packet_wrapper) => {
+                        info!("Successfully parsed packet: id={}, frequency={:?}, reliable={}", 
+                              packet_wrapper.packet_id, packet_wrapper.frequency, packet_wrapper.reliable);
+                        // Call the callback directly (like homunculus socket.receive)
+                        let cb_guard = packet_callback.read().await;
+                        if let Some(ref callback) = *cb_guard {
+                            callback(packet_wrapper, src);
                         }
                     }
                     Err(e) => {
-                        error!("UDP receive error: {}", e);
-                        // Consider whether to continue or break based on error type
-                        if e.kind() == std::io::ErrorKind::ConnectionReset ||
-                           e.kind() == std::io::ErrorKind::ConnectionAborted {
-                            // Continue on connection resets (common in UDP)
-                            continue;
-                        }
-                        break;
+                        warn!("Failed to parse packet from {}: {}", src, e);
                     }
                 }
             }
@@ -270,17 +340,23 @@ impl UdpTransport {
         Ok(())
     }
     
-    /// Static version of send_via_proxy for use in spawned tasks  
-    async fn send_via_proxy_static(
-        _socket: &UdpSocket,
-        _data: Bytes,
-        _dest: SocketAddr,
-        _proxy: &ProxyConfig,
-    ) -> NetworkResult<()> {
-        // Placeholder for SOCKS5 proxy support
-        Err(NetworkError::Transport { 
-            reason: "SOCKS5 proxy support not fully implemented".to_string() 
-        })
+    /// Get HTTP proxy client (if configured)
+    pub async fn get_http_proxy_client(&self) -> Option<HttpProxyClient> {
+        self.http_proxy_client.read().await.as_ref().cloned()
+    }
+    
+    /// Check if SOCKS5 proxy is enabled and connected
+    pub async fn is_socks5_connected(&self) -> bool {
+        if let Some(client) = self.socks5_client.read().await.as_ref() {
+            client.is_connected().await
+        } else {
+            false
+        }
+    }
+    
+    /// Check if HTTP proxy is enabled
+    pub fn has_http_proxy(&self) -> bool {
+        self.config.proxy.as_ref().map_or(false, |p| p.has_http())
     }
     
     /// Get transport statistics

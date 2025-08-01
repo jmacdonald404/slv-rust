@@ -131,6 +131,7 @@ impl Acknowledger {
                         sequence: pending.packet.sequence,
                         packet_id: pending.packet.packet_id,
                         frequency: pending.packet.frequency,
+                        embedded_acks: pending.packet.embedded_acks.clone(),
                     };
                     retransmits.push((*sequence, wrapper));
                 }
@@ -372,9 +373,12 @@ impl Circuit {
                 
                 // Retransmit packets
                 for (sequence, wrapper) in retransmits {
-                    let serializer = serializer.lock().await;
+                    let mut serializer = serializer.lock().await;
                     if let Ok(data) = serializer.serialize_wrapper(&wrapper) {
                         let _ = packet_tx.send((data, address));
+                        info!("Retransmitted packet sequence {} to {}", sequence, address);
+                    } else {
+                        warn!("Failed to serialize packet for retransmission: sequence {}", sequence);
                     }
                 }
             }
@@ -428,8 +432,14 @@ impl Circuit {
     /// Handle received acknowledgment packet
     pub async fn handle_ack(&self, ack_packet: &crate::networking::packets::generated::PacketAck) {
         let mut ack = self.acknowledger.lock().await;
+        info!("Processing {} acknowledgments", ack_packet.packets.len());
         for packet_block in &ack_packet.packets {
-            ack.handle_ack(packet_block.id);
+            let was_pending = ack.handle_ack(packet_block.id);
+            if was_pending {
+                info!("Acknowledged reliable packet with sequence {}", packet_block.id);
+            } else {
+                debug!("Received ACK for unknown/expired sequence {}", packet_block.id);
+            }
         }
     }
     
@@ -455,9 +465,17 @@ impl Circuit {
         // Note: In SL protocol, packets can carry acknowledgments for other packets
         // This is critical for resolving pending reliable packet promises
         
-        // Check if this packet contains acknowledgments
-        // For now, we'll handle PacketAck packets through the event system
-        // but we should also check for embedded acks in packet headers
+        // Check if this packet contains acknowledgments in the header
+        // SL protocol allows packets to carry acknowledgment sequences in the header
+        if let Some(ack_list) = packet.embedded_acks.as_ref() {
+            let mut ack = self.acknowledger.lock().await;
+            for &ack_seq in ack_list {
+                let was_pending = ack.handle_ack(ack_seq);
+                if was_pending {
+                    info!("Processed embedded ACK for sequence {}", ack_seq);
+                }
+            }
+        }
         
         // Emit packet received event - this will trigger the handlers
         let _ = self.event_tx.send(CircuitEvent::PacketReceived { packet });

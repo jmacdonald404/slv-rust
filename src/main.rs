@@ -46,6 +46,10 @@ fn main() -> eframe::Result<()> {
     let _guard = runtime.enter();
 
     logging::init_logging();
+    
+    // Initialize packet registry for networking
+    networking::packets::init_packet_registry();
+    
     // test stdout and stderr
     println!("PRINT TEST: If you see this, stdout works!");
     eprintln!("EPRINT TEST: If you see this, stderr works!");

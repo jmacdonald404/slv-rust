@@ -14,6 +14,7 @@ pub mod transport;
 pub mod socks5_udp;
 pub mod auth;
 pub mod manager;
+pub mod proxy;
 
 // Re-export main types for convenience
 pub use client::Client;
