@@ -16,7 +16,14 @@ use tracing::{debug, warn, info};
 pub mod login_handlers;
 pub mod agent_handlers;
 pub mod region_handlers;
+pub mod inventory_handlers;
+pub mod asset_handlers;
 pub mod system;
+
+// Re-export handlers for easy access
+pub use region_handlers::*;
+pub use inventory_handlers::*;
+pub use asset_handlers::*;
 
 /// Context provided to packet handlers
 #[derive(Debug)]
@@ -165,6 +172,50 @@ impl PacketHandlerRegistry {
         
         // Register the CRITICAL handler for completing handshake
         self.register_typed(login_handlers::AgentMovementCompleteHandler::new()).await;
+        
+        // Register comprehensive object/prim management handlers per netplan.md
+        self.register_typed(region_handlers::ObjectUpdateHandler::new()).await;
+        self.register_typed(region_handlers::ObjectUpdateCompressedHandler::new()).await;
+        self.register_typed(region_handlers::ObjectUpdateCachedHandler::new()).await;
+        self.register_typed(region_handlers::KillObjectHandler::new()).await;
+        self.register_typed(region_handlers::ImprovedTerseObjectUpdateHandler::new()).await;
+        
+        // Register inventory system handlers per netplan.md
+        self.register_typed(inventory_handlers::FetchInventoryDescendentsHandler::new()).await;
+        self.register_typed(inventory_handlers::InventoryDescendentsHandler::new()).await;
+        self.register_typed(inventory_handlers::UpdateInventoryItemHandler::new()).await;
+        
+        // Register asset transfer system handlers per netplan.md
+        // Note: These handlers need an AssetManager instance to be fully functional
+        // For now, we'll create a default asset manager for compatibility
+        let asset_manager = Arc::new(crate::networking::assets::AssetManager::default());
+        
+        self.register_typed(asset_handlers::TransferRequestHandler::new(Arc::clone(&asset_manager))).await;
+        self.register_typed(asset_handlers::TransferInfoHandler::new()).await;
+        self.register_typed(asset_handlers::TransferAbortHandler::new()).await;
+        self.register_typed(asset_handlers::RequestImageHandler::new(Arc::clone(&asset_manager))).await;
+        self.register_typed(asset_handlers::ImageDataHandler::new()).await;
+        self.register_typed(asset_handlers::LayerDataHandler::new()).await;
+        
+        // Register region crossing handlers per netplan.md
+        // Note: These handlers need a RegionCrossingManager instance to be fully functional
+        // For now, we'll create a default manager for compatibility
+        let crossing_manager = Arc::new(crate::networking::handover::RegionCrossingManager::new(
+            uuid::Uuid::new_v4(), // placeholder agent_id
+            uuid::Uuid::new_v4(), // placeholder session_id
+        ));
+        
+        self.register_typed(crate::networking::handover::handlers::EnableSimulatorHandler::new(Arc::clone(&crossing_manager))).await;
+        self.register_typed(crate::networking::handover::handlers::DisableSimulatorHandler::new(Arc::clone(&crossing_manager))).await;
+        self.register_typed(crate::networking::handover::handlers::TeleportStartHandler::new(Arc::clone(&crossing_manager))).await;
+        self.register_typed(crate::networking::handover::handlers::TeleportProgressHandler::new()).await;
+        self.register_typed(crate::networking::handover::handlers::TeleportFinishHandler::new(Arc::clone(&crossing_manager))).await;
+        self.register_typed(crate::networking::handover::handlers::TeleportFailedHandler::new()).await;
+        self.register_typed(crate::networking::handover::handlers::TeleportCancelHandler::new()).await;
+        self.register_typed(crate::networking::handover::handlers::CrossedRegionHandler::new(Arc::clone(&crossing_manager))).await;
+        // Note: EstablishAgentCommunication handler disabled until packet is available
+        // self.register_typed(crate::networking::handover::handlers::EstablishAgentCommunicationHandler::new()).await;
+        self.register_typed(crate::networking::handover::handlers::ConfirmEnableSimulatorHandler::new()).await;
         
         info!("Initialized {} default packet handlers", self.handler_count().await);
     }

@@ -209,8 +209,51 @@ impl QuicTransport {
         Err(NetworkError::ConnectionLost { address: dest })
     }
     
-    /// Send packet via QUIC stream
+    /// Send packet via QUIC stream or datagram based on SL protocol semantics
     async fn send_via_quic(&self, connection: &Connection, data: Bytes) -> NetworkResult<()> {
+        // Parse packet to determine reliability requirements per SL protocol
+        if let Ok(packet_wrapper) = self.deserializer.parse_raw(&data) {
+            let is_reliable = packet_wrapper.reliable;
+            
+            if is_reliable {
+                // Use QUIC reliable streams for packets marked as Reliable in SL protocol
+                match connection.open_uni().await {
+                    Ok(mut send_stream) => {
+                        send_stream.write_all(&data).await
+                            .map_err(|e| NetworkError::Transport { reason: e.to_string() })?;
+                        send_stream.finish()
+                            .map_err(|e| NetworkError::Transport { reason: e.to_string() })?;
+                        
+                        debug!("🔐 Sent reliable packet {} ({} bytes) via QUIC stream", 
+                               packet_wrapper.packet_id, data.len());
+                        Ok(())
+                    }
+                    Err(e) => Err(NetworkError::Transport { reason: e.to_string() })
+                }
+            } else {
+                // Use QUIC unreliable datagrams for packets that can tolerate loss (e.g., AgentUpdate)
+                match connection.send_datagram(data.clone()) {
+                    Ok(_) => {
+                        debug!("📡 Sent unreliable packet {} ({} bytes) via QUIC datagram", 
+                               packet_wrapper.packet_id, data.len());
+                        Ok(())
+                    }
+                    Err(e) => {
+                        warn!("QUIC datagram send failed, falling back to stream: {}", e);
+                        // Fallback to stream if datagram fails
+                        self.send_via_quic_stream(connection, data).await
+                    }
+                }
+            }
+        } else {
+            // Unable to parse packet, default to reliable stream
+            warn!("Unable to parse packet for reliability determination, using reliable stream");
+            self.send_via_quic_stream(connection, data).await
+        }
+    }
+    
+    /// Send packet via QUIC reliable stream (fallback method)
+    async fn send_via_quic_stream(&self, connection: &Connection, data: Bytes) -> NetworkResult<()> {
         match connection.open_uni().await {
             Ok(mut send_stream) => {
                 send_stream.write_all(&data).await
@@ -218,7 +261,7 @@ impl QuicTransport {
                 send_stream.finish()
                     .map_err(|e| NetworkError::Transport { reason: e.to_string() })?;
                 
-                info!("🔐 Sent {} bytes via QUIC with built-in reliability", data.len());
+                debug!("🔐 Sent {} bytes via QUIC reliable stream (fallback)", data.len());
                 Ok(())
             }
             Err(e) => Err(NetworkError::Transport { reason: e.to_string() })
@@ -253,32 +296,78 @@ impl QuicTransport {
         });
     }
     
-    /// Start packet receiver task
+    /// Start packet receiver task for both QUIC streams and datagrams
     async fn start_packet_receiver(&self) {
         let connection = Arc::clone(&self.connection);
         let deserializer = Arc::clone(&self.deserializer);
         let packet_callback = Arc::clone(&self.packet_callback);
         
+        // Stream receiver task
+        let stream_connection = Arc::clone(&connection);
+        let stream_deserializer = Arc::clone(&deserializer);
+        let stream_callback = Arc::clone(&packet_callback);
         tokio::spawn(async move {
             loop {
-                let conn_guard = connection.read().await;
+                let conn_guard = stream_connection.read().await;
                 if let Some(connection) = conn_guard.as_ref() {
-                    // Accept incoming QUIC streams
+                    // Accept incoming QUIC streams (reliable packets)
                     match connection.accept_uni().await {
                         Ok(recv_stream) => {
-                            let deserializer = Arc::clone(&deserializer);
-                            let packet_callback = Arc::clone(&packet_callback);
+                            let deserializer = Arc::clone(&stream_deserializer);
+                            let packet_callback = Arc::clone(&stream_callback);
                             let remote_addr = connection.remote_address();
                             
                             tokio::spawn(async move {
                                 if let Err(e) = Self::handle_quic_stream(recv_stream, deserializer, packet_callback, remote_addr).await {
-                                    warn!("Error handling QUIC stream: {}", e);
+                                    warn!("Error handling QUIC reliable stream: {}", e);
                                 }
                             });
                         }
                         Err(e) => {
                             debug!("QUIC stream accept failed: {}", e);
                             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        }
+                    }
+                } else {
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }
+            }
+        });
+        
+        // Datagram receiver task
+        let datagram_connection = Arc::clone(&connection);
+        let datagram_deserializer = Arc::clone(&deserializer);
+        let datagram_callback = Arc::clone(&packet_callback);
+        tokio::spawn(async move {
+            loop {
+                let conn_guard = datagram_connection.read().await;
+                if let Some(connection) = conn_guard.as_ref() {
+                    // Receive QUIC datagrams (unreliable packets)
+                    match connection.read_datagram().await {
+                        Ok(datagram) => {
+                            let remote_addr = connection.remote_address();
+                            
+                            debug!("📡 Received {} bytes via QUIC datagram from {}", datagram.len(), remote_addr);
+                            
+                            // Parse the datagram packet
+                            match datagram_deserializer.parse_raw(&datagram) {
+                                Ok(packet_wrapper) => {
+                                    debug!("Successfully parsed QUIC datagram packet: id={}, unreliable", packet_wrapper.packet_id);
+                                    
+                                    // Call the callback
+                                    let cb_guard = datagram_callback.read().await;
+                                    if let Some(ref callback) = *cb_guard {
+                                        callback(packet_wrapper, remote_addr);
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!("Failed to parse QUIC datagram from {}: {}", remote_addr, e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            debug!("QUIC datagram read failed: {}", e);
+                            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                         }
                     }
                 } else {
@@ -321,6 +410,7 @@ impl QuicTransport {
     
     /// Static version of send_via_quic for use in spawned tasks
     async fn send_via_quic_static(connection: &Connection, data: Bytes) -> NetworkResult<()> {
+        // For static usage, default to reliable stream
         match connection.open_uni().await {
             Ok(mut send_stream) => {
                 send_stream.write_all(&data).await
@@ -333,6 +423,41 @@ impl QuicTransport {
         }
     }
     
+    /// Send reliable packet via QUIC stream (for critical SL packets)
+    pub async fn send_reliable(&self, data: Bytes, dest: SocketAddr) -> NetworkResult<()> {
+        if let Some(connection) = self.connection.read().await.as_ref() {
+            return self.send_via_quic_stream(connection, data).await;
+        }
+        
+        if let Some(ref udp_transport) = self.udp_fallback {
+            return udp_transport.send_packet(data, dest).await;
+        }
+        
+        Err(NetworkError::ConnectionLost { address: dest })
+    }
+    
+    /// Send unreliable packet via QUIC datagram (for frequent SL packets like AgentUpdate)
+    pub async fn send_unreliable(&self, data: Bytes, dest: SocketAddr) -> NetworkResult<()> {
+        if let Some(connection) = self.connection.read().await.as_ref() {
+            match connection.send_datagram(data.clone()) {
+                Ok(_) => {
+                    debug!("📡 Sent unreliable packet ({} bytes) via QUIC datagram", data.len());
+                    return Ok(());
+                }
+                Err(e) => {
+                    warn!("QUIC datagram send failed, falling back to stream: {}", e);
+                    return self.send_via_quic_stream(connection, data).await;
+                }
+            }
+        }
+        
+        if let Some(ref udp_transport) = self.udp_fallback {
+            return udp_transport.send_packet(data, dest).await;
+        }
+        
+        Err(NetworkError::ConnectionLost { address: dest })
+    }
+    
     /// Check if QUIC connection is active
     pub async fn is_quic_connected(&self) -> bool {
         self.connection.read().await.is_some()
@@ -341,5 +466,15 @@ impl QuicTransport {
     /// Check if using UDP fallback
     pub fn has_udp_fallback(&self) -> bool {
         self.udp_fallback.is_some()
+    }
+}
+
+impl std::fmt::Debug for QuicTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QuicTransport")
+            .field("config", &self.config)
+            .field("local_addr", &self.local_addr)
+            .field("has_udp_fallback", &self.udp_fallback.is_some())
+            .finish_non_exhaustive()
     }
 }

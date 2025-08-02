@@ -4,23 +4,28 @@
 //! of the Second Life UDP protocol, leveraging Rust's strengths in memory safety,
 //! zero-cost abstractions, and fearless concurrency.
 
+pub mod assets;
+pub mod auth;
+pub mod capabilities;
+pub mod circuit;
 pub mod client;
 pub mod core;
-pub mod circuit;
-pub mod packets;
-pub mod serialization;
+pub mod handover;
 pub mod handlers;
-pub mod transport;
-pub mod quic_transport;
-pub mod socks5_udp;
-pub mod auth;
 pub mod manager;
+pub mod packets;
 pub mod proxy;
+pub mod quic_transport;
+pub mod serialization;
+pub mod socks5_udp;
+pub mod transport;
 
 // Re-export main types for convenience
+pub use assets::AssetManager;
 pub use client::Client;
 pub use core::Core;
 pub use circuit::Circuit;
+pub use handover::RegionCrossingManager;
 pub use packets::{Packet, PacketFrequency};
 pub use serialization::{PacketSerializer, PacketDeserializer};
 pub use transport::UdpTransport;

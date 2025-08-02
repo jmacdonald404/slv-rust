@@ -196,8 +196,15 @@ impl Core {
         let (packet_tx, packet_rx) = mpsc::unbounded_channel();
         let (event_tx, mut event_rx) = mpsc::unbounded_channel();
         
-        // Create circuit
-        let circuit = Arc::new(Circuit::new(options.clone(), packet_sender, packet_rx, event_tx));
+        // Create circuit based on transport type (ADR-0002)
+        let circuit = match &*self.transport {
+            TransportType::Quic(quic_transport) => {
+                Arc::new(Circuit::new_with_quic(options.clone(), Arc::clone(quic_transport), packet_rx, event_tx))
+            }
+            TransportType::Udp(_) => {
+                Arc::new(Circuit::new_with_udp(options.clone(), packet_sender, packet_rx, event_tx))
+            }
+        };
         
         // Store circuit
         {

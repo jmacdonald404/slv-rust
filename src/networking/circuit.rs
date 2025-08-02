@@ -6,6 +6,8 @@
 use crate::networking::{NetworkError, NetworkResult};
 use crate::networking::packets::{Packet, PacketWrapper};
 use crate::networking::serialization::{PacketSerializer, PacketDeserializer};
+use crate::networking::quic_transport::QuicTransport;
+use crate::networking::transport::UdpTransport;
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -22,6 +24,15 @@ pub struct CircuitOptions {
     pub address: SocketAddr,
     pub agent_id: Uuid,
     pub session_id: Uuid,
+}
+
+/// Transport type for circuit communication following ADR-0002
+#[derive(Debug)]
+pub enum CircuitTransport {
+    /// QUIC transport with built-in reliability (preferred per ADR-0002)
+    Quic(Arc<QuicTransport>),
+    /// UDP transport with manual reliability (fallback)
+    Udp(mpsc::UnboundedSender<(bytes::Bytes, SocketAddr)>),
 }
 
 /// Reliable packet waiting for acknowledgment
@@ -250,7 +261,7 @@ impl PingTracker {
     }
 }
 
-/// Circuit for managing connection to a Second Life simulator
+/// Circuit for managing connection to a Second Life simulator following ADR-0002
 pub struct Circuit {
     /// Circuit configuration
     options: CircuitOptions,
@@ -264,14 +275,14 @@ pub struct Circuit {
     /// Packet deserializer  
     deserializer: Arc<PacketDeserializer>,
     
-    /// Acknowledgment manager
+    /// Transport layer (QUIC or UDP per ADR-0002)
+    transport: Arc<CircuitTransport>,
+    
+    /// Acknowledgment manager (reduced responsibility with QUIC)
     acknowledger: Arc<Mutex<Acknowledger>>,
     
     /// Ping tracker for circuit health
     ping_tracker: Arc<Mutex<PingTracker>>,
-    
-    /// Channel for sending packets to transport
-    packet_tx: mpsc::UnboundedSender<(Bytes, SocketAddr)>,
     
     /// Channel for receiving packets from transport
     packet_rx: Arc<Mutex<mpsc::UnboundedReceiver<PacketWrapper>>>,
@@ -279,7 +290,7 @@ pub struct Circuit {
     /// Channel for outgoing events
     event_tx: mpsc::UnboundedSender<CircuitEvent>,
     
-    /// Retry configuration
+    /// Retry configuration (used only for UDP fallback)
     retry_timeout: Duration,
     max_retries: u8,
     
@@ -315,27 +326,55 @@ pub enum CircuitEvent {
 }
 
 impl Circuit {
-    pub fn new(
+    /// Create a new circuit with QUIC transport (preferred per ADR-0002)
+    pub fn new_with_quic(
         options: CircuitOptions,
-        packet_tx: mpsc::UnboundedSender<(Bytes, SocketAddr)>,
+        transport: Arc<QuicTransport>,
         packet_rx: mpsc::UnboundedReceiver<PacketWrapper>,
         event_tx: mpsc::UnboundedSender<CircuitEvent>,
     ) -> Self {
+        info!("🔐 Creating circuit with QUIC transport for {} (ADR-0002)", options.address);
         Self {
             options,
             state: Arc::new(RwLock::new(CircuitState::Connecting)),
             serializer: Arc::new(Mutex::new(PacketSerializer::new())),
             deserializer: Arc::new(PacketDeserializer::new()),
+            transport: Arc::new(CircuitTransport::Quic(transport)),
             acknowledger: Arc::new(Mutex::new(Acknowledger::new())),
             ping_tracker: Arc::new(Mutex::new(PingTracker::new())),
-            packet_tx,
+            packet_rx: Arc::new(Mutex::new(packet_rx)),
+            event_tx,
+            retry_timeout: Duration::from_secs(3), // Used for fallback only
+            max_retries: 3,
+            ping_interval: Duration::from_secs(60),
+            ping_timeout: Duration::from_secs(30),
+            max_outstanding_pings: 5,
+        }
+    }
+    
+    /// Create a new circuit with UDP transport (fallback)
+    pub fn new_with_udp(
+        options: CircuitOptions,
+        packet_tx: mpsc::UnboundedSender<(bytes::Bytes, SocketAddr)>,
+        packet_rx: mpsc::UnboundedReceiver<PacketWrapper>,
+        event_tx: mpsc::UnboundedSender<CircuitEvent>,
+    ) -> Self {
+        info!("🔄 Creating circuit with UDP transport (fallback) for {}", options.address);
+        Self {
+            options,
+            state: Arc::new(RwLock::new(CircuitState::Connecting)),
+            serializer: Arc::new(Mutex::new(PacketSerializer::new())),
+            deserializer: Arc::new(PacketDeserializer::new()),
+            transport: Arc::new(CircuitTransport::Udp(packet_tx)),
+            acknowledger: Arc::new(Mutex::new(Acknowledger::new())),
+            ping_tracker: Arc::new(Mutex::new(PingTracker::new())),
             packet_rx: Arc::new(Mutex::new(packet_rx)),
             event_tx,
             retry_timeout: Duration::from_secs(3),
             max_retries: 3,
-            ping_interval: Duration::from_secs(60), // Ping every 60 seconds
-            ping_timeout: Duration::from_secs(30),  // 30 second ping timeout
-            max_outstanding_pings: 5,              // Max 5 outstanding pings before blocking
+            ping_interval: Duration::from_secs(60),
+            ping_timeout: Duration::from_secs(30),
+            max_outstanding_pings: 5,
         }
     }
     
@@ -383,24 +422,30 @@ impl Circuit {
         Ok(())
     }
     
-    /// Send a packet (unreliable)
+    /// Send a packet (unreliable) - optimized for QUIC datagrams per ADR-0002
     pub async fn send<P: Packet>(&self, packet: &P) -> NetworkResult<()> {
         let mut serializer = self.serializer.lock().await;
         let (data, _) = serializer.serialize(packet, false)?;
         
-        self.packet_tx.send((data, self.options.address))
-            .map_err(|_| NetworkError::ConnectionLost { 
-                address: self.options.address 
-            })?;
-            
-        Ok(())
+        match &*self.transport.as_ref() {
+            CircuitTransport::Quic(quic_transport) => {
+                // Use QUIC unreliable datagrams for non-critical packets (optimized)
+                quic_transport.send_unreliable(data, self.options.address).await
+            },
+            CircuitTransport::Udp(packet_tx) => {
+                // Fallback to UDP
+                packet_tx.send((data, self.options.address))
+                    .map_err(|_| NetworkError::ConnectionLost { 
+                        address: self.options.address 
+                    })?;
+                Ok(())
+            }
+        }
     }
     
-    /// Send a packet reliably (with acknowledgment)
-    /// SECURITY: Enhanced reliability with retry mechanism for critical authentication packets
+    /// Send a packet reliably - leverages QUIC built-in reliability per ADR-0002
+    /// SECURITY: Enhanced reliability with QUIC streams for critical authentication packets
     pub async fn send_reliable<P: Packet>(&self, packet: &P, timeout_duration: Duration) -> NetworkResult<()> {
-        let (resolve_tx, resolve_rx) = tokio::sync::oneshot::channel();
-        
         // SECURITY: Validate circuit state before sending sensitive packets
         let current_state = self.state.read().await.clone();
         if matches!(current_state, CircuitState::Disconnected | CircuitState::Disconnecting) {
@@ -415,37 +460,68 @@ impl Circuit {
         info!("🔒 Sending SECURE reliable packet: {} bytes, sequence {}, to {} (state: {:?})", 
               data.len(), sequence, self.options.address, current_state);
         
-        // Create packet wrapper for acknowledgment tracking
-        let wrapper = PacketWrapper::new(packet, Some(true))?;
-        
-        // Add to pending reliable packets
-        {
-            let mut ack = self.acknowledger.lock().await;
-            ack.add_pending_reliable(sequence, wrapper, resolve_tx);
-        }
-        
-        // Send the packet
-        self.packet_tx.send((data, self.options.address))
-            .map_err(|_| NetworkError::ConnectionLost { 
-                address: self.options.address 
-            })?;
-        
-        // Wait for acknowledgment with timeout - enhanced error reporting for security
-        match timeout(timeout_duration, resolve_rx).await {
-            Ok(Ok(())) => {
-                info!("✅ SECURE reliable packet acknowledged: sequence {} ({}s timeout)", 
-                      sequence, timeout_duration.as_secs());
-                Ok(())
+        match &*self.transport.as_ref() {
+            CircuitTransport::Quic(quic_transport) => {
+                // QUIC provides built-in reliability, so we can send directly
+                // No need for manual ACK tracking - QUIC handles this at the transport layer
+                info!("🔐 Using QUIC built-in reliability for secure packet transmission");
+                
+                match timeout(timeout_duration, quic_transport.send_reliable(data, self.options.address)).await {
+                    Ok(Ok(())) => {
+                        info!("✅ SECURE reliable packet sent via QUIC stream: sequence {} ({}s timeout)", 
+                              sequence, timeout_duration.as_secs());
+                        Ok(())
+                    },
+                    Ok(Err(e)) => {
+                        warn!("🔒 SECURITY: QUIC reliable send failed for sequence {}: {}", sequence, e);
+                        Err(e)
+                    },
+                    Err(_) => {
+                        warn!("🔒 SECURITY: QUIC reliable send timeout for sequence {} after {}s", 
+                              sequence, timeout_duration.as_secs());
+                        Err(NetworkError::HandshakeTimeout)
+                    }
+                }
             },
-            Ok(Err(_)) => {
-                warn!("🔒 SECURITY: Reliable packet channel closed unexpectedly for sequence {} - possible connection compromise", sequence);
-                Err(NetworkError::HandshakeTimeout)
-            },
-            Err(_) => {
-                warn!("🔒 SECURITY: Reliable packet acknowledgment timeout for sequence {} after {}s - connection may be compromised", 
-                      sequence, timeout_duration.as_secs());
-                Err(NetworkError::HandshakeTimeout)
-            },
+            CircuitTransport::Udp(packet_tx) => {
+                // Fallback to UDP with manual acknowledgment tracking
+                info!("🔄 Using UDP fallback with manual ACK tracking for reliable packet");
+                
+                let (resolve_tx, resolve_rx) = tokio::sync::oneshot::channel();
+                
+                // Create packet wrapper for acknowledgment tracking
+                let wrapper = PacketWrapper::new(packet, Some(true))?;
+                
+                // Add to pending reliable packets
+                {
+                    let mut ack = self.acknowledger.lock().await;
+                    ack.add_pending_reliable(sequence, wrapper, resolve_tx);
+                }
+                
+                // Send the packet
+                packet_tx.send((data, self.options.address))
+                    .map_err(|_| NetworkError::ConnectionLost { 
+                        address: self.options.address 
+                    })?;
+                
+                // Wait for acknowledgment with timeout
+                match timeout(timeout_duration, resolve_rx).await {
+                    Ok(Ok(())) => {
+                        info!("✅ SECURE reliable packet acknowledged via UDP: sequence {} ({}s timeout)", 
+                              sequence, timeout_duration.as_secs());
+                        Ok(())
+                    },
+                    Ok(Err(_)) => {
+                        warn!("🔒 SECURITY: UDP reliable packet channel closed unexpectedly for sequence {}", sequence);
+                        Err(NetworkError::HandshakeTimeout)
+                    },
+                    Err(_) => {
+                        warn!("🔒 SECURITY: UDP reliable packet acknowledgment timeout for sequence {} after {}s", 
+                              sequence, timeout_duration.as_secs());
+                        Err(NetworkError::HandshakeTimeout)
+                    },
+                }
+            }
         }
     }
     
@@ -492,91 +568,105 @@ impl Circuit {
     }
     
     
-    /// Start retry handler task
+    /// Start retry handler task (UDP fallback only - QUIC handles retries internally)
     async fn start_retry_handler(&self) {
         let acknowledger = Arc::clone(&self.acknowledger);
-        let packet_tx = self.packet_tx.clone();
+        let transport = Arc::clone(&self.transport);
         let serializer = Arc::clone(&self.serializer);
         let address = self.options.address;
         let retry_timeout = self.retry_timeout;
         let max_retries = self.max_retries;
         let state = Arc::clone(&self.state);
         
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(retry_timeout);
-            
-            loop {
-                interval.tick().await;
+        // Only start retry handler for UDP transport (QUIC handles retries internally)
+        if matches!(&*transport.as_ref(), CircuitTransport::Udp(_)) {
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(retry_timeout);
                 
-                // Check if circuit is still active
-                if *state.read().await == CircuitState::Disconnected {
-                    break;
-                }
-                
-                // Check for packets needing retransmission
-                let retransmits = {
-                    let mut ack = acknowledger.lock().await;
-                    ack.get_retransmits(retry_timeout, max_retries)
-                };
-                
-                // Retransmit packets
-                for (sequence, wrapper) in retransmits {
-                    let mut serializer = serializer.lock().await;
-                    if let Ok(data) = serializer.serialize_wrapper(&wrapper) {
-                        let data_len = data.len();
-                        let _ = packet_tx.send((data, address));
-                        info!("📤 Retransmitted packet sequence {} to {} ({} bytes, marked as RESENT)", 
-                              sequence, address, data_len);
-                    } else {
-                        warn!("❌ Failed to serialize packet for retransmission: sequence {}", sequence);
+                loop {
+                    interval.tick().await;
+                    
+                    // Check if circuit is still active
+                    if *state.read().await == CircuitState::Disconnected {
+                        break;
+                    }
+                    
+                    // Check for packets needing retransmission
+                    let retransmits = {
+                        let mut ack = acknowledger.lock().await;
+                        ack.get_retransmits(retry_timeout, max_retries)
+                    };
+                    
+                    // Retransmit packets via UDP transport
+                    if let CircuitTransport::Udp(packet_tx) = &*transport.as_ref() {
+                        for (sequence, wrapper) in retransmits {
+                            let mut serializer = serializer.lock().await;
+                            if let Ok(data) = serializer.serialize_wrapper(&wrapper) {
+                                let data_len = data.len();
+                                let _ = packet_tx.send((data, address));
+                                info!("📤 Retransmitted packet sequence {} to {} ({} bytes, marked as RESENT)", 
+                                      sequence, address, data_len);
+                            } else {
+                                warn!("❌ Failed to serialize packet for retransmission: sequence {}", sequence);
+                            }
+                        }
                     }
                 }
-            }
-        });
+            });
+        } else {
+            debug!("🔐 QUIC transport - retry handler not needed (built-in reliability)");
+        }
     }
     
-    /// Start acknowledgment sender task
+    /// Start acknowledgment sender task (UDP fallback only - QUIC handles ACKs internally)
     async fn start_ack_sender(&self) {
         let acknowledger = Arc::clone(&self.acknowledger);
-        let packet_tx = self.packet_tx.clone();
+        let transport = Arc::clone(&self.transport);
         let serializer = Arc::clone(&self.serializer);
         let address = self.options.address;
         let state = Arc::clone(&self.state);
         
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_millis(250));
-            
-            loop {
-                interval.tick().await;
+        // Only start ACK sender for UDP transport (QUIC handles ACKs internally)
+        if matches!(&*transport.as_ref(), CircuitTransport::Udp(_)) {
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_millis(250));
                 
-                // Check if circuit is still active
-                if *state.read().await == CircuitState::Disconnected {
-                    break;
-                }
-                
-                // Get pending acknowledgments
-                let acks = {
-                    let mut ack = acknowledger.lock().await;
-                    ack.take_pending_acks()
-                };
-                
-                // Send acknowledgment packet if we have any
-                if !acks.is_empty() {
-                    use crate::networking::packets::generated::*;
+                loop {
+                    interval.tick().await;
                     
-                    let packet_ack = PacketAck {
-                        packets: acks.into_iter()
-                            .map(|id| PacketsBlock { id })
-                            .collect(),
+                    // Check if circuit is still active
+                    if *state.read().await == CircuitState::Disconnected {
+                        break;
+                    }
+                    
+                    // Get pending acknowledgments
+                    let acks = {
+                        let mut ack = acknowledger.lock().await;
+                        ack.take_pending_acks()
                     };
                     
-                    let mut serializer = serializer.lock().await;
-                    if let Ok((data, _)) = serializer.serialize(&packet_ack, false) {
-                        let _ = packet_tx.send((data, address));
+                    // Send acknowledgment packet if we have any
+                    if !acks.is_empty() {
+                        use crate::networking::packets::generated::*;
+                        
+                        let packet_ack = PacketAck {
+                            packets: acks.into_iter()
+                                .map(|id| PacketsBlock { id })
+                                .collect(),
+                        };
+                        
+                        if let CircuitTransport::Udp(packet_tx) = &*transport.as_ref() {
+                            let mut serializer = serializer.lock().await;
+                            if let Ok((data, _)) = serializer.serialize(&packet_ack, false) {
+                                let _ = packet_tx.send((data, address));
+                            }
+                        }
                     }
                 }
-            }
-        });
+            });
+        } else {
+            debug!("🔐 QUIC transport - ACK sender not needed (built-in acknowledgment)");
+        }
     }
     
     /// Handle received acknowledgment packet
@@ -643,7 +733,7 @@ impl Circuit {
     /// Start ping handler task
     async fn start_ping_handler(&self) {
         let ping_tracker = Arc::clone(&self.ping_tracker);
-        let packet_tx = self.packet_tx.clone();
+        let transport = Arc::clone(&self.transport);
         let serializer = Arc::clone(&self.serializer);
         let address = self.options.address;
         let state = Arc::clone(&self.state);
@@ -702,8 +792,19 @@ impl Circuit {
                 
                 let mut serializer = serializer.lock().await;
                 if let Ok((data, _)) = serializer.serialize(&ping_packet, false) {
-                    let _ = packet_tx.send((data, address));
-                    debug!("Sent ping {} to {}", ping_id, address);
+                    match &*transport.as_ref() {
+                        CircuitTransport::Quic(quic_transport) => {
+                            if let Err(e) = quic_transport.send_unreliable(data.into(), address).await {
+                                warn!("Failed to send ping {} via QUIC: {}", ping_id, e);
+                            } else {
+                                debug!("Sent ping {} to {} via QUIC", ping_id, address);
+                            }
+                        }
+                        CircuitTransport::Udp(packet_tx) => {
+                            let _ = packet_tx.send((data, address));
+                            debug!("Sent ping {} to {} via UDP", ping_id, address);
+                        }
+                    }
                 } else {
                     warn!("Failed to serialize ping packet");
                 }
