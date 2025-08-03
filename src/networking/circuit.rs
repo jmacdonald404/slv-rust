@@ -111,8 +111,10 @@ impl Acknowledger {
             if let Some(tx) = pending.resolve_tx.take() {
                 let _ = tx.send(()); // Resolve the future
             }
+            info!("✅ Reliable packet sequence {} acknowledged successfully", sequence);
             true
         } else {
+            debug!("Received ACK for unknown sequence {} (already processed or expired)", sequence);
             false
         }
     }
@@ -124,17 +126,21 @@ impl Acknowledger {
         let mut to_remove = Vec::new();
         
         for (sequence, pending) in &mut self.pending_reliable {
-            // Exponential backoff: 2^retry_count * base_timeout
-            let retry_timeout = base_retry_timeout * (1 << pending.retry_count.min(6)) as u32;
+            // WiFi-friendly exponential backoff with jitter and caps
+            let exponential_factor = (1 << pending.retry_count.min(4)) as u32; // Cap at 2^4 = 16x
+            let jitter = 1.0 + (pending.packet.sequence % 100) as f32 / 1000.0; // 0-10% jitter
+            let retry_timeout = Duration::from_millis(
+                ((base_retry_timeout.as_millis() as f32 * exponential_factor as f32 * jitter) as u64)
+                    .min(15000) // Cap at 15 seconds for flaky connections
+            );
             
             if now.duration_since(pending.sent_at) >= retry_timeout {
                 if pending.retry_count >= max_retries {
                     // Too many retries - give up
                     warn!("Packet sequence {} failed after {} retries", sequence, pending.retry_count);
                     to_remove.push(*sequence);
-                    if let Some(tx) = pending.resolve_tx.take() {
-                        let _ = tx.send(()); // Resolve with failure (could be error instead)
-                    }
+                    // Don't resolve the future - let it timeout naturally
+                    // This ensures the reliable send fails properly instead of false success
                 } else {
                     // Retry with exponential backoff
                     pending.retry_count += 1;
@@ -183,6 +189,12 @@ pub enum CircuitState {
     Handshaking,
     /// Fully established and ready for communication
     Ready,
+    /// Circuit experiencing degraded performance but still functional
+    Degraded { 
+        packet_loss_percent: f32,
+        avg_rtt_ms: u32,
+        reason: String,
+    },
     /// Circuit is temporarily blocked due to ping failures
     Blocked,
     /// Circuit is being shut down
@@ -202,6 +214,11 @@ struct PingTracker {
     /// Ping statistics
     ping_count: u32,
     blocked_pings: u32,
+    /// Connection quality metrics for WiFi resilience
+    rtt_history: VecDeque<Duration>,
+    packet_loss_window: VecDeque<bool>, // true = success, false = loss
+    avg_rtt: Duration,
+    packet_loss_percent: f32,
 }
 
 impl PingTracker {
@@ -212,6 +229,10 @@ impl PingTracker {
             next_ping_id: 1,
             ping_count: 0,
             blocked_pings: 0,
+            rtt_history: VecDeque::new(),
+            packet_loss_window: VecDeque::new(),
+            avg_rtt: Duration::from_millis(100), // Default assumption
+            packet_loss_percent: 0.0,
         }
     }
     
@@ -231,10 +252,46 @@ impl PingTracker {
         if let Some(sent_time) = self.outstanding_pings.remove(&ping_id) {
             let rtt = Instant::now().duration_since(sent_time);
             self.last_rtt = Some(rtt);
+            
+            // Update connection quality metrics for WiFi resilience
+            self.update_quality_metrics(rtt, true);
+            
             Some(rtt)
         } else {
             None
         }
+    }
+    
+    /// Update connection quality metrics for adaptive behavior
+    fn update_quality_metrics(&mut self, rtt: Duration, success: bool) {
+        // Update RTT history (keep last 20 measurements)
+        self.rtt_history.push_back(rtt);
+        if self.rtt_history.len() > 20 {
+            self.rtt_history.pop_front();
+        }
+        
+        // Update packet loss tracking (keep last 50 attempts)
+        self.packet_loss_window.push_back(success);
+        if self.packet_loss_window.len() > 50 {
+            self.packet_loss_window.pop_front();
+        }
+        
+        // Calculate moving averages
+        if !self.rtt_history.is_empty() {
+            let total_ms: u64 = self.rtt_history.iter().map(|d| d.as_millis() as u64).sum();
+            self.avg_rtt = Duration::from_millis(total_ms / self.rtt_history.len() as u64);
+        }
+        
+        if !self.packet_loss_window.is_empty() {
+            let failures = self.packet_loss_window.iter().filter(|&&s| !s).count();
+            self.packet_loss_percent = (failures as f32 / self.packet_loss_window.len() as f32) * 100.0;
+        }
+    }
+    
+    /// Get connection health assessment for WiFi resilience
+    fn get_connection_health(&self) -> (f32, u32, bool) {
+        let is_degraded = self.packet_loss_percent > 5.0 || self.avg_rtt.as_millis() > 500;
+        (self.packet_loss_percent, self.avg_rtt.as_millis() as u32, is_degraded)
     }
     
     /// Check if circuit should be considered blocked
@@ -255,6 +312,11 @@ impl PingTracker {
                 true
             }
         });
+        
+        // Track failed pings for connection quality metrics after retain
+        for _ in 0..timed_out {
+            self.update_quality_metrics(timeout, false);
+        }
         
         self.blocked_pings += timed_out as u32;
         timed_out
@@ -344,11 +406,11 @@ impl Circuit {
             ping_tracker: Arc::new(Mutex::new(PingTracker::new())),
             packet_rx: Arc::new(Mutex::new(packet_rx)),
             event_tx,
-            retry_timeout: Duration::from_secs(3), // Used for fallback only
-            max_retries: 3,
-            ping_interval: Duration::from_secs(60),
-            ping_timeout: Duration::from_secs(30),
-            max_outstanding_pings: 5,
+            retry_timeout: Duration::from_millis(1500), // Faster initial retry for flaky WiFi
+            max_retries: 8, // More retries for unstable connections
+            ping_interval: Duration::from_secs(45), // More frequent keepalives
+            ping_timeout: Duration::from_secs(20), // Shorter ping timeout
+            max_outstanding_pings: 3, // Fewer concurrent pings
         }
     }
     
@@ -370,17 +432,40 @@ impl Circuit {
             ping_tracker: Arc::new(Mutex::new(PingTracker::new())),
             packet_rx: Arc::new(Mutex::new(packet_rx)),
             event_tx,
-            retry_timeout: Duration::from_secs(3),
-            max_retries: 3,
-            ping_interval: Duration::from_secs(60),
-            ping_timeout: Duration::from_secs(30),
-            max_outstanding_pings: 5,
+            retry_timeout: Duration::from_millis(1500), // Faster initial retry for flaky WiFi
+            max_retries: 8, // More retries for unstable connections
+            ping_interval: Duration::from_secs(45), // More frequent keepalives
+            ping_timeout: Duration::from_secs(20), // Shorter ping timeout
+            max_outstanding_pings: 3, // Fewer concurrent pings
         }
     }
     
     /// Get circuit address
     pub fn address(&self) -> SocketAddr {
         self.options.address
+    }
+    
+    /// Get adaptive timeout based on connection health for WiFi resilience
+    async fn get_adaptive_timeout(&self, base_timeout: Duration) -> Duration {
+        let tracker = self.ping_tracker.lock().await;
+        let (packet_loss, avg_rtt, is_degraded) = tracker.get_connection_health();
+        
+        if is_degraded {
+            // Increase timeout for degraded connections
+            let multiplier = if packet_loss > 10.0 {
+                3.0 // High packet loss - much longer timeout
+            } else if avg_rtt > 1000 {
+                2.5 // High latency - longer timeout  
+            } else {
+                1.5 // Mildly degraded - slightly longer
+            };
+            
+            Duration::from_millis((base_timeout.as_millis() as f32 * multiplier) as u64)
+                .min(Duration::from_secs(60)) // Cap at 60 seconds
+        } else {
+            // Healthy connection - use base timeout
+            base_timeout
+        }
     }
     
     /// Get circuit code
@@ -446,6 +531,8 @@ impl Circuit {
     /// Send a packet reliably - leverages QUIC built-in reliability per ADR-0002
     /// SECURITY: Enhanced reliability with QUIC streams for critical authentication packets
     pub async fn send_reliable<P: Packet>(&self, packet: &P, timeout_duration: Duration) -> NetworkResult<()> {
+        // Adaptive timeout based on connection health for WiFi resilience
+        let adaptive_timeout = self.get_adaptive_timeout(timeout_duration).await;
         // SECURITY: Validate circuit state before sending sensitive packets
         let current_state = self.state.read().await.clone();
         if matches!(current_state, CircuitState::Disconnected | CircuitState::Disconnecting) {
@@ -457,28 +544,44 @@ impl Circuit {
         let mut serializer = self.serializer.lock().await;
         let (data, sequence) = serializer.serialize(packet, true)?;
         
-        info!("🔒 Sending SECURE reliable packet: {} bytes, sequence {}, to {} (state: {:?})", 
-              data.len(), sequence, self.options.address, current_state);
+        info!("🔒 CIRCUIT SEND: Sending SECURE reliable packet");
+        info!("   Size: {} bytes", data.len());
+        info!("   Sequence: {}", sequence);
+        info!("   Destination: {}", self.options.address);
+        info!("   Circuit State: {:?}", current_state);
+        info!("   Timeout: {:?}", adaptive_timeout);
+        
+        let send_start = std::time::Instant::now();
         
         match &*self.transport.as_ref() {
             CircuitTransport::Quic(quic_transport) => {
                 // QUIC provides built-in reliability, so we can send directly
                 // No need for manual ACK tracking - QUIC handles this at the transport layer
-                info!("🔐 Using QUIC built-in reliability for secure packet transmission");
+                info!("🔐 CIRCUIT SEND: Using QUIC built-in reliability for secure packet transmission");
                 
-                match timeout(timeout_duration, quic_transport.send_reliable(data, self.options.address)).await {
+                match timeout(adaptive_timeout, quic_transport.send_reliable(data, self.options.address)).await {
                     Ok(Ok(())) => {
-                        info!("✅ SECURE reliable packet sent via QUIC stream: sequence {} ({}s timeout)", 
-                              sequence, timeout_duration.as_secs());
+                        let send_time = send_start.elapsed();
+                        info!("✅ CIRCUIT RESPONSE: SECURE reliable packet sent via QUIC stream");
+                        info!("   Sequence: {}", sequence);
+                        info!("   Send time: {:?}", send_time);
+                        info!("   Adaptive timeout: {:?}", adaptive_timeout);
                         Ok(())
                     },
                     Ok(Err(e)) => {
-                        warn!("🔒 SECURITY: QUIC reliable send failed for sequence {}: {}", sequence, e);
+                        let send_time = send_start.elapsed();
+                        warn!("❌ CIRCUIT RESPONSE ERROR: QUIC reliable send failed");
+                        warn!("   Sequence: {}", sequence);
+                        warn!("   Error: {}", e);
+                        warn!("   Send time: {:?}", send_time);
                         Err(e)
                     },
                     Err(_) => {
-                        warn!("🔒 SECURITY: QUIC reliable send timeout for sequence {} after {}s", 
-                              sequence, timeout_duration.as_secs());
+                        let send_time = send_start.elapsed();
+                        warn!("⏰ CIRCUIT RESPONSE TIMEOUT: QUIC reliable send timeout");
+                        warn!("   Sequence: {}", sequence);
+                        warn!("   Timeout after: {:?}", send_time);
+                        warn!("   Adaptive timeout was: {:?}", adaptive_timeout);
                         Err(NetworkError::HandshakeTimeout)
                     }
                 }
@@ -504,11 +607,11 @@ impl Circuit {
                         address: self.options.address 
                     })?;
                 
-                // Wait for acknowledgment with timeout
-                match timeout(timeout_duration, resolve_rx).await {
+                // Wait for acknowledgment with adaptive timeout  
+                match timeout(adaptive_timeout, resolve_rx).await {
                     Ok(Ok(())) => {
-                        info!("✅ SECURE reliable packet acknowledged via UDP: sequence {} ({}s timeout)", 
-                              sequence, timeout_duration.as_secs());
+                        info!("✅ SECURE reliable packet acknowledged via UDP: sequence {} ({}s adaptive timeout)", 
+                              sequence, adaptive_timeout.as_secs());
                         Ok(())
                     },
                     Ok(Err(_)) => {
@@ -516,8 +619,8 @@ impl Circuit {
                         Err(NetworkError::HandshakeTimeout)
                     },
                     Err(_) => {
-                        warn!("🔒 SECURITY: UDP reliable packet acknowledgment timeout for sequence {} after {}s", 
-                              sequence, timeout_duration.as_secs());
+                        warn!("🔒 SECURITY: UDP reliable packet acknowledgment timeout for sequence {} after {}s (adaptive)", 
+                              sequence, adaptive_timeout.as_secs());
                         Err(NetworkError::HandshakeTimeout)
                     },
                 }
@@ -694,7 +797,7 @@ impl Circuit {
         
         let ping_packet = StartPingCheck { 
             ping_id,
-            oldest_unacked: Vec::new(), // Empty for now - could track oldest unacked sequence
+            oldest_unacked: 0, // Empty for now - could track oldest unacked sequence
         };
         
         // Send ping unreliably - pings are frequent and don't need to be reliable
@@ -752,30 +855,63 @@ impl Circuit {
                     break;
                 }
                 
-                // Clean up old pings and check for blocking
-                let (timed_out, is_blocked) = {
+                // Clean up old pings and check for blocking + WiFi health
+                let (timed_out, is_blocked, connection_health) = {
                     let mut tracker = ping_tracker.lock().await;
                     let timed_out = tracker.cleanup_old_pings(ping_timeout);
                     let is_blocked = tracker.is_blocked(max_outstanding);
-                    (timed_out, is_blocked)
+                    let health = tracker.get_connection_health();
+                    (timed_out, is_blocked, health)
                 };
+                
+                let (packet_loss, avg_rtt, is_degraded) = connection_health;
                 
                 if timed_out > 0 {
                     warn!("Circuit {} had {} ping timeouts", address, timed_out);
                 }
                 
-                if is_blocked {
-                    warn!("Circuit {} is blocked due to ping failures", address);
-                    // Set circuit to blocked state (SL protocol pauses agents when blocked)
-                    if let Ok(current_state) = state.try_read() {
-                        if *current_state != CircuitState::Blocked {
-                            drop(current_state);
+                // WiFi-aware state management
+                match *state.read().await {
+                    CircuitState::Ready | CircuitState::Connected | CircuitState::Handshaking => {
+                        if is_blocked {
+                            warn!("Circuit {} blocked: {} ping failures, switching to BLOCKED", address, max_outstanding);
                             let mut state_lock = state.write().await;
                             *state_lock = CircuitState::Blocked;
-                            warn!("Circuit {} set to BLOCKED state", address);
+                        } else if is_degraded {
+                            info!("Circuit {} degraded: {:.1}% loss, {}ms RTT", address, packet_loss, avg_rtt);
+                            let mut state_lock = state.write().await;
+                            *state_lock = CircuitState::Degraded {
+                                packet_loss_percent: packet_loss,
+                                avg_rtt_ms: avg_rtt,
+                                reason: if packet_loss > 5.0 { 
+                                    "High packet loss".to_string() 
+                                } else { 
+                                    "High latency".to_string() 
+                                },
+                            };
                         }
+                    },
+                    CircuitState::Degraded { .. } => {
+                        if is_blocked {
+                            warn!("Circuit {} degraded→blocked: too many failures", address);
+                            let mut state_lock = state.write().await;
+                            *state_lock = CircuitState::Blocked;
+                        } else if !is_degraded {
+                            info!("Circuit {} recovered: {:.1}% loss, {}ms RTT", address, packet_loss, avg_rtt);
+                            let mut state_lock = state.write().await;
+                            *state_lock = CircuitState::Ready;
+                        }
+                    },
+                    CircuitState::Blocked => {
+                        if !is_blocked && !is_degraded {
+                            info!("Circuit {} unblocked: connection recovered", address);
+                            let mut state_lock = state.write().await;
+                            *state_lock = CircuitState::Ready;
+                        }
+                    },
+                    _ => {
+                        // Other states (Connecting, Disconnecting, etc.) - no ping monitoring
                     }
-                    continue;
                 }
                 
                 // Send a new ping
@@ -787,7 +923,7 @@ impl Circuit {
                 use crate::networking::packets::generated::*;
                 let ping_packet = StartPingCheck { 
             ping_id,
-            oldest_unacked: Vec::new(), // Empty for now - could track oldest unacked sequence
+            oldest_unacked: 0, // Empty for now - could track oldest unacked sequence
         };
                 
                 let mut serializer = serializer.lock().await;

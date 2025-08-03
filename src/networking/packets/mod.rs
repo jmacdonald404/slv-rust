@@ -31,7 +31,7 @@ pub enum PacketFrequency {
 /// 
 /// This trait provides compile-time guarantees about packet structure
 /// while maintaining exact protocol compatibility with the official viewer.
-pub trait Packet: Serialize + for<'de> Deserialize<'de> + Debug + Clone + Send + Sync {
+pub trait Packet: Serialize + for<'de> Deserialize<'de> + Debug + Clone + Send + Sync + std::any::Any {
     /// Unique packet identifier within its frequency range
     const ID: u32;
     

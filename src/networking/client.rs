@@ -16,6 +16,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use serde::{Deserialize, Serialize};
 use tokio::time::{timeout, Duration};
+use tracing::error;
 
 #[derive(Debug)]
 pub enum HandshakeEvent {
@@ -334,6 +335,9 @@ impl Client {
         // Connect to the circuit
         let circuit = self.core.connect_circuit(options, self.handshake_tx.clone()).await?;
         
+        // Give the circuit a moment to fully initialize its background tasks
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        
         self.set_state(ClientState::LoggingIn).await;
         
         // Perform handshake
@@ -449,6 +453,34 @@ impl Client {
         }
     }
     
+    /// Test basic network connectivity with a simple unreliable packet
+    async fn test_basic_connectivity(&self, circuit: &crate::networking::circuit::Circuit) -> NetworkResult<()> {
+        info!("🌐 Testing basic connectivity to {}", circuit.address());
+        
+        // Send a simple TestMessage packet unreliably just to verify network path
+        use crate::networking::packets::generated::*;
+        let test_message = TestMessage {
+            test1: 42, // Simple test value
+            neighbor_block: vec![], // Empty neighbor block
+        };
+        
+        // Send unreliably - we don't expect a response, just testing if packets can be sent
+        match circuit.send(&test_message).await {
+            Ok(()) => {
+                info!("✅ Basic connectivity test packet sent successfully");
+                // Give it a moment to reach the server
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                Ok(())
+            },
+            Err(e) => {
+                warn!("❌ Basic connectivity test failed: {}", e);
+                Err(NetworkError::ConnectionLost { 
+                    address: circuit.address()
+                })
+            }
+        }
+    }
+
     /// Test circuit responsiveness after UseCircuitCode
     async fn test_circuit_responsiveness(&self, circuit: &crate::networking::circuit::Circuit) -> NetworkResult<()> {
         // For now, we'll rely on the circuit's internal state validation
@@ -469,11 +501,14 @@ impl Client {
         info!("Starting handshake with simulator following homunculus protocol");
         info!("🔍 Testing server responsiveness at {}", circuit.address());
         
+        // Step 0: Basic connectivity test with unreliable packet
+        self.test_basic_connectivity(circuit).await?;
+        
         // Step 1: Send UseCircuitCode - establishes the circuit
         let use_circuit_code = UseCircuitCode {
             code: circuit.circuit_code(),
             session_id: self.session_info.session_id,
-            id: self.session_info.agent_id.as_bytes().to_vec(), // Convert UUID to bytes
+            id: self.session_info.agent_id, // Fixed: Use LLUUID directly, not Vec<u8>
         };
         
         info!("📦 UseCircuitCode details:");
@@ -501,23 +536,37 @@ impl Client {
         while attempt <= max_attempts && !success {
             // Dynamic timeout calculation based on exponential backoff
             // Following SL protocol specs: base timeout with exponential backoff
+            // Start with longer initial timeout for better stability
             let timeout_duration = std::time::Duration::from_secs(
-                base_timeout * (1 << (attempt - 1).min(3)) as u64
+                (base_timeout * 2) * (1 << (attempt - 1).min(2)) as u64
             );
             info!("🔐 Attempting secure UseCircuitCode transmission (attempt {}/{}) with {}s timeout", 
                   attempt, max_attempts, timeout_duration.as_secs());
             
+            info!("🔐 AUTH REQUEST: Sending UseCircuitCode (attempt {}/{})", attempt, max_attempts);
+            info!("   Timeout: {:?}", timeout_duration);
+            info!("   Circuit Code: {}", circuit.circuit_code());
+            
+            let auth_start = std::time::Instant::now();
             match tokio::time::timeout(
                 timeout_duration,
                 circuit.send_reliable(&use_circuit_code, timeout_duration)
             ).await {
                 Ok(Ok(())) => {
-                    info!("✅ UseCircuitCode sent reliably and acknowledged (attempt {})", attempt);
+                    let auth_time = auth_start.elapsed();
+                    info!("✅ AUTH RESPONSE: UseCircuitCode sent reliably and acknowledged");
+                    info!("   Attempt: {}/{}", attempt, max_attempts);
+                    info!("   Auth time: {:?}", auth_time);
+                    info!("   Setting circuit state to Handshaking");
                     circuit.set_state(crate::networking::circuit::CircuitState::Handshaking).await?;
                     success = true;
                 },
                 Ok(Err(e)) => {
-                    warn!("⚠️ UseCircuitCode reliable send failed on attempt {}: {}", attempt, e);
+                    let auth_time = auth_start.elapsed();
+                    warn!("❌ AUTH RESPONSE ERROR: UseCircuitCode reliable send failed");
+                    warn!("   Attempt: {}/{}", attempt, max_attempts);
+                    warn!("   Error: {}", e);
+                    warn!("   Auth time: {:?}", auth_time);
                     if attempt == max_attempts {
                         return Err(NetworkError::AuthenticationFailed { 
                             reason: format!("UseCircuitCode failed after {} attempts: {}", max_attempts, e) 
@@ -525,20 +574,31 @@ impl Client {
                     }
                 },
                 Err(_) => {
-                    warn!("⏰ UseCircuitCode reliable send timed out on attempt {} ({}s timeout)", 
-                          attempt, timeout_duration.as_secs());
+                    let auth_time = auth_start.elapsed();
+                    warn!("⏰ AUTH RESPONSE TIMEOUT: UseCircuitCode reliable send timed out");
+                    warn!("   Attempt: {}/{}", attempt, max_attempts);
+                    warn!("   Timeout after: {:?}", auth_time);
+                    warn!("   Expected timeout: {:?}", timeout_duration);
                     if attempt == max_attempts {
+                        error!("🔥 CRITICAL: All authentication attempts failed!");
+                        error!("   This usually indicates a network connectivity issue:");
+                        error!("   1. Check Windows Firewall - allow slv-rust.exe inbound/outbound");
+                        error!("   2. Check router/NAT settings for UDP port {}", circuit.address().port());
+                        error!("   3. Try disabling antivirus/security software temporarily");
+                        error!("   4. Verify your Second Life account is active");
                         return Err(NetworkError::AuthenticationFailed { 
-                            reason: format!("UseCircuitCode timed out after {} attempts", max_attempts) 
+                            reason: format!("UseCircuitCode timed out after {} attempts - likely firewall/network issue", max_attempts) 
                         });
                     }
                 }
             }
             
             if !success {
+                // Exponential backoff delay between attempts to avoid overwhelming the server
+                let delay = std::time::Duration::from_millis(1000 * (1 << (attempt - 1).min(2)) as u64);
+                info!("💤 Waiting {:?} before next attempt", delay);
+                tokio::time::sleep(delay).await;
                 attempt += 1;
-                // Brief delay before retry to avoid overwhelming the server
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             }
         }
         
@@ -602,35 +662,60 @@ impl Client {
         self.start_event_queue_get().await?;
 
         // Step 8: Wait for RegionHandshake and AgentMovementComplete
+        info!("🤝 HANDSHAKE: Waiting for server responses");
+        info!("   Expecting: RegionHandshake and AgentMovementComplete");
+        info!("   Timeout: 30 seconds");
+        
         let mut region_handshake_received = false;
         let mut agent_movement_complete_received = false;
+        let handshake_start = std::time::Instant::now();
 
         let mut handshake_rx = self.handshake_rx.write().await;
 
         while !region_handshake_received || !agent_movement_complete_received {
+            let elapsed = handshake_start.elapsed();
+            info!("🤝 HANDSHAKE: Waiting for events (elapsed: {:?})", elapsed);
+            
             match timeout(Duration::from_secs(30), handshake_rx.recv()).await {
                 Ok(Some(event)) => {
+                    let event_time = handshake_start.elapsed();
                     match event {
                         HandshakeEvent::RegionHandshake => {
-                            info!("RegionHandshake received");
+                            info!("✅ HANDSHAKE RESPONSE: RegionHandshake received");
+                            info!("   Event time: {:?}", event_time);
+                            info!("   Status: 1/2 handshake events completed");
                             region_handshake_received = true;
                         },
                         HandshakeEvent::AgentMovementComplete => {
-                            info!("AgentMovementComplete received");
+                            info!("✅ HANDSHAKE RESPONSE: AgentMovementComplete received");
+                            info!("   Event time: {:?}", event_time);
+                            info!("   Status: 2/2 handshake events completed");
                             agent_movement_complete_received = true;
                         },
                     }
                 },
                 Ok(None) => {
+                    let elapsed_time = handshake_start.elapsed();
+                    warn!("❌ HANDSHAKE RESPONSE ERROR: Handshake channel closed unexpectedly");
+                    warn!("   Elapsed time: {:?}", elapsed_time);
                     return Err(NetworkError::HandshakeFailed { reason: "Handshake channel closed unexpectedly".to_string() });
                 },
                 Err(_) => {
+                    let elapsed_time = handshake_start.elapsed();
+                    warn!("⏰ HANDSHAKE RESPONSE TIMEOUT: Handshake timed out");
+                    warn!("   Elapsed time: {:?}", elapsed_time);
+                    warn!("   RegionHandshake received: {}", region_handshake_received);
+                    warn!("   AgentMovementComplete received: {}", agent_movement_complete_received);
                     return Err(NetworkError::HandshakeFailed { reason: "Handshake timed out".to_string() });
                 }
             }
         }
 
-        info!("Handshake complete!");
+        let total_handshake_time = handshake_start.elapsed();
+        info!("✅ HANDSHAKE RESPONSE: Handshake complete!");
+        info!("   Total handshake time: {:?}", total_handshake_time);
+        info!("   RegionHandshake: ✓");
+        info!("   AgentMovementComplete: ✓");
         Ok(())
     }
 
@@ -678,6 +763,11 @@ impl Client {
                 
                 debug!("Sending EventQueueGet request with ack: {:?}", ack_id);
                 
+                info!("🌐 HTTP REQUEST: Sending EventQueueGet request");
+                info!("   URL: {}", eqg_url);
+                info!("   ACK ID: {:?}", ack_id);
+                
+                let request_start = std::time::Instant::now();
                 match client.post(eqg_url.clone())
                     .header("Content-Type", "application/llsd+xml")
                     .timeout(std::time::Duration::from_secs(45)) // Long-polling timeout
@@ -686,72 +776,92 @@ impl Client {
                     .await {
                     Ok(response) => {
                         let status = response.status();
+                        let response_time = request_start.elapsed();
+                        
+                        info!("🌐 HTTP RESPONSE: EventQueueGet response received");
+                        info!("   Status: {}", status);
+                        info!("   Response time: {:?}", response_time);
                         
                         // Handle different HTTP responses per SL protocol
                         match status.as_u16() {
                             200 => {
                                 // Successful response with events
+                                info!("✅ HTTP RESPONSE: EventQueueGet successful (200 OK)");
                                 match response.text().await {
                                     Ok(text) => {
-                                        debug!("EventQueueGet response: {}", text);
+                                        info!("📥 HTTP RESPONSE: EventQueueGet data received");
+                                        info!("   Response size: {} bytes", text.len());
+                                        debug!("   Response content: {}", text);
                                         
                                         // Parse LLSD XML response (simplified parsing)
                                         if let Some(id_match) = text.find("<key>id</key><integer>") {
                                             if let Some(id_end) = text[id_match + 22..].find("</integer>") {
                                                 if let Ok(new_ack_id) = text[id_match + 22..id_match + 22 + id_end].parse::<i64>() {
+                                                    info!("📝 HTTP RESPONSE: Updated ACK ID from {:?} to {}", ack_id, new_ack_id);
                                                     ack_id = Some(new_ack_id);
-                                                    debug!("Updated ack_id to: {}", new_ack_id);
                                                 }
                                             }
                                         }
                                         
                                         // Process specific event types critical for region transitions
                                         if text.contains("EnableSimulator") {
-                                            info!("🌐 EventQueueGet: EnableSimulator event received - neighbor region available");
+                                            info!("🌐 HTTP RESPONSE EVENT: EnableSimulator event received - neighbor region available");
                                             Self::handle_enable_simulator_event(&text).await;
                                         } else if text.contains("CrossedRegion") {
-                                            info!("🎉 EventQueueGet: CrossedRegion event received - region transition complete");
+                                            info!("🎉 HTTP RESPONSE EVENT: CrossedRegion event received - region transition complete");
                                             Self::handle_crossed_region_event(&text).await;
                                         } else if text.contains("TeleportProgress") {
-                                            info!("✈️ EventQueueGet: TeleportProgress event received");
+                                            info!("✈️ HTTP RESPONSE EVENT: TeleportProgress event received");
                                             Self::handle_teleport_progress_event(&text).await;
                                         } else if text.contains("TeleportFinish") {
-                                            info!("✅ EventQueueGet: TeleportFinish event received - teleport complete");
+                                            info!("✅ HTTP RESPONSE EVENT: TeleportFinish event received - teleport complete");
                                             Self::handle_teleport_finish_event(&text).await;
                                         } else if text.contains("DisableSimulator") {
-                                            info!("🌌 EventQueueGet: DisableSimulator event received - neighbor region offline");
+                                            info!("🌌 HTTP RESPONSE EVENT: DisableSimulator event received - neighbor region offline");
                                             Self::handle_disable_simulator_event(&text).await;
                                         } else {
-                                            debug!("📧 EventQueueGet: Other event received: {}", 
-                                                  text.lines().next().unwrap_or("<unknown>"));
+                                            info!("📧 HTTP RESPONSE EVENT: Other event received");
+                                            debug!("   Event preview: {}", text.lines().next().unwrap_or("<unknown>"));
                                         }
                                         
                                         consecutive_errors = 0; // Reset error counter
+                                        info!("✅ HTTP RESPONSE: EventQueueGet processing completed successfully");
                                     },
                                     Err(e) => {
-                                        warn!("Failed to read EventQueueGet response text: {}", e);
+                                        warn!("❌ HTTP RESPONSE ERROR: Failed to read EventQueueGet response text");
+                                        warn!("   Error: {}", e);
+                                        warn!("   Response time: {:?}", response_time);
                                         consecutive_errors += 1;
                                     }
                                 }
                             },
                             502 => {
                                 // 502 Bad Gateway = no events available, continue polling
-                                debug!("EventQueueGet: No events available (502), continuing...");
+                                info!("🔄 HTTP RESPONSE: EventQueueGet no events available (502 Bad Gateway)");
+                                info!("   Response time: {:?}", response_time);
+                                info!("   Continuing long-polling...");
                                 consecutive_errors = 0;
                             },
                             499 => {
                                 // 499 Client Closed Request = server wants us to reconnect
-                                info!("EventQueueGet: Server requested reconnection (499)");
+                                info!("🔄 HTTP RESPONSE: EventQueueGet server requested reconnection (499)");
+                                info!("   Response time: {:?}", response_time);
+                                info!("   Resetting ACK ID and reconnecting...");
                                 ack_id = None; // Reset acknowledgment
                             },
                             _ => {
-                                warn!("EventQueueGet request failed with status: {}", status);
+                                warn!("❌ HTTP RESPONSE ERROR: EventQueueGet request failed");
+                                warn!("   Status: {}", status);
+                                warn!("   Response time: {:?}", response_time);
                                 consecutive_errors += 1;
                             }
                         }
                     },
                     Err(e) => {
-                        warn!("Failed to send EventQueueGet request: {}", e);
+                        let response_time = request_start.elapsed();
+                        warn!("❌ HTTP REQUEST ERROR: Failed to send EventQueueGet request");
+                        warn!("   Error: {}", e);
+                        warn!("   Request time: {:?}", response_time);
                         consecutive_errors += 1;
                     }
                 }

@@ -32,7 +32,7 @@ pub struct TransportConfig {
 impl Default for TransportConfig {
     fn default() -> Self {
         Self {
-            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            bind_addr: "0.0.0.0:0".parse().unwrap(), // Bind to all interfaces, not just localhost
             proxy: None,
             max_packet_size: 1500,
             recv_buffer_size: 64 * 1024,
@@ -51,6 +51,9 @@ pub struct UdpTransport {
     
     /// SOCKS5 UDP client (when proxy is enabled)
     socks5_client: Arc<tokio::sync::RwLock<Option<Socks5UdpClient>>>,
+    
+    /// Transparent SOCKS5 proxy (for integrated WinHippoAutoProxy mode)
+    transparent_proxy: Arc<tokio::sync::RwLock<Option<crate::networking::proxy::TransparentSocks5Proxy>>>,
     
     /// HTTP proxy client (when proxy is enabled)
     http_proxy_client: Arc<tokio::sync::RwLock<Option<HttpProxyClient>>>,
@@ -89,10 +92,11 @@ impl UdpTransport {
         
         // Initialize proxy clients based on proxy mode
         let socks5_client = if let Some(ref proxy_config) = config.proxy {
-            if proxy_config.requires_manual_socks5() {
-                // Only create SOCKS5 client for manual mode
+            if proxy_config.requires_manual_socks5() || proxy_config.is_transparent_proxy() {
+                // Create SOCKS5 client for both manual mode AND integrated transparent mode
                 if let Some(socks5_addr) = proxy_config.socks5_addr {
-                    info!("🔧 Initializing manual SOCKS5 client for {}", socks5_addr);
+                    let mode_desc = if proxy_config.requires_manual_socks5() { "manual" } else { "integrated transparent" };
+                    info!("🔧 Initializing SOCKS5 client for {} mode: {}", mode_desc, socks5_addr);
                     let client = Socks5UdpClient::new(
                         socks5_addr,
                         proxy_config.username.clone(),
@@ -102,10 +106,6 @@ impl UdpTransport {
                 } else {
                     None
                 }
-            } else if proxy_config.is_transparent_proxy() {
-                info!("🔧 Using transparent proxy mode - no manual SOCKS5 client needed");
-                info!("   WinHippoAutoProxy will handle SOCKS5 protocol transparently");
-                None
             } else {
                 None
             }
@@ -134,10 +134,34 @@ impl UdpTransport {
             None
         };
         
+        // Initialize transparent proxy for integrated WinHippoAutoProxy mode
+        let transparent_proxy = if let Some(ref proxy_config) = config.proxy {
+            if proxy_config.is_transparent_proxy() {
+                if let Some(socks5_addr) = proxy_config.socks5_addr {
+                    info!("🔧 Initializing integrated transparent SOCKS5 proxy for {}", socks5_addr);
+                    let mut proxy = crate::networking::proxy::TransparentSocks5Proxy::new(socks5_addr);
+                    match proxy.initialize().await {
+                        Ok(_) => Some(proxy),
+                        Err(e) => {
+                            warn!("Failed to initialize transparent proxy: {}", e);
+                            None
+                        }
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        
         Ok(Self {
             socket,
             config,
             socks5_client: Arc::new(tokio::sync::RwLock::new(socks5_client)),
+            transparent_proxy: Arc::new(tokio::sync::RwLock::new(transparent_proxy)),
             http_proxy_client: Arc::new(tokio::sync::RwLock::new(http_proxy_client)),
             deserializer,
             send_tx,
@@ -175,16 +199,65 @@ impl UdpTransport {
                     // Connect to SOCKS5 proxy if using manual mode
                     if let Some(socks5_client) = self.socks5_client.read().await.as_ref() {
                         info!("🔗 Connecting to SOCKS5 proxy in manual mode...");
-                        if let Err(e) = socks5_client.connect().await {
-                            error!("Failed to connect to SOCKS5 proxy: {}", e);
-                            return Err(e);
+                        
+                        // Retry connection with backoff
+                        let mut attempts = 0;
+                        let max_attempts = 3;
+                        
+                        loop {
+                            attempts += 1;
+                            match socks5_client.connect().await {
+                                Ok(_) => {
+                                    info!("✅ Successfully connected to SOCKS5 proxy after {} attempt(s)", attempts);
+                                    break;
+                                }
+                                Err(e) => {
+                                    if attempts >= max_attempts {
+                                        error!("Failed to connect to SOCKS5 proxy after {} attempts: {}", attempts, e);
+                                        return Err(e);
+                                    }
+                                    warn!("SOCKS5 connection attempt {} failed: {}, retrying...", attempts, e);
+                                    tokio::time::sleep(std::time::Duration::from_millis(1000 * attempts as u64)).await;
+                                }
+                            }
                         }
-                        info!("✅ Successfully connected to SOCKS5 proxy");
+                    } else {
+                        return Err(NetworkError::Transport {
+                            reason: "SOCKS5 client not configured for manual mode".to_string()
+                        });
                     }
                 }
                 crate::networking::proxy::ProxyMode::WinHippoAutoProxy => {
-                    info!("🔗 Using WinHippoAutoProxy transparent mode - no manual connection needed");
-                    info!("   Ensure WinHippoAutoProxy is running and configured for Hippolyzer");
+                    info!("🔗 Connecting to Hippolyzer SOCKS5 proxy for integrated transparent mode...");
+                    
+                    // Even in transparent mode, we need to connect to SOCKS5 proxy
+                    if let Some(socks5_client) = self.socks5_client.read().await.as_ref() {
+                        // Retry connection with backoff
+                        let mut attempts = 0;
+                        let max_attempts = 3;
+                        
+                        loop {
+                            attempts += 1;
+                            match socks5_client.connect().await {
+                                Ok(_) => {
+                                    info!("✅ Successfully connected to Hippolyzer SOCKS5 proxy after {} attempt(s)", attempts);
+                                    break;
+                                }
+                                Err(e) => {
+                                    if attempts >= max_attempts {
+                                        error!("Failed to connect to Hippolyzer SOCKS5 proxy after {} attempts: {}", attempts, e);
+                                        return Err(e);
+                                    }
+                                    warn!("SOCKS5 connection attempt {} failed: {}, retrying...", attempts, e);
+                                    tokio::time::sleep(std::time::Duration::from_millis(1000 * attempts as u64)).await;
+                                }
+                            }
+                        }
+                    } else {
+                        return Err(NetworkError::Transport {
+                            reason: "SOCKS5 client not configured for WinHippoAutoProxy mode".to_string()
+                        });
+                    }
                 }
                 crate::networking::proxy::ProxyMode::Direct => {
                     info!("🔗 Using direct connection (no proxy)");
@@ -211,9 +284,8 @@ impl UdpTransport {
                     self.send_via_socks5(data, dest).await
                 }
                 crate::networking::proxy::ProxyMode::WinHippoAutoProxy => {
-                    // Send directly to destination - WinHippoAutoProxy will intercept
-                    info!("📤 Sending packet directly to {} (WinHippoAutoProxy will handle SOCKS5)", dest);
-                    self.send_direct(data, dest).await
+                    // Use SOCKS5 proxy for integrated transparent mode
+                    self.send_via_socks5(data, dest).await
                 }
                 crate::networking::proxy::ProxyMode::Direct => {
                     // Direct connection, no proxy
@@ -239,6 +311,16 @@ impl UdpTransport {
         }
         
         info!("Sent {} bytes to {}", bytes_sent, dest);
+        
+        // Debug: log first few bytes of sent data
+        if data.len() > 0 {
+            let hex_data: String = data[..std::cmp::min(data.len(), 32)]
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect::<Vec<_>>()
+                .join(" ");
+            info!("   Sent Data (first 32 bytes): {}", hex_data);
+        }
         Ok(())
     }
     
@@ -252,6 +334,20 @@ impl UdpTransport {
         } else {
             Err(NetworkError::Transport {
                 reason: "SOCKS5 proxy not configured".to_string()
+            })
+        }
+    }
+    
+    /// Send packet via integrated transparent SOCKS5 proxy
+    async fn send_via_transparent_proxy(&self, data: Bytes, dest: SocketAddr) -> NetworkResult<()> {
+        let transparent_guard = self.transparent_proxy.read().await;
+        if let Some(transparent_proxy) = transparent_guard.as_ref() {
+            transparent_proxy.send_transparent(&data, dest).await?;
+            info!("📤 Sent {} bytes via integrated transparent SOCKS5 proxy to {}", data.len(), dest);
+            Ok(())
+        } else {
+            Err(NetworkError::Transport {
+                reason: "Transparent SOCKS5 proxy not configured".to_string()
             })
         }
     }
@@ -274,18 +370,57 @@ impl UdpTransport {
                     match proxy_cfg.mode {
                         crate::networking::proxy::ProxyMode::ManualSocks5 => {
                             // Use SOCKS5 client for manual mode
+                            let connection_active = {
+                                let socks5_guard = socks5_client.read().await;
+                                if let Some(client) = socks5_guard.as_ref() {
+                                    client.is_connected().await
+                                } else {
+                                    false
+                                }
+                            };
+                            
+                            if !connection_active {
+                                error!("SOCKS5 connection lost, attempting to reconnect...");
+                                let socks5_guard = socks5_client.read().await;
+                                if let Some(client) = socks5_guard.as_ref() {
+                                    match client.connect().await {
+                                        Ok(_) => {
+                                            info!("SOCKS5 reconnection successful");
+                                            client.send_to(&data, dest).await
+                                        }
+                                        Err(e) => {
+                                            error!("SOCKS5 reconnection failed: {}", e);
+                                            Err(e)
+                                        }
+                                    }
+                                } else {
+                                    Err(NetworkError::Transport {
+                                        reason: "SOCKS5 proxy not available in manual mode".to_string()
+                                    })
+                                }
+                            } else {
+                                let socks5_guard = socks5_client.read().await;
+                                if let Some(client) = socks5_guard.as_ref() {
+                                    client.send_to(&data, dest).await
+                                } else {
+                                    Err(NetworkError::Transport {
+                                        reason: "SOCKS5 proxy not available in manual mode".to_string()
+                                    })
+                                }
+                            }
+                        }
+                        crate::networking::proxy::ProxyMode::WinHippoAutoProxy => {
+                            // Use SOCKS5 client for integrated transparent mode
+                            // Skip connection checking for now - assume connection is active
+                            // This prevents unnecessary reconnection attempts that cause Hippolyzer errors
                             let socks5_guard = socks5_client.read().await;
                             if let Some(client) = socks5_guard.as_ref() {
                                 client.send_to(&data, dest).await
                             } else {
                                 Err(NetworkError::Transport {
-                                    reason: "SOCKS5 proxy not available in manual mode".to_string()
+                                    reason: "SOCKS5 proxy not available in WinHippoAutoProxy mode".to_string()
                                 })
                             }
-                        }
-                        crate::networking::proxy::ProxyMode::WinHippoAutoProxy => {
-                            // Send directly - WinHippoAutoProxy will intercept
-                            Self::send_direct_static(&socket, data, dest).await
                         }
                         crate::networking::proxy::ProxyMode::Direct => {
                             // Direct send
@@ -328,6 +463,15 @@ impl UdpTransport {
                                     Ok((len, src)) => (len, src),
                                     Err(e) => {
                                         error!("SOCKS5 receive error: {}", e);
+                                        
+                                        // Check if it's a connection error that might be recoverable
+                                        if e.to_string().contains("connection") || e.to_string().contains("reset") {
+                                            warn!("SOCKS5 connection may be lost, checking status...");
+                                            if !client.is_connected().await {
+                                                error!("SOCKS5 connection confirmed lost, receiver task exiting");
+                                                break;
+                                            }
+                                        }
                                         continue;
                                     }
                                 }
@@ -337,17 +481,28 @@ impl UdpTransport {
                             }
                         }
                         crate::networking::proxy::ProxyMode::WinHippoAutoProxy => {
-                            // Direct reception - WinHippoAutoProxy will unwrap SOCKS5 headers
-                            match socket.recv_from(&mut buffer).await {
-                                Ok((len, src)) => (len, src),
-                                Err(e) => {
-                                    error!("UDP receive error in transparent proxy mode: {}", e);
-                                    if e.kind() == std::io::ErrorKind::ConnectionReset ||
-                                       e.kind() == std::io::ErrorKind::ConnectionAborted {
+                            // Receive through SOCKS5 proxy in integrated transparent mode
+                            let socks5_guard = socks5_client.read().await;
+                            if let Some(client) = socks5_guard.as_ref() {
+                                match client.recv_from(&mut buffer).await {
+                                    Ok((len, src)) => (len, src),
+                                    Err(e) => {
+                                        error!("SOCKS5 receive error in WinHippoAutoProxy mode: {}", e);
+                                        
+                                        // Check if it's a connection error that might be recoverable
+                                        if e.to_string().contains("connection") || e.to_string().contains("reset") {
+                                            warn!("SOCKS5 connection may be lost in WinHippoAutoProxy mode, checking status...");
+                                            if !client.is_connected().await {
+                                                error!("SOCKS5 connection confirmed lost in WinHippoAutoProxy mode, receiver task exiting");
+                                                break;
+                                            }
+                                        }
                                         continue;
                                     }
-                                    break;
                                 }
+                            } else {
+                                error!("SOCKS5 client not available in WinHippoAutoProxy mode");
+                                break;
                             }
                         }
                         crate::networking::proxy::ProxyMode::Direct => {
@@ -395,16 +550,59 @@ impl UdpTransport {
                 // Parse the packet
                 match deserializer.parse_raw(&buffer[..len]) {
                     Ok(packet_wrapper) => {
-                        info!("Successfully parsed packet: id={}, frequency={:?}, reliable={}", 
-                              packet_wrapper.packet_id, packet_wrapper.frequency, packet_wrapper.reliable);
+                        info!("📥 NETWORKING RESPONSE: Successfully parsed packet from {}", src);
+                        info!("   Packet ID: {}", packet_wrapper.packet_id);
+                        info!("   Frequency: {:?}", packet_wrapper.frequency);
+                        info!("   Reliable: {}", packet_wrapper.reliable);
+                        info!("   Size: {} bytes", len);
+                        
+                        // Log packet name if available
+                        let packet_name = match packet_wrapper.frequency {
+                            crate::networking::packets::PacketFrequency::High => {
+                                format!("High_{}", packet_wrapper.packet_id)
+                            }
+                            crate::networking::packets::PacketFrequency::Medium => {
+                                format!("Medium_{}", packet_wrapper.packet_id)
+                            }
+                            crate::networking::packets::PacketFrequency::Low => {
+                                format!("Low_{}", packet_wrapper.packet_id)
+                            }
+                            crate::networking::packets::PacketFrequency::Fixed => {
+                                format!("Fixed_{}", packet_wrapper.packet_id)
+                            }
+                        };
+                        info!("   Packet Type: {}", packet_name);
+                        
+                        // Enhanced hex dump for responses
+                        if len > 0 {
+                            let hex_data: String = buffer[..std::cmp::min(len, 32)]
+                                .iter()
+                                .map(|b| format!("{:02x}", b))
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            info!("   Response Data (first 32 bytes): {}", hex_data);
+                        }
+                        
                         // Call the callback directly (like homunculus socket.receive)
                         let cb_guard = packet_callback.read().await;
                         if let Some(ref callback) = *cb_guard {
                             callback(packet_wrapper, src);
                         }
+                        
+                        info!("✅ NETWORKING RESPONSE: Packet processing completed successfully");
                     }
                     Err(e) => {
-                        warn!("Failed to parse packet from {}: {}", src, e);
+                        warn!("❌ NETWORKING RESPONSE ERROR: Failed to parse packet from {}", src);
+                        warn!("   Error: {}", e);
+                        warn!("   Raw data size: {} bytes", len);
+                        if len > 0 {
+                            let hex_data: String = buffer[..std::cmp::min(len, 16)]
+                                .iter()
+                                .map(|b| format!("{:02x}", b))
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            warn!("   Raw data (first 16 bytes): {}", hex_data);
+                        }
                     }
                 }
             }
@@ -426,6 +624,17 @@ impl UdpTransport {
             );
         }
         
+        info!("Sent {} bytes to {}", bytes_sent, dest);
+        
+        // Debug: log first few bytes of sent data
+        if data.len() > 0 {
+            let hex_data: String = data[..std::cmp::min(data.len(), 32)]
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect::<Vec<_>>()
+                .join(" ");
+            info!("   Sent Data (first 32 bytes): {}", hex_data);
+        }
         Ok(())
     }
     

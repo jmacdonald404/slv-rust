@@ -8,10 +8,11 @@ pub fn start_login(ui_state: &mut UiState) {
     let username = ui_state.login_state.username.clone();
     let password = ui_state.login_state.password.clone();
     let selected_grid = ui_state.login_state.selected_grid.clone();
+    let proxy_enabled = ui_state.proxy_settings.enabled;
     let result_tx = ui_state.login_result_tx.clone();
     
     ui_state.login_task = Some(ui_state.runtime_handle.spawn(async move {
-        match perform_login(&username, &password, selected_grid).await {
+        match perform_login(&username, &password, selected_grid, proxy_enabled).await {
             Ok(_) => {
                 let _ = result_tx.send(LoginResult { result: Ok(()) });
             }
@@ -24,20 +25,41 @@ pub fn start_login(ui_state: &mut UiState) {
     }));
 }
 
-pub async fn perform_login(username: &str, password: &str, grid: Grid) -> Result<(), crate::networking::NetworkError> {
+pub async fn perform_login(username: &str, password: &str, grid: Grid, proxy_enabled: bool) -> Result<(), crate::networking::NetworkError> {
+    use tracing::{info, warn, error};
+    
+    info!("🔄 LOGIN: Starting login process for user: {}", username);
+    info!("🔄 LOGIN: Grid: {:?}", grid);
+    info!("🔄 LOGIN: Proxy enabled: {}", proxy_enabled);
+    
     // Create login credentials
     let credentials = LoginCredentials::new(username.to_string(), password.to_string())
         .with_grid(grid);
         
+    info!("🔄 LOGIN: Created credentials, validating...");
     
     // Create authentication service
     let mut auth_service = AuthenticationService::new();
     
-    // Perform login
-    let _client = auth_service.login(credentials).await?;
+    info!("🔄 LOGIN: Created authentication service, performing login...");
     
-    // Login successful
-    Ok(())
+    // Perform login with proxy setting
+    match auth_service.login_with_proxy(credentials, proxy_enabled).await {
+        Ok(client) => {
+            info!("✅ LOGIN SUCCESS: Authentication completed successfully!");
+            info!("✅ LOGIN SUCCESS: Client created and UDP connection established");
+            info!("✅ LOGIN SUCCESS: UDP packets should now be flowing");
+            
+            // Keep the client alive for a moment to see UDP traffic
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            
+            Ok(())
+        }
+        Err(e) => {
+            error!("❌ LOGIN FAILED: Authentication failed: {}", e);
+            Err(e)
+        }
+    }
 }
 
 pub fn start_world_connection(ui_state: &mut UiState) {

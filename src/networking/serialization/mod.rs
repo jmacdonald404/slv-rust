@@ -5,8 +5,10 @@
 
 use crate::networking::{NetworkError, NetworkResult};
 use crate::networking::packets::{Packet, PacketFrequency, PacketWrapper};
+use crate::networking::packets::generated::{UseCircuitCode, CompleteAgentMovement};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use std::collections::HashMap;
+use std::any::Any;
 use tracing::info;
 
 pub mod packet_buffer;
@@ -41,11 +43,8 @@ impl PacketSerializer {
     pub fn serialize<P: Packet>(&mut self, packet: &P, reliable: bool) -> NetworkResult<(Bytes, u32)> {
         let mut buffer = BytesMut::new();
         
-        // Serialize packet data first
-        let packet_data = bincode::serialize(packet)
-            .map_err(|e| NetworkError::PacketEncode { 
-                reason: format!("Failed to serialize packet data: {}", e) 
-            })?;
+        // Serialize packet data using proper Second Life format instead of bincode
+        let packet_data = self.serialize_sl_packet(packet)?;
             
         // Apply zerocoding if enabled
         let final_data = if P::ZEROCODED {
@@ -62,6 +61,81 @@ impl PacketSerializer {
         buffer.extend_from_slice(&final_data);
         
         Ok((buffer.freeze(), sequence))
+    }
+    
+    /// Serialize a packet using proper Second Life binary format
+    fn serialize_sl_packet<P: Packet>(&self, packet: &P) -> NetworkResult<Vec<u8>> {
+        use crate::networking::packets::generated::*;
+        use byteorder::{WriteBytesExt, LittleEndian};
+        
+        let mut data = Vec::new();
+        
+        // Dispatch to specific packet serializers based on packet type
+        // This uses runtime dispatch but ensures correct serialization
+        let packet_any = packet as &dyn std::any::Any;
+        
+        if let Some(use_circuit_code) = packet_any.downcast_ref::<UseCircuitCode>() {
+            self.serialize_use_circuit_code(use_circuit_code, &mut data)?;
+        } else if let Some(complete_agent_movement) = packet_any.downcast_ref::<CompleteAgentMovement>() {
+            self.serialize_complete_agent_movement(complete_agent_movement, &mut data)?;
+        } else {
+            // Fallback to bincode for unimplemented packets
+            let bincode_data = bincode::serialize(packet)
+                .map_err(|e| NetworkError::PacketEncode { 
+                    reason: format!("Failed to serialize packet with fallback bincode: {}", e) 
+                })?;
+            data.extend_from_slice(&bincode_data);
+        }
+        
+        Ok(data)
+    }
+    
+    /// Serialize UseCircuitCode packet in proper SL format
+    fn serialize_use_circuit_code(&self, packet: &UseCircuitCode, data: &mut Vec<u8>) -> NetworkResult<()> {
+        use byteorder::{WriteBytesExt, LittleEndian};
+        
+        // UseCircuitCode format:
+        // - Code: U32 (4 bytes, little-endian)
+        // - SessionID: LLUUID (16 bytes)
+        // - ID: LLUUID (16 bytes) 
+        
+        // Circuit code (4 bytes, little-endian)
+        data.write_u32::<LittleEndian>(packet.code)
+            .map_err(|e| NetworkError::PacketEncode { 
+                reason: format!("Failed to write circuit code: {}", e) 
+            })?;
+        
+        // Session ID (16 bytes)
+        data.extend_from_slice(packet.session_id.as_bytes());
+        
+        // Agent ID (16 bytes)  
+        data.extend_from_slice(packet.id.as_bytes());
+        
+        Ok(())
+    }
+    
+    /// Serialize CompleteAgentMovement packet in proper SL format
+    fn serialize_complete_agent_movement(&self, packet: &CompleteAgentMovement, data: &mut Vec<u8>) -> NetworkResult<()> {
+        use byteorder::{WriteBytesExt, LittleEndian};
+        
+        // CompleteAgentMovement format:
+        // - AgentID: LLUUID (16 bytes)
+        // - SessionID: LLUUID (16 bytes)
+        // - CircuitCode: U32 (4 bytes, little-endian)
+        
+        // Agent ID (16 bytes)
+        data.extend_from_slice(packet.agent_id.as_bytes());
+        
+        // Session ID (16 bytes)
+        data.extend_from_slice(packet.session_id.as_bytes());
+        
+        // Circuit code (4 bytes, little-endian)
+        data.write_u32::<LittleEndian>(packet.circuit_code)
+            .map_err(|e| NetworkError::PacketEncode { 
+                reason: format!("Failed to write circuit code: {}", e) 
+            })?;
+        
+        Ok(())
     }
     
     /// Serialize a packet wrapper (used for resends with same sequence)
