@@ -31,7 +31,13 @@ fn generate_block_structs(code: &mut String, message: &MessageDefinition, genera
             let mut field_counter = std::collections::HashMap::new();
 
             for field in &block.fields {
-                let rust_type = map_field_type(&field.type_name);
+                // CRITICAL FIX: UseCircuitCode ID field must be LLUUID, not Vec<u8>
+                let rust_type = if message.name == "UseCircuitCode" && field.name == "ID" {
+                    println!("cargo:warning=FIXING UseCircuitCode ID field: {} -> LLUUID", field.type_name);
+                    "LLUUID"
+                } else {
+                    map_field_type(&field.type_name)
+                };
                 let mut field_name = to_snake_case(&field.name);
 
                 if field_names.contains(&field_name) {
@@ -160,29 +166,68 @@ fn generate_block_fields_with_dedup(
 
 
 fn map_field_type(sl_type: &str) -> &'static str {
-    match sl_type {
+    // Handle whitespace and parsing issues, and strip comments
+    let trimmed_type = sl_type.trim()
+        .split('}') // Remove comments after }
+        .next()
+        .unwrap_or("")
+        .split("//") // Remove inline comments
+        .next()
+        .unwrap_or("")
+        .trim();
+    
+    match trimmed_type {
+        // Unsigned integers
         "U8" => "U8",
         "U16" => "U16", 
         "U32" => "U32",
-        "U64" => "u64",
-        "S8" => "i8",
-        "S16" => "i16",
+        "U64" => "U64",
+        
+        // Signed integers (now using our type aliases)
+        "S8" => "S8",
+        "S16" => "S16",
         "S32" => "S32", 
-        "S64" => "i64",
+        "S64" => "S64",
+        
+        // Floating point
         "F32" => "F32",
         "F64" => "F64",
+        
+        // Special types
         "LLUUID" => "LLUUID",
         "BOOL" => "BOOL",
         "IPADDR" => "IPADDR",
         "IPPORT" => "IPPORT",
+        
+        // Vector types
         "LLVector3" => "LLVector3",
+        "LLVector3d" => "LLVector3d",
         "LLVector4" => "LLVector4",
-        "LLQuaternion" => "LLQuaternion",
+        "LLQuaternion" => "LLQuaternion", // Now 12-byte (3xF32) protocol-compliant
+        
+        // Specialized vector types
+        "U16Vec3" => "U16Vec3",
+        "U16Quat" => "U16Quat",
+        "S16Array" => "S16Array",
+        
+        // Control types
+        "NULL" => "MVTNull",
+        "EOL" => "MVTEol",
+        
+        // Variable length types
         "Variable 1" => "LLVariable1",
-        "Variable 2" => "LLVariable2",
-        _ if sl_type.starts_with("Variable") => "Vec<u8>",
-        _ if sl_type.starts_with("Fixed") => "Vec<u8>",
-        _ => "Vec<u8>", // Default fallback
+        "Variable 2" => "LLVariable2", // Now with big-endian length prefix
+        _ if trimmed_type.starts_with("Variable") => "Vec<u8>",
+        
+        // Fixed length types
+        "Fixed 256" => "LLFixed256",
+        _ if trimmed_type.starts_with("Fixed") => "Vec<u8>",
+        
+        _ => {
+            // Log unrecognized types for debugging
+            println!("cargo:warning=Unrecognized field type: '{}'", sl_type);
+            "Vec<u8>" // Default fallback
+        }
     }
 }
 

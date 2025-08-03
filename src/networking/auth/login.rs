@@ -226,11 +226,16 @@ impl AuthenticationService {
     }
     
     pub async fn login(&mut self, credentials: LoginCredentials) -> NetworkResult<Client> {
-        self.login_with_retry(credentials, 3).await
+        self.login_with_retry(credentials, 3, false).await
+    }
+
+    /// Login with proxy support
+    pub async fn login_with_proxy(&mut self, credentials: LoginCredentials, proxy_enabled: bool) -> NetworkResult<Client> {
+        self.login_with_retry(credentials, 3, proxy_enabled).await
     }
 
     /// Login with retry logic and fallback locations
-    async fn login_with_retry(&mut self, mut credentials: LoginCredentials, max_retries: u32) -> NetworkResult<Client> {
+    async fn login_with_retry(&mut self, mut credentials: LoginCredentials, max_retries: u32, proxy_enabled: bool) -> NetworkResult<Client> {
         // Validate credentials
         credentials.validate()
             .map_err(|e| NetworkError::AuthenticationFailed { reason: e })?;
@@ -246,7 +251,7 @@ impl AuthenticationService {
             }
             
             // Try current start location
-            match self.attempt_login(&credentials).await {
+            match self.attempt_login(&credentials, proxy_enabled).await {
                 Ok(client) => return Ok(client),
                 Err(NetworkError::SimulatorConnectionFailed { reason }) if attempt < max_retries - 1 => {
                     tracing::warn!("Login attempt {} failed with simulator connection error: {}. Retrying in {}ms...", 
@@ -270,7 +275,7 @@ impl AuthenticationService {
     }
 
     /// Attempt a single login
-    async fn attempt_login(&mut self, credentials: &LoginCredentials) -> NetworkResult<Client> {
+    async fn attempt_login(&mut self, credentials: &LoginCredentials, proxy_enabled: bool) -> NetworkResult<Client> {
         // Step 1: Authenticate with login server
         let login_response = self.authenticate_with_login_server(credentials).await?;
         
@@ -392,7 +397,12 @@ impl AuthenticationService {
             ..Default::default()
         };
         
-        let client = Client::new(config, session.clone()).await?;
+        let client = if proxy_enabled {
+            tracing::info!("🔧 Creating client with Hippolyzer proxy support");
+            Client::new_with_hippolyzer_proxy(config, session.clone()).await?
+        } else {
+            Client::new(config, session.clone()).await?
+        };
         
         // Step 6: Connect to simulator with fallback
         match client.connect(session.simulator_address, session.circuit_code).await {

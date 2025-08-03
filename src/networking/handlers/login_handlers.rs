@@ -21,7 +21,7 @@ impl TypedPacketHandler<RegionHandshake> for RegionHandshakeHandler {
     async fn handle_typed(&self, packet: RegionHandshake, context: &HandlerContext) -> NetworkResult<()> {
         info!("Received RegionHandshake from {}", context.circuit.address());
         
-        info!("Region info: {}", String::from_utf8_lossy(&packet.sim_name));
+        info!("Region info: {}", String::from_utf8_lossy(&packet.sim_name.data));
         info!("Region flags: {:x}", packet.region_flags);
         info!("Water height: {}", packet.water_height);
         

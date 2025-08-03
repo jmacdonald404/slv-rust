@@ -133,15 +133,39 @@ impl PacketHandlerRegistry {
             crate::networking::packets::PacketFrequency::Fixed => (3 << 16) | (packet.packet_id as u32),
         };
         
-        info!("Processing packet: id={}, frequency={:?}, key={}", packet.packet_id, packet.frequency, packet_key);
+        info!("🔄 PACKET HANDLER: Processing packet from {}", context.circuit.address());
+        info!("   Packet ID: {}", packet.packet_id);
+        info!("   Frequency: {:?}", packet.frequency);
+        info!("   Handler Key: {}", packet_key);
+        info!("   Reliable: {}", packet.reliable);
         
         let handlers = self.handlers.read().await;
         
         if let Some(handler) = handlers.get(&packet_key) {
-            info!("Handling packet type {} with {}", packet_key, handler.name());
-            handler.handle(packet, context).await
+            info!("🎯 PACKET HANDLER: Dispatching to handler '{}'", handler.name());
+            
+            let start_time = std::time::Instant::now();
+            let result = handler.handle(packet, context).await;
+            let processing_time = start_time.elapsed();
+            
+            match &result {
+                Ok(()) => {
+                    info!("✅ PACKET HANDLER RESPONSE: Successfully handled packet with '{}'", handler.name());
+                    info!("   Processing time: {:?}", processing_time);
+                }
+                Err(e) => {
+                    warn!("❌ PACKET HANDLER RESPONSE ERROR: Handler '{}' failed", handler.name());
+                    warn!("   Error: {}", e);
+                    warn!("   Processing time: {:?}", processing_time);
+                }
+            }
+            
+            result
         } else {
-            warn!("No handler registered for packet type {} (id={}, frequency={:?})", packet_key, packet.packet_id, packet.frequency);
+            warn!("⚠️ PACKET HANDLER: No handler registered for packet type {}", packet_key);
+            warn!("   Packet ID: {}", packet.packet_id);
+            warn!("   Frequency: {:?}", packet.frequency);
+            warn!("   This packet will be ignored");
             // Don't return an error for unhandled packets - just ignore them
             Ok(())
         }
@@ -239,7 +263,28 @@ impl PacketProcessor {
     
     /// Process a packet asynchronously
     pub async fn process_packet(&self, packet: PacketWrapper, context: HandlerContext) -> NetworkResult<()> {
-        self.registry.handle_packet(packet, &context).await
+        info!("🏭 PACKET PROCESSOR: Starting packet processing");
+        info!("   Source: {}", context.circuit.address());
+        info!("   Packet ID: {}", packet.packet_id);
+        info!("   Frequency: {:?}", packet.frequency);
+        
+        let start_time = std::time::Instant::now();
+        let result = self.registry.handle_packet(packet, &context).await;
+        let total_time = start_time.elapsed();
+        
+        match &result {
+            Ok(()) => {
+                info!("✅ PACKET PROCESSOR RESPONSE: Packet processing completed successfully");
+                info!("   Total processing time: {:?}", total_time);
+            }
+            Err(e) => {
+                warn!("❌ PACKET PROCESSOR RESPONSE ERROR: Packet processing failed");
+                warn!("   Error: {}", e);
+                warn!("   Total processing time: {:?}", total_time);
+            }
+        }
+        
+        result
     }
     
     /// Start packet processing loop
@@ -247,15 +292,33 @@ impl PacketProcessor {
         &self,
         mut packet_rx: tokio::sync::mpsc::UnboundedReceiver<(PacketWrapper, HandlerContext)>,
     ) {
-        info!("Starting packet processor");
+        info!("🏭 PACKET PROCESSOR: Starting packet processing loop");
+        
+        let mut packet_count = 0;
+        let start_time = std::time::Instant::now();
         
         while let Some((packet, context)) = packet_rx.recv().await {
-            info!("Packet processor received packet: id={}, frequency={:?}", packet.packet_id, packet.frequency);
+            packet_count += 1;
+            
+            info!("🏭 PACKET PROCESSOR: Received packet #{} from queue", packet_count);
+            info!("   Packet ID: {}", packet.packet_id);
+            info!("   Frequency: {:?}", packet.frequency);
+            info!("   Source: {}", context.circuit.address());
+            
             if let Err(e) = self.process_packet(packet, context).await {
-                warn!("Error processing packet: {}", e);
+                warn!("❌ PACKET PROCESSOR: Error processing packet #{}: {}", packet_count, e);
+            }
+            
+            // Log statistics every 100 packets
+            if packet_count % 100 == 0 {
+                let elapsed = start_time.elapsed();
+                let packets_per_sec = packet_count as f64 / elapsed.as_secs_f64();
+                info!("📊 PACKET PROCESSOR STATS: Processed {} packets in {:?} ({:.2} packets/sec)", 
+                      packet_count, elapsed, packets_per_sec);
             }
         }
         
-        info!("Packet processor stopped");
+        let total_time = start_time.elapsed();
+        info!("🏭 PACKET PROCESSOR: Stopped after processing {} packets in {:?}", packet_count, total_time);
     }
 }

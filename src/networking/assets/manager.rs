@@ -334,7 +334,11 @@ impl AssetManager {
             }
         };
         
-        info!("🌐 HTTP transfer completed for asset {} ({} bytes)", transfer.asset_id, data.len());
+        info!("✅ ASSET RESPONSE: HTTP transfer completed successfully");
+        info!("   Asset ID: {}", transfer.asset_id);
+        info!("   Asset Type: {:?}", transfer.asset_type);
+        info!("   Data size: {} bytes", data.len());
+        info!("   Transfer method: HTTP capability");
         Ok(Bytes::from(data))
     }
     

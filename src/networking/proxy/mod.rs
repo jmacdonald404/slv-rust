@@ -35,9 +35,11 @@
 
 pub mod socks5;
 pub mod http;
+pub mod transparent;
 
 pub use socks5::*;
 pub use http::*;
+pub use transparent::*;
 
 use std::net::SocketAddr;
 use crate::networking::{NetworkError, NetworkResult};
@@ -62,17 +64,22 @@ impl ProxyMode {
         // On Windows, prefer WinHippoAutoProxy mode
         #[cfg(target_os = "windows")]
         {
-            // Check if WinHippoAutoProxy might be running
-            // WinHippoAutoProxy typically sets environment variables or creates registry entries
-            if std::env::var("WINHIPPOAUTOPROXY_ACTIVE").is_ok() ||
-               Self::detect_winhippoautoproxy_process() {
-                info!("🔍 Detected WinHippoAutoProxy environment - using transparent proxy mode");
+            // Check if Hippolyzer is running (our internal WinHippoAutoProxy implementation)
+            if Self::detect_hippolyzer_running() {
+                info!("🔍 Detected Hippolyzer running - using integrated WinHippoAutoProxy mode");
                 return ProxyMode::WinHippoAutoProxy;
             }
             
-            // Default to manual SOCKS5 on Windows if WinHippoAutoProxy not detected
-            warn!("⚠️ Windows detected but WinHippoAutoProxy not found. Consider using WinHippoAutoProxy for better compatibility.");
-            warn!("   Download from: https://github.com/SaladDais/WinHippoAutoProxy");
+            // Check if external WinHippoAutoProxy might be running
+            if std::env::var("WINHIPPOAUTOPROXY_ACTIVE").is_ok() ||
+               Self::detect_winhippoautoproxy_process() {
+                info!("🔍 Detected external WinHippoAutoProxy environment - using transparent proxy mode");
+                return ProxyMode::WinHippoAutoProxy;
+            }
+            
+            // Default to manual SOCKS5 on Windows if neither is detected
+            warn!("⚠️ Windows detected but Hippolyzer not found. Using manual SOCKS5 mode.");
+            warn!("   For better compatibility, ensure Hippolyzer is running on ports 9061/9062");
             ProxyMode::ManualSocks5
         }
         
@@ -82,6 +89,32 @@ impl ProxyMode {
             info!("🔍 Non-Windows platform - using manual SOCKS5 proxy mode");
             ProxyMode::ManualSocks5
         }
+    }
+    
+    /// Detect if Hippolyzer is running by checking if proxy ports are available
+    #[cfg(target_os = "windows")]
+    fn detect_hippolyzer_running() -> bool {
+        use std::net::TcpStream;
+        use std::time::Duration;
+        
+        // Check if Hippolyzer's SOCKS5 proxy port (9061) is listening
+        let socks5_check = TcpStream::connect_timeout(
+            &"127.0.0.1:9061".parse().unwrap(),
+            Duration::from_millis(100)
+        ).is_ok();
+        
+        // Check if Hippolyzer's HTTP proxy port (9062) is listening  
+        let http_check = TcpStream::connect_timeout(
+            &"127.0.0.1:9062".parse().unwrap(),
+            Duration::from_millis(100)
+        ).is_ok();
+        
+        let hippolyzer_detected = socks5_check && http_check;
+        if hippolyzer_detected {
+            info!("✅ Hippolyzer detected on ports 9061 (SOCKS5) and 9062 (HTTP)");
+        }
+        
+        hippolyzer_detected
     }
     
     /// Detect if WinHippoAutoProxy process might be running
@@ -159,7 +192,7 @@ impl ProxyConfig {
             http_addr: Some("127.0.0.1:9062".parse().unwrap()),
             username: None,
             password: None,
-            ca_cert_path: Some("src/assets/CA.pem".to_string()),
+            ca_cert_path: Some("Hippolyzer/hippolyzer/lib/base/network/data/ca-bundle.crt".to_string()),
         }
     }
     
@@ -185,7 +218,7 @@ impl ProxyConfig {
             http_addr: Some("127.0.0.1:9062".parse().unwrap()),
             username: None,
             password: None,
-            ca_cert_path: Some("src/assets/CA.pem".to_string()),
+            ca_cert_path: Some("Hippolyzer/hippolyzer/lib/base/network/data/ca-bundle.crt".to_string()),
         }
     }
     

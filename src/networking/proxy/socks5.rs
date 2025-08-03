@@ -10,9 +10,15 @@ use bytes::{Bytes, BytesMut, BufMut};
 use std::net::{SocketAddr, IpAddr, Ipv4Addr, Ipv6Addr};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, Semaphore};
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
+
+impl Drop for Socks5UdpClient {
+    fn drop(&mut self) {
+        info!("🗑️ Dropping SOCKS5 client for {}", self.proxy_addr);
+    }
+}
 
 /// SOCKS5 command codes
 #[repr(u8)]
@@ -185,6 +191,8 @@ pub struct Socks5UdpClient {
     /// Authentication credentials
     username: Option<String>,
     password: Option<String>,
+    /// Connection semaphore to prevent concurrent connections
+    connection_semaphore: Arc<Semaphore>,
 }
 
 impl Socks5UdpClient {
@@ -197,23 +205,59 @@ impl Socks5UdpClient {
             udp_socket: Arc::new(Mutex::new(None)),
             username,
             password,
+            connection_semaphore: Arc::new(Semaphore::new(1)), // Only allow one connection at a time
         }
     }
     
     /// Connect to the SOCKS5 proxy and establish UDP association
     pub async fn connect(&self) -> NetworkResult<()> {
-        info!("Connecting to SOCKS5 proxy at {}", self.proxy_addr);
+        // Acquire semaphore to prevent concurrent connections
+        let _permit = self.connection_semaphore.acquire().await.map_err(|_| {
+            NetworkError::Transport {
+                reason: "Failed to acquire connection semaphore".to_string()
+            }
+        })?;
         
-        // Connect TCP control stream
-        let mut stream = TcpStream::connect(self.proxy_addr).await?;
+        info!("🔗 SOCKS5 connect() called for proxy {}", self.proxy_addr);
+        
+        // Check if already connected to avoid duplicate connections
+        if self.is_connected().await {
+            info!("✅ Already connected to SOCKS5 proxy, skipping connection");
+            return Ok(());
+        }
+        
+        info!("🆕 Establishing new SOCKS5 connection...");
+        
+        // Connect TCP control stream with timeout
+        let mut stream = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            TcpStream::connect(self.proxy_addr)
+        ).await
+        .map_err(|_| NetworkError::Transport {
+            reason: "Timeout connecting to SOCKS5 proxy".to_string()
+        })??;
+        
+        // Set TCP keepalive to maintain control connection
+        if let Err(e) = stream.set_nodelay(true) {
+            warn!("Failed to set TCP_NODELAY: {}", e);
+        }
+        
+        info!("TCP control connection established to {}", self.proxy_addr);
         
         // Step 1: Authentication negotiation
         self.negotiate_auth(&mut stream).await?;
+        info!("SOCKS5 authentication completed");
         
         // Step 2: UDP Associate request
         let relay_addr = self.udp_associate(&mut stream).await?;
+        info!("SOCKS5 UDP association completed, relay: {}", relay_addr);
         
-        // Store the control stream and relay address
+        // Create local UDP socket bound to localhost for better compatibility
+        let udp_socket = UdpSocket::bind("127.0.0.1:0").await?;
+        let local_udp_addr = udp_socket.local_addr()?;
+        info!("Local UDP socket bound to {}", local_udp_addr);
+        
+        // Store everything atomically
         {
             let mut control_guard = self.control_stream.lock().await;
             *control_guard = Some(stream);
@@ -224,14 +268,15 @@ impl Socks5UdpClient {
             *relay_guard = Some(relay_addr);
         }
         
-        // Create local UDP socket
-        let udp_socket = UdpSocket::bind("127.0.0.1:0").await?;
         {
             let mut socket_guard = self.udp_socket.lock().await;
             *socket_guard = Some(udp_socket);
         }
         
-        info!("SOCKS5 UDP association established, relay address: {}", relay_addr);
+        // Start keep-alive task for TCP control connection
+        self.start_keepalive_task().await;
+        
+        info!("✅ SOCKS5 UDP association fully established");
         Ok(())
     }
     
@@ -247,7 +292,9 @@ impl Socks5UdpClient {
         let mut request = vec![0x05, methods.len() as u8]; // SOCKS5 version + method count
         request.extend(methods);
         
+        debug!("Sending SOCKS5 auth negotiation: {:02x?}", request);
         stream.write_all(&request).await?;
+        stream.flush().await?; // Ensure data is sent immediately
         
         // Read server response
         let mut response = [0u8; 2];
@@ -333,7 +380,9 @@ impl Socks5UdpClient {
         request.extend_from_slice(&[127, 0, 0, 1]); // 127.0.0.1
         request.extend_from_slice(&[0, 0]); // Port 0
         
+        debug!("Sending SOCKS5 UDP associate request: {:02x?}", request);
         stream.write_all(&request).await?;
+        stream.flush().await?; // Ensure data is sent immediately
         
         // Read response
         let mut response = vec![0u8; 4];
@@ -359,7 +408,23 @@ impl Socks5UdpClient {
                 stream.read_exact(&mut addr_buf).await?;
                 let ip = Ipv4Addr::new(addr_buf[0], addr_buf[1], addr_buf[2], addr_buf[3]);
                 let port = u16::from_be_bytes([addr_buf[4], addr_buf[5]]);
-                SocketAddr::new(IpAddr::V4(ip), port)
+                
+                // If proxy returns 0.0.0.0, replace with proxy's actual IP
+                let final_ip = if ip.is_unspecified() {
+                    debug!("Proxy returned 0.0.0.0, using proxy IP instead");
+                    match self.proxy_addr.ip() {
+                        IpAddr::V4(proxy_ip) => proxy_ip,
+                        IpAddr::V6(_) => {
+                            return Err(NetworkError::Transport {
+                                reason: "IPv6 proxy with IPv4 relay address not supported".to_string()
+                            });
+                        }
+                    }
+                } else {
+                    ip
+                };
+                
+                SocketAddr::new(IpAddr::V4(final_ip), port)
             }
             x if x == Socks5AddressType::Ipv6 as u8 => {
                 let mut addr_buf = [0u8; 18]; // 16 bytes IP + 2 bytes port
@@ -368,7 +433,23 @@ impl Socks5UdpClient {
                 ip_bytes.copy_from_slice(&addr_buf[0..16]);
                 let ip = Ipv6Addr::from(ip_bytes);
                 let port = u16::from_be_bytes([addr_buf[16], addr_buf[17]]);
-                SocketAddr::new(IpAddr::V6(ip), port)
+                
+                // If proxy returns ::, replace with proxy's actual IP
+                let final_ip = if ip.is_unspecified() {
+                    debug!("Proxy returned ::, using proxy IP instead");
+                    match self.proxy_addr.ip() {
+                        IpAddr::V6(proxy_ip) => proxy_ip,
+                        IpAddr::V4(_) => {
+                            return Err(NetworkError::Transport {
+                                reason: "IPv4 proxy with IPv6 relay address not supported".to_string()
+                            });
+                        }
+                    }
+                } else {
+                    ip
+                };
+                
+                SocketAddr::new(IpAddr::V6(final_ip), port)
             }
             _ => {
                 return Err(NetworkError::Transport {
@@ -382,6 +463,13 @@ impl Socks5UdpClient {
     
     /// Send UDP packet through SOCKS5 proxy
     pub async fn send_to(&self, data: &[u8], target: SocketAddr) -> NetworkResult<()> {
+        // Verify connection is still active
+        if !self.is_connected().await {
+            return Err(NetworkError::Transport {
+                reason: "SOCKS5 connection not established or lost".to_string()
+            });
+        }
+        
         let relay_addr = {
             let relay_guard = self.relay_addr.read().await;
             relay_guard.ok_or_else(|| NetworkError::Transport {
@@ -403,11 +491,22 @@ impl Socks5UdpClient {
         packet.put_slice(&header_bytes);
         packet.put_slice(data);
         
-        // Send to proxy relay address
-        socket.send_to(&packet, relay_addr).await?;
-        debug!("Sent {} bytes through SOCKS5 proxy to {}", data.len(), target);
-        
-        Ok(())
+        // Send to proxy relay address with error handling
+        match socket.send_to(&packet, relay_addr).await {
+            Ok(bytes_sent) => {
+                if bytes_sent != packet.len() {
+                    warn!("Partial SOCKS5 send: {} of {} bytes", bytes_sent, packet.len());
+                }
+                debug!("📤 Sent {} bytes through SOCKS5 proxy to {} (via {})", data.len(), target, relay_addr);
+                Ok(())
+            }
+            Err(e) => {
+                error!("Failed to send UDP packet through SOCKS5 proxy: {}", e);
+                Err(NetworkError::Transport {
+                    reason: format!("SOCKS5 UDP send failed: {}", e)
+                })
+            }
+        }
     }
     
     /// Receive UDP packet through SOCKS5 proxy
@@ -448,11 +547,41 @@ impl Socks5UdpClient {
         control_guard.is_some() && relay_guard.is_some()
     }
     
+    /// Start keep-alive task for TCP control connection
+    async fn start_keepalive_task(&self) {
+        let control_stream = Arc::clone(&self.control_stream);
+        let proxy_addr = self.proxy_addr;
+        
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+            
+            loop {
+                interval.tick().await;
+                
+                // Check if connection is still alive
+                let should_continue = {
+                    let guard = control_stream.lock().await;
+                    guard.is_some()
+                };
+                
+                if !should_continue {
+                    debug!("Keep-alive task stopping - connection closed");
+                    break;
+                }
+                
+                debug!("SOCKS5 control connection keep-alive check for {}", proxy_addr);
+            }
+        });
+    }
+    
     /// Disconnect from proxy
     pub async fn disconnect(&self) -> NetworkResult<()> {
+        info!("🔌 Disconnecting from SOCKS5 proxy {}...", self.proxy_addr);
+        
         {
             let mut control_guard = self.control_stream.lock().await;
             if let Some(mut stream) = control_guard.take() {
+                info!("Shutting down TCP control connection");
                 let _ = stream.shutdown().await;
             }
         }
@@ -467,7 +596,7 @@ impl Socks5UdpClient {
             *socket_guard = None;
         }
         
-        info!("Disconnected from SOCKS5 proxy");
+        info!("✅ Disconnected from SOCKS5 proxy");
         Ok(())
     }
 }

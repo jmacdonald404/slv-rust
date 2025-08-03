@@ -100,7 +100,14 @@ impl CapabilitiesManager {
         let capability = self.get_capability(capability_name).await
             .ok_or_else(|| CapabilityError::CapabilityNotFound(capability_name.to_string()))?;
 
-        debug!("🌐 Making {} request to capability: {}", method.as_str(), capability_name);
+        info!("🌐 CAPABILITY REQUEST: Making {} request", method.as_str());
+        info!("   Capability: {}", capability_name);
+        info!("   URL: {}", capability.url);
+        if body.is_some() {
+            info!("   Has request body: true");
+        }
+        
+        let request_start = std::time::Instant::now();
         
         let mut request = match method {
             CapabilityMethod::Get => self.http_client.get(&capability.url),
@@ -125,17 +132,31 @@ impl CapabilitiesManager {
 
         let status = response.status();
         let headers = response.headers().clone();
+        let response_time = request_start.elapsed();
+        
         let body = response.text().await
             .map_err(|e| CapabilityError::HttpError(e.to_string()))?;
 
-        debug!("📥 Capability response: {} - {} bytes", status, body.len());
+        info!("🌐 CAPABILITY RESPONSE: Response received");
+        info!("   Status: {}", status);
+        info!("   Response time: {:?}", response_time);
+        info!("   Body size: {} bytes", body.len());
+        info!("   Capability: {}", capability_name);
 
         if status.is_success() {
+            info!("✅ CAPABILITY RESPONSE: Request successful");
             let json_body = if body.is_empty() {
                 serde_json::Value::Null
             } else {
-                serde_json::from_str(&body)
-                    .map_err(|e| CapabilityError::ParseError(e.to_string()))?
+                match serde_json::from_str(&body) {
+                    Ok(parsed) => parsed,
+                    Err(e) => {
+                        warn!("❌ CAPABILITY RESPONSE ERROR: Failed to parse JSON response");
+                        warn!("   Error: {}", e);
+                        warn!("   Response body: {}", body);
+                        return Err(CapabilityError::ParseError(e.to_string()));
+                    }
+                }
             };
 
             Ok(CapabilityResponse {
