@@ -11,6 +11,10 @@ path = "src/lib.rs"
 name = "slv-rust"
 path = "src/main.rs"
 
+[[bin]]
+name = "test_proxy"
+path = "src/bin/test_proxy.rs"
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]

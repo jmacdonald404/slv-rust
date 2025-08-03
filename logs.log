@@ -1,12 +1,28 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 24.12s
+     Running `target\debug\slv-rust.exe`
+2025-08-02T06:46:40.644488Z  INFO main ThreadId(01) slv_rust::utils::logging: src\utils\logging.rs:102: Logging initialized with level: info
+2025-08-02T06:46:40.644972Z  INFO main ThreadId(01) slv_rust::utils::logging: src\utils\logging.rs:103: File logging enabled: log.txt (session-based, cleaned on sta
+rtup)
+2025-08-02T06:46:40.645201Z  INFO main ThreadId(01) slv_rust::utils::logging: src\utils\logging.rs:104: WGPU logging enabled: true
+2025-08-02T06:46:40.645406Z  INFO main ThreadId(01) slv_rust::utils::logging: src\utils\logging.rs:105: Backtrace enabled: false
+PRINT TEST: If you see this, stdout works!
+EPRINT TEST: If you see this, stderr works!
+VERSION: 0.3.0
+=== TESTING GENERATED MESSAGE SYSTEM ===
+🧪 Testing generated message structs... (DISABLED - networking removed)
+🎯 Generated message system validation complete!
 === STARTING EGUI ===
-2025-08-01T08:16:46.715285Z  INFO main ThreadId(01) slv_rust::ui: src\ui\mod.rs:74: Loaded saved credentials for grid Second Life
-2025-08-01T08:16:54.230035Z  INFO tokio-runtime-worker ThreadId(12) slv_rust::networking::auth::login: src\networking\auth\login.rs:498: Authenticating with Second Life at https://login.agni.lindenlab.com/cgi-bin/lo
-gin.cgi
-2025-08-01T08:16:54.230783Z  INFO tokio-runtime-worker ThreadId(12) slv_rust::networking::auth::xmlrpc: src\networking\auth\xmlrpc.rs:31: Sending XML-RPC login request to https://login.agni.lindenlab.com/cgi-bin/log
-in.cgi
-2025-08-01T08:16:55.822550Z  INFO tokio-runtime-worker ThreadId(03) slv_rust::networking::auth::xmlrpc: src\networking\auth\xmlrpc.rs:266: XML-RPC Response: sim_ip = 54.188.152.101
-2025-08-01T08:16:55.822945Z  INFO tokio-runtime-worker ThreadId(03) slv_rust::networking::auth::xmlrpc: src\networking\auth\xmlrpc.rs:271: XML-RPC Response: sim_port = 13027
-2025-08-01T08:16:55.823247Z  INFO tokio-runtime-worker ThreadId(03) slv_rust::networking::auth::login: src\networking\auth\login.rs:293: Login successful, storing credentials in keychain...
+2025-08-02T06:46:40.822166Z  INFO main ThreadId(01) slv_rust::ui: src\ui\mod.rs:74: Loaded saved credentials for grid Second Life
+2025-08-02T06:46:51.660396Z  INFO tokio-runtime-worker ThreadId(13) slv_rust::networking::auth::login: src\networking\auth\login.rs:508: Authenticating with Second
+Life at https://login.agni.lindenlab.com/cgi-bin/login.cgi
+2025-08-02T06:46:51.661132Z  INFO tokio-runtime-worker ThreadId(13) slv_rust::networking::auth::xmlrpc: src\networking\auth\xmlrpc.rs:31: Sending XML-RPC login requ
+est to https://login.agni.lindenlab.com/cgi-bin/login.cgi
+2025-08-02T06:46:53.341722Z  INFO tokio-runtime-worker ThreadId(02) slv_rust::networking::auth::xmlrpc: src\networking\auth\xmlrpc.rs:266: XML-RPC Response: sim_ip
+= 54.188.152.101
+2025-08-02T06:46:53.342199Z  INFO tokio-runtime-worker ThreadId(02) slv_rust::networking::auth::xmlrpc: src\networking\auth\xmlrpc.rs:271: XML-RPC Response: sim_por
+t = 13027
+2025-08-02T06:46:53.342494Z  INFO tokio-runtime-worker ThreadId(02) slv_rust::networking::auth::login: src\networking\auth\login.rs:298: Login successful, storing c
+redentials in keychain...
 === KEYCHAIN DEBUG TEST ===
 CredentialStore created successfully
 Test credentials created
@@ -14,20 +30,52 @@ Test credentials created
 ✅ Successfully loaded credentials: username=TestUser
 ✅ Successfully deleted test credentials
 === KEYCHAIN DEBUG TEST COMPLETE ===
-2025-08-01T08:16:55.839555Z  INFO tokio-runtime-worker ThreadId(03) slv_rust::networking::auth::login: src\networking\auth\login.rs:302: Successfully stored credentials in keychain for grid Second Life
-2025-08-01T08:16:55.839827Z  INFO tokio-runtime-worker ThreadId(03) slv_rust::networking::auth::login: src\networking\auth\login.rs:310: 🔍 Capabilities URL parsed successfully
-2025-08-01T08:16:55.839995Z  INFO tokio-runtime-worker ThreadId(03) slv_rust::networking::auth::login: src\networking\auth\login.rs:311: 🔍 Extracted hostname: 'simhost-0ccb63bd5d4a95a04.agni.secondlife.io'
-2025-08-01T08:16:55.840157Z  INFO tokio-runtime-worker ThreadId(03) slv_rust::networking::auth::login: src\networking\auth\login.rs:312: 🔍 Hostname length: 44 chars
-2025-08-01T08:16:55.840395Z  INFO tokio-runtime-worker ThreadId(03) slv_rust::networking::auth::login: src\networking\auth\login.rs:313: 🔍 Port from XML-RPC: 13027
-2025-08-01T08:16:55.840566Z  INFO tokio-runtime-worker ThreadId(03) slv_rust::networking::auth::login: src\networking\auth\login.rs:317: 🎯 Constructed address: 'simhost-0ccb63bd5d4a95a04.agni.secondlife.io:13027'
-2025-08-01T08:16:55.894186Z  INFO tokio-runtime-worker ThreadId(03) slv_rust::networking::auth::login: src\networking\auth\login.rs:106: Fetching capabilities from https://simhost-0ccb63bd5d4a95a04.agni.secondlife.i
-o:12043/cap/5b4b1887-740a-eade-008f-9c4546132897
-2025-08-01T08:16:56.023674Z  INFO tokio-runtime-worker ThreadId(11) slv_rust::networking::client: src\networking\client.rs:176: Using UDP transport (QUIC disabled)
-2025-08-01T08:16:56.024188Z  INFO tokio-runtime-worker ThreadId(11) slv_rust::networking::core: src\networking\core.rs:125: Creating core with UDP transport (fallback mode)
-2025-08-01T08:16:56.024597Z  INFO tokio-runtime-worker ThreadId(11) slv_rust::networking::transport: src\networking\transport.rs:82: UDP transport bound to 127.0.0.1:62080
-2025-08-01T08:16:56.024994Z  INFO tokio-runtime-worker ThreadId(11) slv_rust::networking::handlers: src\networking\handlers\mod.rs:106: Registering packet handler for 131220: RegionHandshake
-2025-08-01T08:16:56.025336Z  INFO tokio-runtime-worker ThreadId(11) slv_rust::networking::handlers: src\networking\handlers\mod.rs:106: Registering packet handler for 4294967291: PacketAck
-2025-08-01T08:16:56.025530Z  INFO tokio-runtime-worker ThreadId(11) slv_rust::networking::handlers: src\networking\handlers\mod.rs:106: Registering packet handler for 1: StartPingCheck
-2025-08-01T08:16:56.025738Z  INFO tokio-runtime-worker ThreadId(11) slv_rust::networking::handlers: src\networking\handlers\mod.rs:106: Registering packet handler for 2: CompletePingCheck
-2025-08-01T08:16:56.025909Z  INFO tokio-runtime-worker ThreadId(11) slv_rust::networking::handlers: src\networking\handlers\mod.rs:106: Registering packet handler for 12: ObjectUpdate
-2025-08-01T08:16:56.026069Z  INFO tokio-runtime-worker ThreadId(11) slv_rust::networking::handlers: src\networking\handlers\mod.rs:106: Registering packet handler for 11: LayerData
+2025-08-02T06:46:53.359149Z  INFO tokio-runtime-worker ThreadId(02) slv_rust::networking::auth::login: src\networking\auth\login.rs:307: Successfully stored credent
+ials in keychain for grid Second Life
+2025-08-02T06:46:53.359452Z  INFO tokio-runtime-worker ThreadId(02) slv_rust::networking::auth::login: src\networking\auth\login.rs:315: 🔍 Capabilities URL parsed
+successfully
+2025-08-02T06:46:53.359636Z  INFO tokio-runtime-worker ThreadId(02) slv_rust::networking::auth::login: src\networking\auth\login.rs:316: 🔍 Extracted hostname: 'sim
+host-0ccb63bd5d4a95a04.agni.secondlife.io'
+2025-08-02T06:46:53.359810Z  INFO tokio-runtime-worker ThreadId(02) slv_rust::networking::auth::login: src\networking\auth\login.rs:317: 🔍 Hostname length: 44 char
+s
+2025-08-02T06:46:53.359985Z  INFO tokio-runtime-worker ThreadId(02) slv_rust::networking::auth::login: src\networking\auth\login.rs:318: 🔍 Port from XML-RPC: 13027
+2025-08-02T06:46:53.360135Z  INFO tokio-runtime-worker ThreadId(02) slv_rust::networking::auth::login: src\networking\auth\login.rs:322: 🎯 Constructed address: 'si
+mhost-0ccb63bd5d4a95a04.agni.secondlife.io:13027'
+2025-08-02T06:46:53.378643Z  INFO tokio-runtime-worker ThreadId(02) slv_rust::networking::auth::login: src\networking\auth\login.rs:106: Fetching capabilities from
+https://simhost-0ccb63bd5d4a95a04.agni.secondlife.io:12043/cap/5b4b1887-740a-eade-008f-9c4546132897
+2025-08-02T06:46:53.497130Z  INFO tokio-runtime-worker ThreadId(11) slv_rust::networking::auth::login: src\networking\auth\login.rs:401: 🔧 Creating client with Hip
+polyzer proxy support
+2025-08-02T06:46:53.497831Z  INFO tokio-runtime-worker ThreadId(11) slv_rust::networking::proxy: src\networking\proxy\mod.rs:114: ✅ Hippolyzer detected on ports 906
+1 (SOCKS5) and 9062 (HTTP)
+2025-08-02T06:46:53.498043Z  INFO tokio-runtime-worker ThreadId(11) slv_rust::networking::proxy: src\networking\proxy\mod.rs:69: 🔍 Detected Hippolyzer running - us
+ing integrated WinHippoAutoProxy mode
+2025-08-02T06:46:53.498266Z  INFO tokio-runtime-worker ThreadId(11) slv_rust::networking::client: src\networking\client.rs:265: 🔧 Creating client with Hippolyzer p
+roxy support
+2025-08-02T06:46:53.498473Z  INFO tokio-runtime-worker ThreadId(11) slv_rust::networking::client: src\networking\client.rs:266:    SOCKS5 proxy: 127.0.0.1:9061
+2025-08-02T06:46:53.498651Z  INFO tokio-runtime-worker ThreadId(11) slv_rust::networking::client: src\networking\client.rs:267:    HTTP proxy: 127.0.0.1:9062
+2025-08-02T06:46:53.498861Z  INFO tokio-runtime-worker ThreadId(11) slv_rust::networking::client: src\networking\client.rs:268:    Detected proxy mode: WinHippoAuto
+Proxy
+2025-08-02T06:46:53.499046Z  INFO tokio-runtime-worker ThreadId(11) slv_rust::networking::client: src\networking\client.rs:272: 🔧 Using WinHippoAutoProxy transpare
+nt mode
+2025-08-02T06:46:53.499240Z  INFO tokio-runtime-worker ThreadId(11) slv_rust::networking::client: src\networking\client.rs:273:    📋 Make sure WinHippoAutoProxy is
+ running before connecting
+2025-08-02T06:46:53.499414Z  INFO tokio-runtime-worker ThreadId(11) slv_rust::networking::client: src\networking\client.rs:274:    📋 Download from: https://github.
+com/SaladDais/WinHippoAutoProxy
+2025-08-02T06:46:53.499617Z  INFO tokio-runtime-worker ThreadId(11) slv_rust::networking::client: src\networking\client.rs:176: Using UDP transport (QUIC disabled)
+2025-08-02T06:46:53.499783Z  INFO tokio-runtime-worker ThreadId(11) slv_rust::networking::core: src\networking\core.rs:125: Creating core with UDP transport (fallba
+ck mode)
+2025-08-02T06:46:53.500120Z  INFO tokio-runtime-worker ThreadId(11) slv_rust::networking::transport: src\networking\transport.rs:85: UDP transport bound to 0.0.0.0:
+56234
+2025-08-02T06:46:53.500387Z  INFO tokio-runtime-worker ThreadId(11) slv_rust::networking::transport: src\networking\transport.rs:109: 🔧 Using integrated transparen
+t proxy mode
+2025-08-02T06:46:53.501165Z  INFO tokio-runtime-worker ThreadId(11) slv_rust::networking::proxy::http: src\networking\proxy\http.rs:59: Loaded CA certificate from H
+ippolyzer/hippolyzer/lib/base/network/data/ca-bundle.crt
+2025-08-02T06:46:53.501385Z  INFO tokio-runtime-worker ThreadId(11) slv_rust::networking::proxy::http: src\networking\proxy\http.rs:79: HTTP proxy client configured
+ for 127.0.0.1:9062
+2025-08-02T06:46:53.501553Z  INFO tokio-runtime-worker ThreadId(11) slv_rust::networking::proxy::http: src\networking\proxy\http.rs:81: CA certificate path: Some("H
+ippolyzer/hippolyzer/lib/base/network/data/ca-bundle.crt")
+2025-08-02T06:46:53.501725Z  INFO tokio-runtime-worker ThreadId(11) slv_rust::networking::transport: src\networking\transport.rs:143: 🔧 Initializing integrated tra
+nsparent SOCKS5 proxy for 127.0.0.1:9061
+2025-08-02T06:46:53.501960Z  INFO tokio-runtime-worker ThreadId(11) slv_rust::networking::proxy::transparent: src\networking\proxy\transparent.rs:53: 🔧 Transparent
+ SOCKS5 proxy initialized on local port 56235
+2025-08-02T06:46:53.502201Z  INFO tokio-runtime-worker ThreadId(11) slv_rust::networking::handlers: src\networking\handlers\mod.rs:113: Registering packet handler f

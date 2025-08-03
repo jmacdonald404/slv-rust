@@ -17,7 +17,9 @@
       "Bash(RUST_LOG=debug cargo run --bin slv-rust)",
       "Bash(RUST_LOG=1 cargo run --bin slv-rust)",
       "Bash(git rm:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "WebFetch(domain:github.com)",
+      "Bash(grep:*)"
     ],
     "deny": []
   }
