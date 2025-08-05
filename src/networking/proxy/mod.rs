@@ -38,7 +38,7 @@ pub mod http;
 pub mod transparent;
 
 pub use socks5::*;
-pub use http::*;
+pub use self::http::{HttpProxyClient};
 pub use transparent::*;
 
 use std::net::SocketAddr;
@@ -192,7 +192,7 @@ impl ProxyConfig {
             http_addr: Some("127.0.0.1:9062".parse().unwrap()),
             username: None,
             password: None,
-            ca_cert_path: Some("Hippolyzer/hippolyzer/lib/base/network/data/ca-bundle.crt".to_string()),
+            ca_cert_path: Some("src/assets/CA.pem".to_string()),
         }
     }
     
@@ -218,7 +218,7 @@ impl ProxyConfig {
             http_addr: Some("127.0.0.1:9062".parse().unwrap()),
             username: None,
             password: None,
-            ca_cert_path: Some("Hippolyzer/hippolyzer/lib/base/network/data/ca-bundle.crt".to_string()),
+            ca_cert_path: Some("src/assets/CA.pem".to_string()),
         }
     }
     

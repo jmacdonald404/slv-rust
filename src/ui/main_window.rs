@@ -243,10 +243,10 @@ fn start_login(ui_state: &mut UiState) {
     let password = ui_state.login_state.password.clone();
     let result_tx = ui_state.login_result_tx.clone();
     let selected_grid = ui_state.login_state.selected_grid.clone();
-    let proxy_enabled = ui_state.proxy_settings.enabled;
+    let proxy_settings = ui_state.proxy_settings.clone();
     
     ui_state.login_task = Some(ui_state.runtime_handle.spawn(async move {
-        match crate::ui::login::logic::perform_login(&username, &password, selected_grid, proxy_enabled).await {
+        match crate::ui::login::logic::perform_login(&username, &password, selected_grid, &proxy_settings).await {
             Ok(_) => {
                 let _ = result_tx.send(LoginResult { result: Ok(()) });
             }

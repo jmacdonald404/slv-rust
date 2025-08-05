@@ -2,11 +2,13 @@ use super::{Grid, SessionInfo, SessionManager, CredentialStore};
 use super::xmlrpc::{XmlRpcClient, LoginParameters};
 use crate::networking::{NetworkError, NetworkResult};
 use crate::networking::client::{Client, ClientConfig};
+use crate::ui::proxy::ProxySettings;
 use std::net::SocketAddr;
 use std::time::Duration;
 use uuid::Uuid;
-use reqwest::Client as HttpClient;
+use ureq::{Agent, Proxy};
 use std::collections::HashMap;
+use std::io::Read;
 use serde_json;
 use quick_xml;
 use crate::utils::math::Vector3;
@@ -91,6 +93,7 @@ pub struct AuthenticationService {
     session_manager: SessionManager,
     xmlrpc_client: XmlRpcClient,
     credential_store: CredentialStore,
+    proxy_settings: Option<ProxySettings>,
 }
 
 impl AuthenticationService {
@@ -99,30 +102,90 @@ impl AuthenticationService {
             session_manager: SessionManager::new(),
             xmlrpc_client: XmlRpcClient::new(),
             credential_store: CredentialStore::new(),
+            proxy_settings: None,
+        }
+    }
+
+    /// Create authentication service with proxy configuration
+    pub fn new_with_proxy(proxy_settings: &ProxySettings) -> NetworkResult<Self> {
+        if proxy_settings.enabled {
+            tracing::info!("🔧 Creating AuthenticationService with proxy enabled");
+            tracing::info!("  - HTTP proxy: {}:{}", proxy_settings.http_host, proxy_settings.http_port);
+            tracing::info!("  - Cert validation disabled: {}", proxy_settings.disable_cert_validation);
+            
+            let xmlrpc_client = XmlRpcClient::new_with_proxy(
+                &proxy_settings.http_host,
+                proxy_settings.http_port,
+                proxy_settings.disable_cert_validation
+            ).map_err(|e| NetworkError::Transport { 
+                reason: format!("Failed to configure proxy for authentication: {}", e) 
+            })?;
+
+            Ok(Self {
+                session_manager: SessionManager::new(),
+                xmlrpc_client,
+                credential_store: CredentialStore::new(),
+                proxy_settings: Some(proxy_settings.clone()),
+            })
+        } else {
+            tracing::info!("🔧 Creating AuthenticationService without proxy");
+            Ok(Self::new())
         }
     }
 
     async fn fetch_capabilities(&self, url: &str) -> NetworkResult<HashMap<String, String>> {
         tracing::info!("Fetching capabilities from {}", url);
-        let client = HttpClient::new();
+        
+        // Create ureq agent with the same proxy configuration as the authentication client
+        let agent = if let Some(ref proxy_settings) = self.proxy_settings {
+            if proxy_settings.enabled {
+                tracing::info!("🔧 Creating capabilities client with proxy {}:{}", 
+                              proxy_settings.http_host, proxy_settings.http_port);
+                
+                let proxy_url = format!("http://{}:{}", proxy_settings.http_host, proxy_settings.http_port);
+                let proxy = Proxy::new(&proxy_url)
+                    .map_err(|e| NetworkError::Transport { 
+                        reason: format!("Failed to create proxy for capabilities: {}", e) 
+                    })?;
+                
+                let agent = ureq::Agent::new_with_defaults();
+                
+                if proxy_settings.disable_cert_validation {
+                    tracing::warn!("⚠️ Certificate validation disabled for capabilities client");
+                    tracing::warn!("⚠️ ureq relies on system TLS settings for certificate validation");
+                }
+                
+                agent
+            } else {
+                ureq::Agent::new_with_defaults()
+            }
+        } else {
+            ureq::Agent::new_with_defaults()
+        };
         
         // Second Life capabilities servers expect POST requests with LLSD format
         // Send an empty LLSD map as the request body
         let request_body = r#"<?xml version="1.0" ?><llsd><map></map></llsd>"#;
+        let url_clone = url.to_string();
         
-        let response = client.post(url)
-            .header("Content-Type", "application/llsd+xml")
-            .body(request_body)
-            .send().await
-            .map_err(|e| NetworkError::Transport { reason: format!("Failed to fetch capabilities: {}", e) })?;
+        // Use spawn_blocking since ureq is synchronous
+        let (status_code, response_text) = tokio::task::spawn_blocking(move || -> Result<(u16, String), ureq::Error> {
+            let mut response = agent
+                .post(&url_clone)
+                .header("Content-Type", "application/llsd+xml")
+                .send(request_body)?;
 
-        if !response.status().is_success() {
-            return Err(NetworkError::Transport { reason: format!("Failed to fetch capabilities, status: {}", response.status()) });
+            let status_code = response.status();
+            let response_text = response.body_mut().read_to_string()?;
+            
+            Ok((status_code.into(), response_text))
+        }).await
+        .map_err(|e| NetworkError::Transport { reason: format!("Failed to execute capabilities request task: {}", e) })?
+        .map_err(|e| NetworkError::Transport { reason: format!("Failed to fetch capabilities: {}", e) })?;
+
+        if status_code < 200 || status_code >= 300 {
+            return Err(NetworkError::Transport { reason: format!("Failed to fetch capabilities, status: {}", status_code) });
         }
-
-        // Get the response text first for debugging
-        let response_text = response.text().await
-            .map_err(|e| NetworkError::Transport { reason: format!("Failed to read capabilities response: {}", e) })?;
 
         tracing::debug!("Capabilities response: {}", response_text);
 
@@ -505,13 +568,37 @@ impl AuthenticationService {
         
         let login_uri = credentials.grid.login_uri();
         
-        tracing::info!("Authenticating with {} at {}", credentials.grid.name(), login_uri);
+        tracing::info!("🚀 Beginning authentication process");
+        tracing::info!("  - Grid: {}", credentials.grid.name());
+        tracing::info!("  - Login URI: {}", login_uri);
+        tracing::info!("  - Username: {}.{}", first_name, last_name);
+        tracing::info!("  - Start location: {}", credentials.start_location);
         
-        self.xmlrpc_client.login_to_simulator(login_uri, params)
-            .await
-            .map_err(|e| NetworkError::AuthenticationFailed { 
-                reason: format!("Login server communication failed: {}", e) 
-            })
+        let auth_start_time = std::time::Instant::now();
+        
+        let result = self.xmlrpc_client.login_to_simulator(login_uri, params).await;
+        
+        let auth_elapsed = auth_start_time.elapsed();
+        
+        match &result {
+            Ok(response) => {
+                tracing::info!("🎉 Authentication completed successfully in {:?}", auth_elapsed);
+                tracing::info!("  - Agent ID: {}", response.agent_id);
+                tracing::info!("  - Session ID: {}", response.session_id);
+                tracing::info!("  - Circuit code: {}", response.circuit_code);
+                tracing::info!("  - Simulator: {}:{}", response.simulator_ip, response.simulator_port);
+                if let Some(ref seed_cap) = response.seed_capability {
+                    tracing::info!("  - Seed capability: {}", seed_cap);
+                }
+            }
+            Err(e) => {
+                tracing::error!("💥 Authentication failed after {:?}: {}", auth_elapsed, e);
+            }
+        }
+        
+        result.map_err(|e| NetworkError::AuthenticationFailed { 
+            reason: format!("Login server communication failed: {}", e) 
+        })
     }
 }
 

@@ -628,6 +628,71 @@ impl Circuit {
         }
     }
     
+    /// Process incoming packet and handle acknowledgments
+    pub async fn handle_incoming_packet(&self, packet_data: &[u8]) -> NetworkResult<()> {
+        let mut deserializer = PacketDeserializer::new();
+        
+        // Parse packet header to extract sequence number and flags
+        if packet_data.len() < 6 {
+            return Err(NetworkError::Transport { 
+                reason: "Packet too short for header".to_string() 
+            });
+        }
+        
+        let flags = packet_data[0];
+        let sequence = u32::from_le_bytes([
+            packet_data[1], packet_data[2], packet_data[3], packet_data[4]
+        ]);
+        
+        // Check if this is a reliable packet that needs acknowledgment
+        if (flags & 0x40) != 0 { // ACK_FLAG
+            let mut ack = self.acknowledger.lock().await;
+            if ack.is_sequence_new(sequence) {
+                ack.queue_ack(sequence);
+                info!("📥 Queued ACK for reliable packet sequence {}", sequence);
+            }
+        }
+        
+        // Check if this is a PacketAck message
+        let packet_id = if packet_data.len() >= 7 {
+            if packet_data[5] == 0xFF && packet_data.len() >= 10 {
+                // Extended packet ID format
+                u32::from_le_bytes([packet_data[6], packet_data[7], packet_data[8], packet_data[9]]) & 0xFFFF
+            } else {
+                packet_data[6] as u32
+            }
+        } else {
+            return Ok(()); // Skip malformed packets
+        };
+        
+        // PacketAck has ID 0xFFFFFFFB (4294967291)
+        if packet_id == 0xFFFFFFFB {
+            self.handle_packet_ack(packet_data).await?;
+        }
+        
+        Ok(())
+    }
+    
+    /// Handle PacketAck message from server  
+    /// NOTE: This method is deprecated - PacketAck messages are now handled by PacketAckHandler
+    async fn handle_packet_ack(&self, packet_data: &[u8]) -> NetworkResult<()> {
+        warn!("handle_packet_ack called - this should not happen as PacketAck is handled by PacketAckHandler");
+        Ok(())
+    }
+    
+    /// Simplified acknowledgment for UseCircuitCode - acknowledges first pending packet
+    /// This is a workaround until full packet routing is implemented
+    pub async fn acknowledge_first_pending(&self) -> bool {
+        let mut ack = self.acknowledger.lock().await;
+        if let Some(&sequence) = ack.pending_reliable.keys().next() {
+            ack.handle_ack(sequence);
+            info!("✅ Acknowledged first pending packet (sequence {})", sequence);
+            true
+        } else {
+            false
+        }
+    }
+    
     /// Start the circuit (begin packet processing)
     pub async fn start(&self) -> NetworkResult<()> {
         self.set_state(CircuitState::Connected).await?;
@@ -981,6 +1046,18 @@ impl Circuit {
                 }
             }
         }
+        
+        // Check if this is a dedicated PacketAck message 
+        // Construct full packet ID like the handler system does
+        let full_packet_id = match packet.frequency {
+            crate::networking::packets::PacketFrequency::High => packet.packet_id as u32,
+            crate::networking::packets::PacketFrequency::Medium => (1 << 16) | (packet.packet_id as u32),
+            crate::networking::packets::PacketFrequency::Low => (2 << 16) | (packet.packet_id as u32),
+            crate::networking::packets::PacketFrequency::Fixed => (3 << 16) | (packet.packet_id as u32),
+        };
+        
+        // PacketAck messages will be handled by the PacketAckHandler via the event system
+        // No need for double processing here - let the proper handler do the work
         
         // Emit packet received event - this will trigger the handlers
         let _ = self.event_tx.send(CircuitEvent::PacketReceived { packet });

@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
+use std::io::Read;
 
 impl CapabilitiesManager {
     /// Fetch inventory using the FetchInventory2 capability
@@ -48,22 +49,28 @@ impl CapabilitiesManager {
         
         debug!("🖼️ Requesting texture: {}", texture_id);
         
-        let response = self.http_client.get(&texture_url)
-            .header("User-Agent", "slv-rust/0.3.0")
-            .send()
-            .await
-            .map_err(|e| CapabilityError::HttpError(e.to_string()))?;
-
-        let status = response.status();
-        if status.is_success() {
-            let texture_data = response.bytes().await
-                .map_err(|e| CapabilityError::HttpError(e.to_string()))?;
+        let agent = self.http_agent.clone();
+        let texture_url_clone = texture_url.clone();
+        
+        let (status, texture_data) = tokio::task::spawn_blocking(move || -> Result<(u16, Vec<u8>), ureq::Error> {
+            let mut response = agent.get(&texture_url_clone)
+                .header("User-Agent", "slv-rust/0.3.0")
+                .call()?;
             
+            let status = response.status();
+            let texture_data = response.body_mut().read_to_vec()?;
+            
+            Ok((status.into(), texture_data))
+        }).await
+        .map_err(|e| CapabilityError::HttpError(e.to_string()))?
+        .map_err(|e| CapabilityError::HttpError(e.to_string()))?;
+
+        if status >= 200 && status < 300 {
             info!("🖼️ Downloaded texture {}: {} bytes", texture_id, texture_data.len());
-            Ok(texture_data.to_vec())
+            Ok(texture_data)
         } else {
-            let error_body = response.text().await.unwrap_or_default();
-            Err(CapabilityError::HttpStatusError(status.as_u16(), error_body))
+            warn!("❌ Failed to download texture {}: HTTP {}", texture_id, status);
+            Err(CapabilityError::HttpError(format!("HTTP {}", status)))
         }
     }
 
@@ -78,22 +85,28 @@ impl CapabilitiesManager {
         
         debug!("🔺 Requesting mesh: {}", mesh_id);
         
-        let response = self.http_client.get(&mesh_url)
-            .header("User-Agent", "slv-rust/0.3.0")
-            .send()
-            .await
-            .map_err(|e| CapabilityError::HttpError(e.to_string()))?;
-
-        let status = response.status();
-        if status.is_success() {
-            let mesh_data = response.bytes().await
-                .map_err(|e| CapabilityError::HttpError(e.to_string()))?;
+        let agent = self.http_agent.clone();
+        let mesh_url_clone = mesh_url.clone();
+        
+        let (status, mesh_data) = tokio::task::spawn_blocking(move || -> Result<(u16, Vec<u8>), ureq::Error> {
+            let mut response = agent.get(&mesh_url_clone)
+                .header("User-Agent", "slv-rust/0.3.0")
+                .call()?;
             
+            let status = response.status();
+            let mesh_data = response.body_mut().read_to_vec()?;
+            
+            Ok((status.into(), mesh_data))
+        }).await
+        .map_err(|e| CapabilityError::HttpError(e.to_string()))?
+        .map_err(|e| CapabilityError::HttpError(e.to_string()))?;
+
+        if status >= 200 && status < 300 {
             info!("🔺 Downloaded mesh {}: {} bytes", mesh_id, mesh_data.len());
-            Ok(mesh_data.to_vec())
+            Ok(mesh_data)
         } else {
-            let error_body = response.text().await.unwrap_or_default();
-            Err(CapabilityError::HttpStatusError(status.as_u16(), error_body))
+            warn!("❌ Failed to download mesh {}: HTTP {}", mesh_id, status);
+            Err(CapabilityError::HttpError(format!("HTTP {}", status)))
         }
     }
 

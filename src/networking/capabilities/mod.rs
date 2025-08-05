@@ -10,6 +10,8 @@ use tokio::sync::RwLock;
 use tracing::{debug, info, warn, error};
 use std::sync::Arc;
 use uuid::Uuid;
+use ureq::Agent;
+use std::io::Read;
 
 pub mod client;
 pub mod handlers;
@@ -33,7 +35,7 @@ pub struct CapabilitiesManager {
     /// Map of capability name to capability info
     capabilities: Arc<RwLock<HashMap<String, Capability>>>,
     /// HTTP client for making capability requests
-    http_client: Arc<reqwest::Client>,
+    http_agent: ureq::Agent,
     /// Session information
     session_info: SessionInfo,
 }
@@ -49,14 +51,11 @@ pub struct SessionInfo {
 impl CapabilitiesManager {
     /// Create a new capabilities manager
     pub fn new(session_info: SessionInfo) -> Self {
-        let http_client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .expect("Failed to create HTTP client");
+        let http_agent = ureq::Agent::new_with_defaults();
 
         Self {
             capabilities: Arc::new(RwLock::new(HashMap::new())),
-            http_client: Arc::new(http_client),
+            http_agent,
             session_info,
         }
     }
@@ -108,66 +107,94 @@ impl CapabilitiesManager {
         }
         
         let request_start = std::time::Instant::now();
+        let agent = self.http_agent.clone();
+        let url = capability.url.clone();
+        let body_json = body.map(|b| serde_json::to_string(&b)).transpose()
+            .map_err(|e| CapabilityError::ParseError(e.to_string()))?;
         
-        let mut request = match method {
-            CapabilityMethod::Get => self.http_client.get(&capability.url),
-            CapabilityMethod::Post => self.http_client.post(&capability.url),
-            CapabilityMethod::Put => self.http_client.put(&capability.url),
-            CapabilityMethod::Delete => self.http_client.delete(&capability.url),
-        };
+        // Use spawn_blocking since ureq is synchronous
+        let (status, headers_map, response_body) = tokio::task::spawn_blocking(move || -> Result<(u16, HashMap<String, String>, String), ureq::Error> {
+            let mut response = match method {
+                CapabilityMethod::Get => {
+                    let request = agent.get(&url)
+                        .header("X-SecondLife-Shard", "Production")
+                        .header("User-Agent", "slv-rust/0.3.0");
+                    request.call()?
+                },
+                CapabilityMethod::Post => {
+                    let request = agent.post(&url)
+                        .header("X-SecondLife-Shard", "Production")
+                        .header("User-Agent", "slv-rust/0.3.0")
+                        .header("Content-Type", "application/json");
+                    if let Some(body_str) = body_json {
+                        request.send(&body_str)?
+                    } else {
+                        request.send("")?
+                    }
+                },
+                CapabilityMethod::Put => {
+                    let request = agent.put(&url)
+                        .header("X-SecondLife-Shard", "Production")
+                        .header("User-Agent", "slv-rust/0.3.0")
+                        .header("Content-Type", "application/json");
+                    if let Some(body_str) = body_json {
+                        request.send(&body_str)?
+                    } else {
+                        request.send("")?
+                    }
+                },
+                CapabilityMethod::Delete => {
+                    let request = agent.delete(&url)
+                        .header("X-SecondLife-Shard", "Production")
+                        .header("User-Agent", "slv-rust/0.3.0");
+                    request.call()?
+                }
+            };
 
-        // Add session headers
-        request = request
-            .header("X-SecondLife-Shard", "Production")
-            .header("User-Agent", "slv-rust/0.3.0")
-            .header("Content-Type", "application/json");
+            let status = response.status();
+            let headers_map: HashMap<String, String> = response.headers()
+                .iter()
+                .map(|(name, value)| (name.to_string(), value.to_str().unwrap_or("").to_string()))
+                .collect();
+            
+            let response_body = response.body_mut().read_to_string()?;
+            
+            Ok((status.into(), headers_map, response_body))
+        }).await
+        .map_err(|e| CapabilityError::HttpError(e.to_string()))?
+        .map_err(|e| CapabilityError::HttpError(e.to_string()))?;
 
-        // Add body if provided
-        if let Some(body) = body {
-            request = request.json(&body);
-        }
-
-        let response = request.send().await
-            .map_err(|e| CapabilityError::HttpError(e.to_string()))?;
-
-        let status = response.status();
-        let headers = response.headers().clone();
         let response_time = request_start.elapsed();
-        
-        let body = response.text().await
-            .map_err(|e| CapabilityError::HttpError(e.to_string()))?;
 
         info!("🌐 CAPABILITY RESPONSE: Response received");
         info!("   Status: {}", status);
         info!("   Response time: {:?}", response_time);
-        info!("   Body size: {} bytes", body.len());
+        info!("   Body size: {} bytes", response_body.len());
         info!("   Capability: {}", capability_name);
 
-        if status.is_success() {
+        if status >= 200 && status < 300 {
             info!("✅ CAPABILITY RESPONSE: Request successful");
-            let json_body = if body.is_empty() {
+            let json_body = if response_body.is_empty() {
                 serde_json::Value::Null
             } else {
-                match serde_json::from_str(&body) {
+                match serde_json::from_str(&response_body) {
                     Ok(parsed) => parsed,
                     Err(e) => {
                         warn!("❌ CAPABILITY RESPONSE ERROR: Failed to parse JSON response");
                         warn!("   Error: {}", e);
-                        warn!("   Response body: {}", body);
+                        warn!("   Response body: {}", response_body);
                         return Err(CapabilityError::ParseError(e.to_string()));
                     }
                 }
             };
 
             Ok(CapabilityResponse {
-                status: status.as_u16(),
-                headers: headers.iter()
-                    .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-                    .collect(),
+                status,
+                headers: headers_map,
                 body: json_body,
             })
         } else {
-            Err(CapabilityError::HttpStatusError(status.as_u16(), body))
+            Err(CapabilityError::HttpStatusError(status, response_body))
         }
     }
 

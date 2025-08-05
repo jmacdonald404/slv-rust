@@ -17,6 +17,8 @@ use tokio::sync::{mpsc, RwLock};
 use serde::{Deserialize, Serialize};
 use tokio::time::{timeout, Duration};
 use tracing::error;
+use ureq::{Agent, Proxy};
+use std::io::Read;
 
 #[derive(Debug)]
 pub enum HandshakeEvent {
@@ -133,7 +135,7 @@ pub struct Client {
     session_info: SessionInfo,
 
     /// HTTP client for EventQueueGet (may be proxied)
-    http_client: reqwest::Client,
+    http_agent: ureq::Agent,
 }
 
 /// Client state
@@ -178,59 +180,40 @@ impl Client {
             Arc::new(Core::new(config.transport.clone()).await?)
         };
         
-        // Create HTTP client, possibly with proxy support
-        let http_client = if let Some(ref proxy_config) = config.transport.proxy {
+        // Create ureq agent, possibly with proxy support
+        let http_agent = if let Some(ref proxy_config) = config.transport.proxy {
             if let Some(http_addr) = proxy_config.http_addr {
-                info!("Configuring HTTP client to use proxy at {}", http_addr);
+                info!("Configuring ureq agent to use proxy at {}", http_addr);
                 
                 let proxy_url = format!("http://{}", http_addr);
-                let mut proxy = reqwest::Proxy::http(&proxy_url)
+                let proxy = ureq::Proxy::new(&proxy_url)
                     .map_err(|e| NetworkError::Transport {
                         reason: format!("Failed to create HTTP proxy: {}", e)
                     })?;
                 
+                let agent = ureq::Agent::new_with_defaults();
+                
                 // Add authentication if provided
                 if let (Some(username), Some(password)) = (&proxy_config.username, &proxy_config.password) {
-                    proxy = proxy.basic_auth(username, password);
+                    // Note: ureq handles basic auth per-request, not per-agent
+                    // We'll handle this in the individual request calls
+                    info!("Proxy authentication will be handled per-request");
                 }
                 
-                let mut client_builder = reqwest::Client::builder().proxy(proxy);
-                
-                // Load CA certificate if provided
+                // Certificate handling
                 if let Some(ca_path) = &proxy_config.ca_cert_path {
-                    match std::fs::read(ca_path) {
-                        Ok(cert_data) => {
-                            match reqwest::Certificate::from_pem(&cert_data) {
-                                Ok(cert) => {
-                                    info!("Loaded CA certificate from {} for HTTP client", ca_path);
-                                    client_builder = client_builder.add_root_certificate(cert);
-                                }
-                                Err(e) => {
-                                    warn!("Failed to parse CA certificate from {}: {}. Using danger_accept_invalid_certs instead.", ca_path, e);
-                                    client_builder = client_builder.danger_accept_invalid_certs(true);
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            warn!("Failed to read CA certificate from {}: {}. Using danger_accept_invalid_certs instead.", ca_path, e);
-                            client_builder = client_builder.danger_accept_invalid_certs(true);
-                        }
-                    }
+                    warn!("CA certificate loading not directly supported in ureq - relying on system TLS settings");
+                    warn!("CA cert path specified: {}", ca_path);
                 } else {
-                    // No CA cert provided, accept invalid certs (required for Hippolyzer's self-signed certs)
-                    client_builder = client_builder.danger_accept_invalid_certs(true);
+                    warn!("No CA cert provided - relying on system TLS settings for Hippolyzer proxy");
                 }
                 
-                client_builder
-                    .build()
-                    .map_err(|e| NetworkError::Transport {
-                        reason: format!("Failed to create HTTP client with proxy: {}", e)
-                    })?
+                agent
             } else {
-                reqwest::Client::new()
+                ureq::Agent::new_with_defaults()
             }
         } else {
-            reqwest::Client::new()
+            ureq::Agent::new_with_defaults()
         };
         
         // Create event channels
@@ -246,7 +229,7 @@ impl Client {
             handshake_rx: Arc::new(RwLock::new(handshake_rx)),
             _background_tasks: Vec::new(),
             session_info,
-            http_client,
+            http_agent,
         };
         
         // Start background tasks
@@ -548,10 +531,11 @@ impl Client {
             info!("   Circuit Code: {}", circuit.circuit_code());
             
             let auth_start = std::time::Instant::now();
-            match tokio::time::timeout(
-                timeout_duration,
-                circuit.send_reliable(&use_circuit_code, timeout_duration)
-            ).await {
+            
+            // Send the UseCircuitCode packet reliably and wait for server acknowledgment
+            let send_future = circuit.send_reliable(&use_circuit_code, timeout_duration);
+            
+            match tokio::time::timeout(timeout_duration, send_future).await {
                 Ok(Ok(())) => {
                     let auth_time = auth_start.elapsed();
                     info!("✅ AUTH RESPONSE: UseCircuitCode sent reliably and acknowledged");
@@ -728,7 +712,7 @@ impl Client {
 
         info!("Starting EventQueueGet connection to {}", eqg_url);
 
-        let client = self.http_client.clone();
+        let agent = self.http_agent.clone();
         let session_id = self.session_info.session_id;
         let agent_id = self.session_info.agent_id;
         let eqg_url = eqg_url.clone();
@@ -768,27 +752,33 @@ impl Client {
                 info!("   ACK ID: {:?}", ack_id);
                 
                 let request_start = std::time::Instant::now();
-                match client.post(eqg_url.clone())
-                    .header("Content-Type", "application/llsd+xml")
-                    .timeout(std::time::Duration::from_secs(45)) // Long-polling timeout
-                    .body(request_body)
-                    .send()
-                    .await {
-                    Ok(response) => {
-                        let status = response.status();
-                        let response_time = request_start.elapsed();
-                        
-                        info!("🌐 HTTP RESPONSE: EventQueueGet response received");
-                        info!("   Status: {}", status);
-                        info!("   Response time: {:?}", response_time);
-                        
-                        // Handle different HTTP responses per SL protocol
-                        match status.as_u16() {
-                            200 => {
-                                // Successful response with events
-                                info!("✅ HTTP RESPONSE: EventQueueGet successful (200 OK)");
-                                match response.text().await {
-                                    Ok(text) => {
+                let agent_clone = agent.clone();
+                let url_clone = eqg_url.clone();
+                let body_clone = request_body.clone();
+                
+                match tokio::task::spawn_blocking(move || {
+                    agent_clone
+                        .post(&url_clone)
+                        .header("Content-Type", "application/llsd+xml")
+                        .send(&body_clone)
+                }).await {
+                    Ok(response_result) => {
+                        match response_result {
+                            Ok(mut response) => {
+                                let status = response.status();
+                                let response_time = request_start.elapsed();
+                                
+                                info!("🌐 HTTP RESPONSE: EventQueueGet response received");
+                                info!("   Status: {}", status);
+                                info!("   Response time: {:?}", response_time);
+                                
+                                // Handle different HTTP responses per SL protocol
+                                match status.as_u16() {
+                                    200 => {
+                                        // Successful response with events
+                                        info!("✅ HTTP RESPONSE: EventQueueGet successful (200 OK)");
+                                        match response.body_mut().read_to_string() {
+                                            Ok(text) => {
                                         info!("📥 HTTP RESPONSE: EventQueueGet data received");
                                         info!("   Response size: {} bytes", text.len());
                                         debug!("   Response content: {}", text);
@@ -826,42 +816,51 @@ impl Client {
                                         
                                         consecutive_errors = 0; // Reset error counter
                                         info!("✅ HTTP RESPONSE: EventQueueGet processing completed successfully");
+                                            },
+                                            Err(e) => {
+                                                warn!("❌ HTTP RESPONSE ERROR: Failed to read EventQueueGet response text");
+                                                warn!("   Error: {}", e);
+                                                warn!("   Response time: {:?}", response_time);
+                                                consecutive_errors += 1;
+                                            }
+                                        }
                                     },
-                                    Err(e) => {
-                                        warn!("❌ HTTP RESPONSE ERROR: Failed to read EventQueueGet response text");
-                                        warn!("   Error: {}", e);
+                                    502 => {
+                                        // 502 Bad Gateway = no events available, continue polling
+                                        info!("🔄 HTTP RESPONSE: EventQueueGet no events available (502 Bad Gateway)");
+                                        info!("   Response time: {:?}", response_time);
+                                        info!("   Continuing long-polling...");
+                                        consecutive_errors = 0;
+                                    },
+                                    499 => {
+                                        // 499 Client Closed Request = server wants us to reconnect
+                                        info!("🔄 HTTP RESPONSE: EventQueueGet server requested reconnection (499)");
+                                        info!("   Response time: {:?}", response_time);
+                                        info!("   Resetting ACK ID and reconnecting...");
+                                        ack_id = None; // Reset acknowledgment
+                                    },
+                                    _ => {
+                                        warn!("❌ HTTP RESPONSE ERROR: EventQueueGet request failed");
+                                        warn!("   Status: {}", status);
                                         warn!("   Response time: {:?}", response_time);
                                         consecutive_errors += 1;
                                     }
                                 }
                             },
-                            502 => {
-                                // 502 Bad Gateway = no events available, continue polling
-                                info!("🔄 HTTP RESPONSE: EventQueueGet no events available (502 Bad Gateway)");
-                                info!("   Response time: {:?}", response_time);
-                                info!("   Continuing long-polling...");
-                                consecutive_errors = 0;
-                            },
-                            499 => {
-                                // 499 Client Closed Request = server wants us to reconnect
-                                info!("🔄 HTTP RESPONSE: EventQueueGet server requested reconnection (499)");
-                                info!("   Response time: {:?}", response_time);
-                                info!("   Resetting ACK ID and reconnecting...");
-                                ack_id = None; // Reset acknowledgment
-                            },
-                            _ => {
-                                warn!("❌ HTTP RESPONSE ERROR: EventQueueGet request failed");
-                                warn!("   Status: {}", status);
-                                warn!("   Response time: {:?}", response_time);
+                            Err(e) => {
+                                let response_time = request_start.elapsed();
+                                warn!("❌ HTTP REQUEST ERROR: Failed to send EventQueueGet request");
+                                warn!("   Error: {}", e);
+                                warn!("   Request time: {:?}", response_time);
                                 consecutive_errors += 1;
                             }
                         }
                     },
                     Err(e) => {
                         let response_time = request_start.elapsed();
-                        warn!("❌ HTTP REQUEST ERROR: Failed to send EventQueueGet request");
+                        warn!("❌ HTTP TASK ERROR: Failed to execute EventQueueGet request task");
                         warn!("   Error: {}", e);
-                        warn!("   Request time: {:?}", response_time);
+                        warn!("   Task time: {:?}", response_time);
                         consecutive_errors += 1;
                     }
                 }

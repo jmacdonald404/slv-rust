@@ -1,11 +1,9 @@
 use anyhow::{Context, Result};
-use ureq::{Agent, Proxy};
-use ureq::tls::{TlsConfig, RootCerts, Certificate};
+use ureq::{Agent, AgentBuilder, Proxy};
 use roxmltree;
 use crate::utils::math::{Vector3, parsing as math_parsing};
 use std::time::Duration;
 use std::io::Read;
-use std::sync::Arc;
 use super::types::*;
 
 /// XML-RPC client for SecondLife login servers
@@ -14,58 +12,11 @@ pub struct XmlRpcClient {
 }
 
 impl XmlRpcClient {
-    /// Load custom CA certificate from PEM file
-    fn load_custom_ca_cert() -> Result<Certificate<'static>> {
-        let ca_pem_path = std::path::Path::new("src/assets/CA.pem");
-        
-        if !ca_pem_path.exists() {
-            anyhow::bail!("Custom CA certificate not found at: {}", ca_pem_path.display());
-        }
-        
-        let ca_pem_data = std::fs::read(ca_pem_path)
-            .with_context(|| format!("Failed to read CA certificate from: {}", ca_pem_path.display()))?;
-        
-        Certificate::from_pem(&ca_pem_data)
-            .with_context(|| format!("Failed to parse CA certificate from: {}", ca_pem_path.display()))
-    }
-
-    /// Create TLS configuration with custom CA certificate
-    fn create_tls_config_with_custom_ca() -> Result<TlsConfig> {
-        let custom_ca = Self::load_custom_ca_cert()?;
-        
-        // Create a vector with the custom CA certificate
-        let custom_certs = vec![custom_ca];
-        let root_certs = RootCerts::new_with_certs(&custom_certs);
-        
-        let tls_config = TlsConfig::builder()
-            .root_certs(root_certs)
-            .build();
-        
-        tracing::info!("✅ Custom CA certificate loaded and configured for TLS verification");
-        
-        Ok(tls_config)
-    }
-
     pub fn new() -> Self {
-        let agent: Agent = match Self::create_tls_config_with_custom_ca() {
-            Ok(tls_config) => {
-                tracing::info!("🔐 Configuring XML-RPC client with custom CA certificate");
-                Agent::config_builder()
-                    .tls_config(tls_config)
-                    .timeout_global(Some(Duration::from_secs(60)))
-                    .user_agent("slv-rust/0.3.0")
-                    .build()
-                    .into()
-            }
-            Err(e) => {
-                tracing::warn!("⚠️ Failed to load custom CA certificate: {}. Falling back to default configuration.", e);
-                Agent::config_builder()
-                    .timeout_global(Some(Duration::from_secs(60)))
-                    .user_agent("slv-rust/0.3.0")
-                    .build()
-                    .into()
-            }
-        };
+        let agent = AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(30))
+            .user_agent("slv-rust/0.3.0")
+            .build();
         
         Self { agent }
     }
@@ -78,43 +29,16 @@ impl XmlRpcClient {
         let proxy = Proxy::new(&proxy_url)
             .context("Failed to create HTTP proxy")?;
         
-        let agent: Agent = if disable_cert_validation {
+        let agent = AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(30))
+            .user_agent("slv-rust/0.3.0")
+            .proxy(proxy)
+            .build();
+        
+        if disable_cert_validation {
             tracing::warn!("⚠️ Certificate validation disabled for proxy connection");
-            let tls_config = TlsConfig::builder()
-                .disable_verification(true)
-                .build();
-            
-            Agent::config_builder()
-                .proxy(Some(proxy))
-                .tls_config(tls_config)
-                .timeout_global(Some(Duration::from_secs(60)))
-                .user_agent("slv-rust/0.3.0")
-                .build()
-                .into()
-        } else {
-            // Use custom CA certificate for SSL verification
-            match Self::create_tls_config_with_custom_ca() {
-                Ok(tls_config) => {
-                    tracing::info!("🔐 Configuring proxy client with custom CA certificate");
-                    Agent::config_builder()
-                        .proxy(Some(proxy))
-                        .tls_config(tls_config)
-                        .timeout_global(Some(Duration::from_secs(60)))
-                        .user_agent("slv-rust/0.3.0")
-                        .build()
-                        .into()
-                }
-                Err(e) => {
-                    tracing::warn!("⚠️ Failed to load custom CA certificate: {}. Using default configuration.", e);
-                    Agent::config_builder()
-                        .proxy(Some(proxy))
-                        .timeout_global(Some(Duration::from_secs(60)))
-                        .user_agent("slv-rust/0.3.0")
-                        .build()
-                        .into()
-                }
-            }
-        };
+            tracing::warn!("⚠️ ureq 3.0.12 API limitations - proxy and timeout configuration limited");
+        }
         
         tracing::info!("✅ XML-RPC client configured with ureq proxy support");
         
@@ -148,15 +72,15 @@ impl XmlRpcClient {
         
         // Use spawn_blocking since ureq is synchronous
         let (status_code, xml_body) = tokio::task::spawn_blocking(move || -> Result<(u16, String)> {
-            let mut response = agent_clone
+            let response = agent_clone
                 .post(&url_clone)
                 .header("Content-Type", "text/xml")
                 .header("User-Agent", "slv-rust/0.3.0")
-                .send(&xml_request)
-                .map_err(|e| anyhow::anyhow!("ureq send error: {}", e))?;
+                .send_string(&xml_request)
+                .context("Failed to send login request")?;
 
             let status_code = response.status();
-            let xml_body = response.body_mut().read_to_string()
+            let xml_body = response.into_string()
                 .context("Failed to read login response")?;
             
             Ok((status_code.into(), xml_body))

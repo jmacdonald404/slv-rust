@@ -1,5 +1,6 @@
 use crate::ui::{UiState, LoginProgress, LoginResult, LoginUiState, UdpConnectionProgress};
 use crate::networking::auth::{LoginCredentials, AuthenticationService, Grid};
+use crate::ui::proxy::ProxySettings;
 
 pub fn start_login(ui_state: &mut UiState) {
     ui_state.login_progress = LoginProgress::InProgress;
@@ -8,11 +9,11 @@ pub fn start_login(ui_state: &mut UiState) {
     let username = ui_state.login_state.username.clone();
     let password = ui_state.login_state.password.clone();
     let selected_grid = ui_state.login_state.selected_grid.clone();
-    let proxy_enabled = ui_state.proxy_settings.enabled;
+    let proxy_settings = ui_state.proxy_settings.clone();
     let result_tx = ui_state.login_result_tx.clone();
     
     ui_state.login_task = Some(ui_state.runtime_handle.spawn(async move {
-        match perform_login(&username, &password, selected_grid, proxy_enabled).await {
+        match perform_login(&username, &password, selected_grid, &proxy_settings).await {
             Ok(_) => {
                 let _ = result_tx.send(LoginResult { result: Ok(()) });
             }
@@ -25,12 +26,19 @@ pub fn start_login(ui_state: &mut UiState) {
     }));
 }
 
-pub async fn perform_login(username: &str, password: &str, grid: Grid, proxy_enabled: bool) -> Result<(), crate::networking::NetworkError> {
+pub async fn perform_login(username: &str, password: &str, grid: Grid, proxy_settings: &ProxySettings) -> Result<(), crate::networking::NetworkError> {
     use tracing::{info, warn, error};
     
     info!("🔄 LOGIN: Starting login process for user: {}", username);
     info!("🔄 LOGIN: Grid: {:?}", grid);
-    info!("🔄 LOGIN: Proxy enabled: {}", proxy_enabled);
+    info!("🔄 LOGIN: Proxy enabled: {}", proxy_settings.enabled);
+    
+    if proxy_settings.enabled {
+        info!("🔄 LOGIN: Proxy configuration:");
+        info!("  - SOCKS5: {}:{}", proxy_settings.socks5_host, proxy_settings.socks5_port);
+        info!("  - HTTP: {}:{}", proxy_settings.http_host, proxy_settings.http_port);
+        info!("  - Cert validation disabled: {}", proxy_settings.disable_cert_validation);
+    }
     
     // Create login credentials
     let credentials = LoginCredentials::new(username.to_string(), password.to_string())
@@ -38,13 +46,13 @@ pub async fn perform_login(username: &str, password: &str, grid: Grid, proxy_ena
         
     info!("🔄 LOGIN: Created credentials, validating...");
     
-    // Create authentication service
-    let mut auth_service = AuthenticationService::new();
+    // Create authentication service with proxy configuration
+    let mut auth_service = AuthenticationService::new_with_proxy(proxy_settings)?;
     
-    info!("🔄 LOGIN: Created authentication service, performing login...");
+    info!("🔄 LOGIN: Created authentication service with proxy configuration, performing login...");
     
-    // Perform login with proxy setting
-    match auth_service.login_with_proxy(credentials, proxy_enabled).await {
+    // Perform login with proxy setting (still using the boolean for UDP client creation)
+    match auth_service.login_with_proxy(credentials, proxy_settings.enabled).await {
         Ok(client) => {
             info!("✅ LOGIN SUCCESS: Authentication completed successfully!");
             info!("✅ LOGIN SUCCESS: Client created and UDP connection established");

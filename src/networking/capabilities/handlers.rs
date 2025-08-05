@@ -11,6 +11,7 @@ use tracing::{info, debug, warn, error};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::io::Read;
 use tokio::sync::RwLock;
 
 /// Handler for RegionHandshakeReply packets that contain seed capability
@@ -94,23 +95,28 @@ impl CapabilitiesManager {
         info!("🌱 Initializing capabilities from seed: {}", seed_url);
         
         // Make request to seed capability to get full capability list
-        let response = self.http_client.get(seed_url)
-            .header("User-Agent", "slv-rust/0.3.0")
-            .header("Content-Type", "application/json")
-            .send()
-            .await
-            .map_err(|e| super::CapabilityError::HttpError(e.to_string()))?;
+        let agent = self.http_agent.clone();
+        let seed_url = seed_url.to_string();
         
-        let status = response.status();
-        if !status.is_success() {
-            let error_body = response.text().await.unwrap_or_default();
-            return Err(super::CapabilityError::HttpStatusError(
-                status.as_u16(), 
-                error_body
-            ));
+        let (status, response_text) = tokio::task::spawn_blocking(move || -> Result<(u16, String), ureq::Error> {
+            let mut response = agent.get(&seed_url)
+                .header("User-Agent", "slv-rust/0.3.0")
+                .header("Content-Type", "application/json")
+                .call()?;
+            
+            let status = response.status();
+            let response_text = response.body_mut().read_to_string()?;
+            
+            Ok((status.into(), response_text))
+        }).await
+        .map_err(|e| super::CapabilityError::HttpError(e.to_string()))?
+        .map_err(|e| super::CapabilityError::HttpError(e.to_string()))?;
+        
+        if status < 200 || status >= 300 {
+            return Err(super::CapabilityError::HttpError(format!("HTTP {}", status)));
         }
         
-        let capabilities: HashMap<String, String> = response.json().await
+        let capabilities: HashMap<String, String> = serde_json::from_str(&response_text)
             .map_err(|e| super::CapabilityError::ParseError(e.to_string()))?;
         
         self.register_capabilities(capabilities).await?;
@@ -173,7 +179,7 @@ impl Clone for CapabilitiesManager {
     fn clone(&self) -> Self {
         Self {
             capabilities: Arc::clone(&self.capabilities),
-            http_client: Arc::clone(&self.http_client),
+            http_agent: self.http_agent.clone(),
             session_info: self.session_info.clone(),
         }
     }
