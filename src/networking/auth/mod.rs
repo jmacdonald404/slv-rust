@@ -8,6 +8,7 @@ mod keychain;
 mod keychain_test;
 mod login;
 mod session;
+mod simulator_connection;
 mod types;
 mod xmlrpc;
 
@@ -16,6 +17,7 @@ pub use keychain::CredentialStore;
 pub use keychain_test::test_keychain;
 pub use login::{AuthenticationService, LoginCredentials};
 pub use session::{SessionInfo, SessionManager};
+pub use simulator_connection::{SimulatorConnection, complete_authentication, complete_authentication_with_proxy};
 pub use types::*;
 
 // Re-export for convenience

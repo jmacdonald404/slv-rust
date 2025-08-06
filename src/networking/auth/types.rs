@@ -60,6 +60,22 @@ pub struct LoginResponse {
     // Network and server information
     pub map_server_url: Option<String>,
     pub udp_blacklist: Option<Vec<String>>,
+
+    // Additional fields from login response that were missing
+    pub inventory_lib_root: Option<Vec<InventoryFolder>>,
+    pub inventory_lib_owner: Option<Vec<LibraryOwner>>,
+    pub inventory_skel_lib: Option<Vec<InventoryItem>>,
+    pub initial_outfit: Option<Vec<OutfitItem>>,
+    pub gestures: Option<Vec<Gesture>>,
+    pub display_names: Option<DisplayNameConfig>,
+    pub event_categories: Option<Vec<EventCategory>>,
+    pub event_notifications: Option<Vec<EventNotification>>,
+    pub classified_categories: Option<Vec<ClassifiedCategory>>,
+    pub newuser_config: Option<NewUserConfig>,
+    pub ui_config: Option<UiConfig>,
+    pub voice_config: Option<VoiceConfig>,
+    pub tutorial_setting: Option<TutorialConfig>,
+    pub global_textures: Option<Vec<GlobalTexture>>,
 }
 
 /// Home location information
@@ -167,6 +183,117 @@ pub struct PlacePages {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PackageDescription {
     pub name: Option<std::collections::HashMap<String, String>>,
+}
+
+/// Library owner information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LibraryOwner {
+    pub agent_id: Option<String>,
+}
+
+/// Inventory item information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InventoryItem {
+    pub item_id: Option<String>,
+    pub name: Option<String>,
+    pub desc: Option<String>,
+    pub asset_id: Option<String>,
+    pub inv_type: Option<u32>,
+    pub type_: Option<u32>,
+    pub flags: Option<u32>,
+    pub sale_type: Option<u32>,
+    pub sale_price: Option<u32>,
+    pub permissions: Option<ItemPermissions>,
+}
+
+/// Item permissions
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ItemPermissions {
+    pub base_mask: Option<u32>,
+    pub owner_mask: Option<u32>,
+    pub group_mask: Option<u32>,
+    pub everyone_mask: Option<u32>,
+    pub next_owner_mask: Option<u32>,
+    pub creator_id: Option<String>,
+    pub owner_id: Option<String>,
+    pub last_owner_id: Option<String>,
+    pub group_id: Option<String>,
+}
+
+/// Outfit item information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OutfitItem {
+    pub folder_name: Option<String>,
+    pub gender: Option<String>,
+}
+
+/// Gesture information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Gesture {
+    pub item_id: Option<String>,
+    pub asset_id: Option<String>,
+}
+
+/// Display name configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DisplayNameConfig {
+    pub display_name_enabled: Option<bool>,
+    pub display_name_update_max_time: Option<u32>,
+}
+
+/// Event category information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventCategory {
+    pub category_id: Option<u32>,
+    pub category_name: Option<String>,
+}
+
+/// Event notification information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventNotification {
+    pub event_id: Option<u32>,
+    pub event_name: Option<String>,
+}
+
+/// Classified category information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClassifiedCategory {
+    pub category_id: Option<u32>,
+    pub category_name: Option<String>,
+}
+
+/// New user configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewUserConfig {
+    pub max_spins: Option<u32>,
+    pub tutorial_url: Option<String>,
+}
+
+/// UI configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UiConfig {
+    pub allow_first_life: Option<bool>,
+    pub allow_mature_publish: Option<bool>,
+}
+
+/// Voice configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VoiceConfig {
+    pub voice_server_type: Option<String>,
+}
+
+/// Tutorial configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TutorialConfig {
+    pub tutorial_url: Option<String>,
+}
+
+/// Global texture information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GlobalTexture {
+    pub sun_texture_id: Option<String>,
+    pub moon_texture_id: Option<String>,
+    pub cloud_texture_id: Option<String>,
 }
 
 impl LoginResponse {

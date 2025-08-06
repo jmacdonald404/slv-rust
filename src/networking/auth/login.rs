@@ -165,7 +165,8 @@ impl AuthenticationService {
         
         // Second Life capabilities servers expect POST requests with LLSD format
         // Send an empty LLSD map as the request body
-        let request_body = r#"<?xml version="1.0" ?><llsd><map></map></llsd>"#;
+        // Request specific capabilities that we need for Phase 1 implementation
+        let request_body = r#"<?xml version="1.0" ?><llsd><array><string>EventQueueGet</string></array></llsd>"#;
         let url_clone = url.to_string();
         
         // Use spawn_blocking since ureq is synchronous
@@ -187,6 +188,8 @@ impl AuthenticationService {
             return Err(NetworkError::Transport { reason: format!("Failed to fetch capabilities, status: {}", status_code) });
         }
 
+        tracing::info!("🔍 CAPABILITIES RESPONSE: Raw response body:");
+        tracing::info!("{}", response_text);
         tracing::debug!("Capabilities response: {}", response_text);
 
         // Try to parse as JSON first, then as LLSD if JSON fails
@@ -444,8 +447,21 @@ impl AuthenticationService {
             start_location: credentials.start_location.clone(),
             seed_capability: login_response.seed_capability.clone(),
             capabilities: if let Some(ref seed_cap_url) = login_response.seed_capability {
-                Some(self.fetch_capabilities(&seed_cap_url).await?)
+                tracing::info!("🔍 CAPABILITIES: About to fetch capabilities from seed URL");
+                tracing::info!("🔍 CAPABILITIES: Seed URL: {}", seed_cap_url);
+                let caps_result = self.fetch_capabilities(&seed_cap_url).await;
+                match &caps_result {
+                    Ok(caps) => {
+                        tracing::info!("✅ CAPABILITIES: Successfully fetched {} capabilities", caps.len());
+                        tracing::info!("✅ CAPABILITIES: Available capabilities: {:?}", caps.keys().collect::<Vec<_>>());
+                    }
+                    Err(e) => {
+                        tracing::error!("❌ CAPABILITIES: Failed to fetch capabilities: {}", e);
+                    }
+                }
+                Some(caps_result?)
             } else {
+                tracing::warn!("⚠️ CAPABILITIES: No seed capability URL provided in login response");
                 None
             },
         };
@@ -468,6 +484,9 @@ impl AuthenticationService {
         };
         
         // Step 6: Connect to simulator with fallback
+        tracing::info!("🔍 CLIENT CONNECT: About to call client.connect()");
+        tracing::info!("🔍 CLIENT CONNECT: Simulator address: {}", session.simulator_address);
+        tracing::info!("🔍 CLIENT CONNECT: Circuit code: {}", session.circuit_code);
         match client.connect(session.simulator_address, session.circuit_code).await {
             Ok(()) => {
                 tracing::info!("Successfully connected to primary simulator address: {}", session.simulator_address);
@@ -518,6 +537,7 @@ impl AuthenticationService {
             }
         }
         
+        tracing::info!("✅ ATTEMPT LOGIN: Returning successful client");
         Ok(client)
     }
     

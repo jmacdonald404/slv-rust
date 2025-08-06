@@ -31,13 +31,26 @@ pub async fn perform_login(username: &str, password: &str, grid: Grid, proxy_set
     
     info!("🔄 LOGIN: Starting login process for user: {}", username);
     info!("🔄 LOGIN: Grid: {:?}", grid);
-    info!("🔄 LOGIN: Proxy enabled: {}", proxy_settings.enabled);
     
-    if proxy_settings.enabled {
+    // Dynamic proxy detection - check if Hippolyzer is running
+    let mut effective_proxy_settings = proxy_settings.clone();
+    if !proxy_settings.enabled {
+        info!("🔍 LOGIN: Proxy disabled in settings, checking if Hippolyzer is available...");
+        if ProxySettings::detect_hippolyzer_proxy() {
+            info!("✅ LOGIN: Hippolyzer detected! Enabling proxy for this session");
+            effective_proxy_settings.enabled = true;
+        } else {
+            info!("⚠️ LOGIN: No proxy detected, proceeding with direct connection");
+        }
+    }
+    
+    info!("🔄 LOGIN: Final proxy enabled: {}", effective_proxy_settings.enabled);
+    
+    if effective_proxy_settings.enabled {
         info!("🔄 LOGIN: Proxy configuration:");
-        info!("  - SOCKS5: {}:{}", proxy_settings.socks5_host, proxy_settings.socks5_port);
-        info!("  - HTTP: {}:{}", proxy_settings.http_host, proxy_settings.http_port);
-        info!("  - Cert validation disabled: {}", proxy_settings.disable_cert_validation);
+        info!("  - SOCKS5: {}:{}", effective_proxy_settings.socks5_host, effective_proxy_settings.socks5_port);
+        info!("  - HTTP: {}:{}", effective_proxy_settings.http_host, effective_proxy_settings.http_port);
+        info!("  - Cert validation disabled: {}", effective_proxy_settings.disable_cert_validation);
     }
     
     // Create login credentials
@@ -46,13 +59,13 @@ pub async fn perform_login(username: &str, password: &str, grid: Grid, proxy_set
         
     info!("🔄 LOGIN: Created credentials, validating...");
     
-    // Create authentication service with proxy configuration
-    let mut auth_service = AuthenticationService::new_with_proxy(proxy_settings)?;
+    // Create authentication service with effective proxy configuration
+    let mut auth_service = AuthenticationService::new_with_proxy(&effective_proxy_settings)?;
     
     info!("🔄 LOGIN: Created authentication service with proxy configuration, performing login...");
     
-    // Perform login with proxy setting (still using the boolean for UDP client creation)
-    match auth_service.login_with_proxy(credentials, proxy_settings.enabled).await {
+    // Perform login with effective proxy setting (using dynamic detection result)
+    match auth_service.login_with_proxy(credentials, effective_proxy_settings.enabled).await {
         Ok(client) => {
             info!("✅ LOGIN SUCCESS: Authentication completed successfully!");
             info!("✅ LOGIN SUCCESS: Client created and UDP connection established");

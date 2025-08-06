@@ -47,25 +47,12 @@ impl XmlRpcClient {
     }
 
     pub fn new() -> Self {
-        let agent: Agent = match Self::create_tls_config_with_custom_ca() {
-            Ok(tls_config) => {
-                tracing::info!("🔐 Configuring XML-RPC client with custom CA certificate");
-                Agent::config_builder()
-                    .tls_config(tls_config)
-                    .timeout_global(Some(Duration::from_secs(60)))
-                    .user_agent("slv-rust/0.3.0")
-                    .build()
-                    .into()
-            }
-            Err(e) => {
-                tracing::warn!("⚠️ Failed to load custom CA certificate: {}. Falling back to default configuration.", e);
-                Agent::config_builder()
-                    .timeout_global(Some(Duration::from_secs(60)))
-                    .user_agent("slv-rust/0.3.0")
-                    .build()
-                    .into()
-            }
-        };
+        tracing::info!("🌐 Configuring XML-RPC client for direct connection (using system CA certificates)");
+        let agent: Agent = Agent::config_builder()
+            .timeout_global(Some(Duration::from_secs(60)))
+            .user_agent("Second Life Release 7.1.15 (15596336374)")
+            .build()
+            .into();
         
         Self { agent }
     }
@@ -88,7 +75,7 @@ impl XmlRpcClient {
                 .proxy(Some(proxy))
                 .tls_config(tls_config)
                 .timeout_global(Some(Duration::from_secs(60)))
-                .user_agent("slv-rust/0.3.0")
+                .user_agent("Second Life Release 7.1.15 (15596336374)")
                 .build()
                 .into()
         } else {
@@ -100,7 +87,7 @@ impl XmlRpcClient {
                         .proxy(Some(proxy))
                         .tls_config(tls_config)
                         .timeout_global(Some(Duration::from_secs(60)))
-                        .user_agent("slv-rust/0.3.0")
+                        .user_agent("Second Life Release 7.1.15 (15596336374)")
                         .build()
                         .into()
                 }
@@ -109,7 +96,7 @@ impl XmlRpcClient {
                     Agent::config_builder()
                         .proxy(Some(proxy))
                         .timeout_global(Some(Duration::from_secs(60)))
-                        .user_agent("slv-rust/0.3.0")
+                        .user_agent("Second Life Release 7.1.15 (15596336374)")
                         .build()
                         .into()
                 }
@@ -151,7 +138,7 @@ impl XmlRpcClient {
             let mut response = agent_clone
                 .post(&url_clone)
                 .header("Content-Type", "text/xml")
-                .header("User-Agent", "slv-rust/0.3.0")
+                .header("User-Agent", "Second Life Release 7.1.15 (15596336374)")
                 .send(&xml_request)
                 .map_err(|e| anyhow::anyhow!("ureq send error: {}", e))?;
 
@@ -190,27 +177,43 @@ impl XmlRpcClient {
         xml.push_str("      <value>\n");
         xml.push_str("        <struct>\n");
 
-        // Add all parameters as struct members
-        self.add_xml_member(&mut xml, "first", &params.first_name);
-        self.add_xml_member(&mut xml, "last", &params.last_name);
-        self.add_xml_member(&mut xml, "passwd", &params.password_hash);
-        self.add_xml_member(&mut xml, "start", &params.start_location);
+        // Add all parameters as struct members (in order matching official viewer)
+        self.add_xml_int_member(&mut xml, "address_size", params.address_size);
+        self.add_xml_int_member(&mut xml, "agree_to_tos", if params.agree_to_tos { 1 } else { 0 });
         self.add_xml_member(&mut xml, "channel", &params.channel);
-        self.add_xml_member(&mut xml, "version", &params.version);
-        self.add_xml_member(&mut xml, "platform", &params.platform);
-        self.add_xml_member(&mut xml, "mac", &params.mac_address);
+        self.add_xml_int_member(&mut xml, "extended_errors", if params.extended_errors { 1 } else { 0 });
+        self.add_xml_member(&mut xml, "first", &params.first_name);
+        self.add_xml_member(&mut xml, "host_id", &params.host_id);
         self.add_xml_member(&mut xml, "id0", &params.machine_id);
-        self.add_xml_member(&mut xml, "agree_to_tos", &params.agree_to_tos.to_string());
-        self.add_xml_member(&mut xml, "read_critical", &params.read_critical.to_string());
-        self.add_xml_member(&mut xml, "viewer_digest", &params.viewer_digest);
-
-        // Add MFA parameters if present
-        if let Some(ref token) = params.mfa_token {
-            self.add_xml_member(&mut xml, "token", token);
-        }
+        self.add_xml_member(&mut xml, "last", &params.last_name);
+        self.add_xml_int_member(&mut xml, "last_exec_duration", params.last_exec_duration);
+        self.add_xml_int_member(&mut xml, "last_exec_event", params.last_exec_event);
+        self.add_xml_member(&mut xml, "last_exec_session_id", &params.last_exec_session_id);
+        self.add_xml_member(&mut xml, "mac", &params.mac_address);
+        
+        // Add MFA parameters
         if let Some(ref hash) = params.mfa_hash {
             self.add_xml_member(&mut xml, "mfa_hash", hash);
+        } else {
+            self.add_xml_member(&mut xml, "mfa_hash", "");
         }
+
+        // Continue with remaining parameters
+        self.add_xml_member(&mut xml, "passwd", &params.password_hash);
+        self.add_xml_member(&mut xml, "platform", &params.platform);
+        self.add_xml_member(&mut xml, "platform_string", &params.platform_string);
+        self.add_xml_member(&mut xml, "platform_version", &params.platform_version);
+        self.add_xml_int_member(&mut xml, "read_critical", if params.read_critical { 1 } else { 0 });
+        self.add_xml_member(&mut xml, "start", &params.start_location);
+        
+        // Add MFA token if present
+        if let Some(ref token) = params.mfa_token {
+            self.add_xml_member(&mut xml, "token", token);
+        } else {
+            self.add_xml_member(&mut xml, "token", "");
+        }
+        
+        self.add_xml_member(&mut xml, "version", &params.version);
 
         // Add options array
         xml.push_str("          <member>\n");
@@ -238,6 +241,13 @@ impl XmlRpcClient {
     fn add_xml_member(&self, xml: &mut String, name: &str, value: &str) {
         xml.push_str(&format!(
             "          <member>\n            <name>{}</name>\n            <value><string>{}</string></value>\n          </member>\n",
+            name, value
+        ));
+    }
+
+    fn add_xml_int_member(&self, xml: &mut String, name: &str, value: u32) {
+        xml.push_str(&format!(
+            "          <member>\n            <name>{}</name>\n            <value><int>{}</int></value>\n          </member>\n",
             name, value
         ));
     }
@@ -603,8 +613,16 @@ pub struct LoginParameters {
     pub channel: String,
     pub version: String,
     pub platform: String,
+    pub platform_string: String,
+    pub platform_version: String,
     pub mac_address: String,
     pub machine_id: String,
+    pub address_size: u32,
+    pub extended_errors: bool,
+    pub host_id: String,
+    pub last_exec_duration: u32,
+    pub last_exec_event: u32,
+    pub last_exec_session_id: String,
     pub agree_to_tos: bool,
     pub read_critical: bool,
     pub viewer_digest: String,
@@ -620,20 +638,23 @@ impl LoginParameters {
             last_name: last.to_string(),
             password_hash: Self::hash_password(password),
             start_location: "last".to_string(),
-            channel: "slv-rust".to_string(),
-            version: "0.3.0".to_string(),
+            channel: "Second Life Release".to_string(), // Match official viewer
+            version: "7.1.15.15596336374".to_string(), // Match official viewer version
             platform: Self::get_platform(),
+            platform_string: Self::get_platform_string(),
+            platform_version: Self::get_platform_version(),
             mac_address: Self::get_mac_address(),
             machine_id: Self::get_machine_id(),
+            address_size: Self::get_address_size(),
+            extended_errors: true,
+            host_id: String::new(),
+            last_exec_duration: 0,
+            last_exec_event: 0,
+            last_exec_session_id: "00000000-0000-0000-0000-000000000000".to_string(),
             agree_to_tos: true,
-            read_critical: true,
+            read_critical: false,
             viewer_digest: "00000000-0000-0000-0000-000000000000".to_string(),
-            options: vec![
-                "inventory-root".to_string(),
-                "inventory-skeleton".to_string(),
-                "buddy-list".to_string(),
-                "login-flags".to_string(),
-            ],
+            options: Self::get_default_options(),
             mfa_token: std::env::var("SL_MFA_TOKEN").ok(),
             mfa_hash: std::env::var("SL_MFA_HASH").ok(),
         }
@@ -657,13 +678,74 @@ impl LoginParameters {
         return "unk".to_string();
     }
 
+    fn get_platform_string() -> String {
+        #[cfg(target_os = "windows")]
+        return format!("Windows {}", std::env::var("OS").unwrap_or_else(|_| "Unknown".to_string()));
+        #[cfg(target_os = "macos")]
+        return "macOS 12.7.4".to_string(); // Could be made dynamic
+        #[cfg(target_os = "linux")]
+        return "Linux".to_string(); // Could read from /etc/os-release
+        #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+        return "Unknown OS".to_string();
+    }
+
+    fn get_platform_version() -> String {
+        #[cfg(target_os = "macos")]
+        return "12.7.4".to_string(); // Could be made dynamic
+        #[cfg(target_os = "windows")]
+        return "10.0".to_string(); // Could read actual Windows version
+        #[cfg(target_os = "linux")]
+        return "1.0".to_string(); // Could read kernel version
+        #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+        return "1.0".to_string();
+    }
+
+    fn get_address_size() -> u32 {
+        if cfg!(target_pointer_width = "64") {
+            64
+        } else {
+            32
+        }
+    }
+
+    fn get_default_options() -> Vec<String> {
+        // Complete options list matching official viewer
+        vec![
+            "inventory-root".to_string(),
+            "inventory-skeleton".to_string(),
+            "inventory-lib-root".to_string(),
+            "inventory-lib-owner".to_string(),
+            "inventory-skel-lib".to_string(),
+            "initial-outfit".to_string(),
+            "gestures".to_string(),
+            "display_names".to_string(),
+            "event_categories".to_string(),
+            "event_notifications".to_string(),
+            "classified_categories".to_string(),
+            "adult_compliant".to_string(),
+            "buddy-list".to_string(),
+            "newuser-config".to_string(),
+            "ui-config".to_string(),
+            "advanced-mode".to_string(),
+            "max-agent-groups".to_string(),
+            "map-server-url".to_string(),
+            "voice-config".to_string(),
+            "tutorial_setting".to_string(),
+            "login-flags".to_string(),
+            "global-textures".to_string(),
+        ]
+    }
+
     fn get_mac_address() -> String {
-        // Simplified - in production you'd want to get the actual MAC address
-        "00:00:00:00:00:00".to_string()
+        // Generate a realistic-looking MAC address based on machine ID
+        let digest = md5::compute(b"slv-rust-mac-address");
+        let bytes = digest.0;
+        format!("{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5])
     }
 
     fn get_machine_id() -> String {
-        // Simplified - in production you'd want a unique machine identifier
+        // Generate a consistent machine ID
         let digest = md5::compute(b"slv-rust-machine-id");
         format!("{:x}", digest)
     }
