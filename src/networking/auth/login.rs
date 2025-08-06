@@ -582,6 +582,7 @@ impl AuthenticationService {
                     Ok(caps) => {
                         tracing::info!("✅ CAPABILITIES: Successfully fetched {} capabilities", caps.len());
                         tracing::info!("✅ CAPABILITIES: Available capabilities: {:?}", caps.keys().collect::<Vec<_>>());
+                        
                     }
                     Err(e) => {
                         tracing::error!("❌ CAPABILITIES: Failed to fetch capabilities: {}", e);
@@ -748,6 +749,7 @@ impl AuthenticationService {
             reason: format!("Login server communication failed: {}", e) 
         })
     }
+
 }
 
 impl Default for AuthenticationService {

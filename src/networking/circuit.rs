@@ -8,6 +8,7 @@ use crate::networking::packets::{Packet, PacketWrapper};
 use crate::networking::serialization::{PacketSerializer, PacketDeserializer};
 use crate::networking::quic_transport::QuicTransport;
 use crate::networking::transport::UdpTransport;
+use crate::networking::effects::{EffectManager, Position};
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -346,6 +347,9 @@ pub struct Circuit {
     /// Ping tracker for circuit health
     ping_tracker: Arc<Mutex<PingTracker>>,
     
+    /// Effect manager for ViewerEffect messages
+    effect_manager: Arc<Mutex<EffectManager>>,
+    
     /// Channel for receiving packets from transport
     packet_rx: Arc<Mutex<mpsc::UnboundedReceiver<PacketWrapper>>>,
     
@@ -404,6 +408,7 @@ impl Circuit {
             transport: Arc::new(CircuitTransport::Quic(transport)),
             acknowledger: Arc::new(Mutex::new(Acknowledger::new())),
             ping_tracker: Arc::new(Mutex::new(PingTracker::new())),
+            effect_manager: Arc::new(Mutex::new(EffectManager::new())),
             packet_rx: Arc::new(Mutex::new(packet_rx)),
             event_tx,
             retry_timeout: Duration::from_millis(1500), // Faster initial retry for flaky WiFi
@@ -430,6 +435,7 @@ impl Circuit {
             transport: Arc::new(CircuitTransport::Udp(packet_tx)),
             acknowledger: Arc::new(Mutex::new(Acknowledger::new())),
             ping_tracker: Arc::new(Mutex::new(PingTracker::new())),
+            effect_manager: Arc::new(Mutex::new(EffectManager::new())),
             packet_rx: Arc::new(Mutex::new(packet_rx)),
             event_tx,
             retry_timeout: Duration::from_millis(1500), // Faster initial retry for flaky WiFi
@@ -1062,5 +1068,68 @@ impl Circuit {
         // Emit packet received event - this will trigger the handlers
         let _ = self.event_tx.send(CircuitEvent::PacketReceived { packet });
         Ok(())
+    }
+
+    /// Send a ViewerEffect message (point-at gesture)
+    pub async fn send_point_at_effect(
+        &self, 
+        source_pos: Position, 
+        target_pos: Position
+    ) -> NetworkResult<()> {
+        use crate::networking::packets::generated::ViewerEffect;
+        
+        let mut effect_manager = self.effect_manager.lock().await;
+        let effect_message = effect_manager.create_point_at_effect(
+            self.options.agent_id,
+            self.options.session_id,
+            source_pos,
+            target_pos,
+        );
+
+        info!("👉 Sending point-at effect from {:?} to {:?}", 
+              (source_pos.x, source_pos.y, source_pos.z),
+              (target_pos.x, target_pos.y, target_pos.z));
+
+        // Send as unreliable packet (effects don't need guaranteed delivery)
+        self.send(&effect_message).await
+    }
+
+    /// Send a ViewerEffect message (beam effect)
+    pub async fn send_beam_effect(
+        &self,
+        source_pos: Position,
+        target_pos: Position,
+    ) -> NetworkResult<()> {
+        let mut effect_manager = self.effect_manager.lock().await;
+        let effect_message = effect_manager.create_beam_effect(
+            self.options.agent_id,
+            self.options.session_id,
+            source_pos,
+            target_pos,
+        );
+
+        info!("⚡ Sending beam effect from {:?} to {:?}", 
+              (source_pos.x, source_pos.y, source_pos.z),
+              (target_pos.x, target_pos.y, target_pos.z));
+
+        // Send as unreliable packet
+        self.send(&effect_message).await
+    }
+
+    /// Send a generic ViewerEffect message
+    pub async fn send_viewer_effect(&self, config: crate::networking::effects::EffectConfig) -> NetworkResult<()> {
+        let mut effect_manager = self.effect_manager.lock().await;
+        let effect_message = effect_manager.create_viewer_effect(self.options.session_id, config);
+
+        info!("🎭 Sending viewer effect: {:?}", effect_message.effect[0].r#type);
+        
+        // Send as unreliable packet
+        self.send(&effect_message).await
+    }
+
+    /// Cleanup expired effects (should be called periodically)
+    pub async fn cleanup_effects(&self) {
+        let mut effect_manager = self.effect_manager.lock().await;
+        effect_manager.cleanup_expired_effects();
     }
 }

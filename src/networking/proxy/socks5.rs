@@ -186,10 +186,8 @@ pub struct Socks5UdpClient {
     control_stream: Arc<Mutex<Option<TcpStream>>>,
     /// UDP relay address provided by proxy
     relay_addr: Arc<RwLock<Option<SocketAddr>>>,
-    /// Local UDP socket for sending/receiving
-    udp_socket: Arc<Mutex<Option<UdpSocket>>>,
-    /// Dedicated UDP socket for receiving (to avoid deadlock)
-    receive_socket: Arc<Mutex<Option<UdpSocket>>>,
+    /// Local UDP socket for sending/receiving (Arc to avoid mutex deadlock)
+    udp_socket: Arc<RwLock<Option<Arc<UdpSocket>>>>,
     /// Authentication credentials
     username: Option<String>,
     password: Option<String>,
@@ -204,8 +202,7 @@ impl Socks5UdpClient {
             proxy_addr,
             control_stream: Arc::new(Mutex::new(None)),
             relay_addr: Arc::new(RwLock::new(None)),
-            udp_socket: Arc::new(Mutex::new(None)),
-            receive_socket: Arc::new(Mutex::new(None)),
+            udp_socket: Arc::new(RwLock::new(None)),
             username,
             password,
             connection_semaphore: Arc::new(Semaphore::new(1)), // Only allow one connection at a time
@@ -255,14 +252,10 @@ impl Socks5UdpClient {
         let relay_addr = self.udp_associate(&mut stream).await?;
         info!("SOCKS5 UDP association completed, relay: {}", relay_addr);
         
-        // Create local UDP sockets bound to localhost for better compatibility
+        // Create single local UDP socket for both send/receive (SOCKS5 spec)
         let udp_socket = UdpSocket::bind("127.0.0.1:0").await?;
         let local_udp_addr = udp_socket.local_addr()?;
-        info!("Local UDP socket (send) bound to {}", local_udp_addr);
-        
-        let receive_socket = UdpSocket::bind("127.0.0.1:0").await?;
-        let local_recv_addr = receive_socket.local_addr()?;
-        info!("Local UDP socket (receive) bound to {}", local_recv_addr);
+        info!("Local UDP socket (send/receive) bound to {}", local_udp_addr);
         
         // Store everything atomically
         {
@@ -276,13 +269,8 @@ impl Socks5UdpClient {
         }
         
         {
-            let mut socket_guard = self.udp_socket.lock().await;
-            *socket_guard = Some(udp_socket);
-        }
-        
-        {
-            let mut recv_guard = self.receive_socket.lock().await;
-            *recv_guard = Some(receive_socket);
+            let mut socket_guard = self.udp_socket.write().await;
+            *socket_guard = Some(Arc::new(udp_socket));
         }
         
         // Start keep-alive task for TCP control connection
@@ -498,16 +486,10 @@ impl Socks5UdpClient {
             }
         };
         
-        let socket_guard = tokio::time::timeout(
-            std::time::Duration::from_millis(5000),
-            self.udp_socket.lock()
-        ).await.map_err(|_| NetworkError::Transport {
-            reason: "Timeout acquiring UDP socket lock - possible deadlock".to_string()
-        })?;
-        
+        let socket_guard = self.udp_socket.read().await;
         let socket = socket_guard.as_ref().ok_or_else(|| NetworkError::Transport {
             reason: "UDP socket not available".to_string()
-        })?;
+        })?.clone();
         
         // Create SOCKS5 UDP header
         let header = Socks5UdpHeader::new(target);
@@ -557,15 +539,10 @@ impl Socks5UdpClient {
     
     /// Receive UDP packet through SOCKS5 proxy
     pub async fn recv_from(&self, buf: &mut [u8]) -> NetworkResult<(usize, SocketAddr)> {
-        let socket_guard = tokio::time::timeout(
-            std::time::Duration::from_millis(5000),
-            self.receive_socket.lock()
-        ).await.map_err(|_| NetworkError::Transport {
-            reason: "Timeout acquiring UDP receive socket lock - possible deadlock".to_string()
-        })?;
+        let socket_guard = self.udp_socket.read().await;
         let socket = socket_guard.as_ref().ok_or_else(|| NetworkError::Transport {
-            reason: "UDP receive socket not available".to_string()
-        })?;
+            reason: "UDP socket not available for receive".to_string()
+        })?.clone();
         
         // Receive from proxy
         let (len, _proxy_addr) = socket.recv_from(buf).await?;
@@ -583,12 +560,7 @@ impl Socks5UdpClient {
     
     /// Get the local UDP socket address
     pub async fn local_addr(&self) -> NetworkResult<SocketAddr> {
-        let socket_guard = tokio::time::timeout(
-            std::time::Duration::from_millis(1000),
-            self.udp_socket.lock()
-        ).await.map_err(|_| NetworkError::Transport {
-            reason: "Timeout acquiring UDP socket lock for local_addr".to_string()
-        })?;
+        let socket_guard = self.udp_socket.read().await;
         let socket = socket_guard.as_ref().ok_or_else(|| NetworkError::Transport {
             reason: "UDP socket not available".to_string()
         })?;
@@ -648,13 +620,8 @@ impl Socks5UdpClient {
         }
         
         {
-            let mut socket_guard = self.udp_socket.lock().await;
+            let mut socket_guard = self.udp_socket.write().await;
             *socket_guard = None;
-        }
-        
-        {
-            let mut recv_guard = self.receive_socket.lock().await;
-            *recv_guard = None;
         }
         
         info!("✅ Disconnected from SOCKS5 proxy");

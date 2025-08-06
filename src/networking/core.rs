@@ -241,7 +241,12 @@ impl Core {
                         break;
                     }
                     CircuitEvent::PacketReceived { packet } => {
-                        // Forward packet to processor
+                        // First, let circuit handle ACK processing
+                        if let Err(e) = circuit_clone.handle_incoming_packet(&packet.data).await {
+                            error!("Failed to handle incoming packet for ACK processing: {}", e);
+                        }
+                        
+                        // Then forward packet to processor for business logic
                         let context = HandlerContext {
                             circuit: Arc::clone(&circuit_clone),
                             agent_id,
