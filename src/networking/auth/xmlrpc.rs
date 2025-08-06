@@ -30,7 +30,7 @@ impl XmlRpcClient {
     }
 
     /// Create TLS configuration with custom CA certificate
-    fn create_tls_config_with_custom_ca() -> Result<TlsConfig> {
+    pub fn create_tls_config_with_custom_ca() -> Result<TlsConfig> {
         let custom_ca = Self::load_custom_ca_cert()?;
         
         // Create a vector with the custom CA certificate

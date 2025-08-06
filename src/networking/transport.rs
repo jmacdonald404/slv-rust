@@ -649,6 +649,7 @@ impl UdpTransport {
         Ok(())
     }
     
+    
     /// Get HTTP proxy client (if configured)
     pub async fn get_http_proxy_client(&self) -> Option<HttpProxyClient> {
         self.http_proxy_client.read().await.as_ref().cloned()
