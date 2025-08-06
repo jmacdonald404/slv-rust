@@ -15,6 +15,7 @@ use std::io::Read;
 
 pub mod client;
 pub mod handlers;
+pub mod seed;
 
 /// Capability URL and metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,6 +59,17 @@ impl CapabilitiesManager {
             http_agent,
             session_info,
         }
+    }
+
+    /// Fetch and register capabilities from a seed capability URL
+    pub async fn fetch_and_register_capabilities(&self, seed_url: &str) -> Result<(), CapabilityError> {
+        info!("🌱 CAPABILITIES MANAGER: Fetching capabilities from seed URL");
+        
+        let seed_client = seed::SeedCapabilityClient::new(self.http_agent.clone());
+        let capabilities = seed_client.fetch_capabilities(seed_url).await
+            .map_err(|e| CapabilityError::HttpError(e.to_string()))?;
+        
+        self.register_capabilities(capabilities).await
     }
 
     /// Register capabilities from a seed capability response

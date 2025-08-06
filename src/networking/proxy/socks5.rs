@@ -463,21 +463,36 @@ impl Socks5UdpClient {
     
     /// Send UDP packet through SOCKS5 proxy
     pub async fn send_to(&self, data: &[u8], target: SocketAddr) -> NetworkResult<()> {
-        // Verify connection is still active
-        if !self.is_connected().await {
-            return Err(NetworkError::Transport {
-                reason: "SOCKS5 connection not established or lost".to_string()
-            });
-        }
+        // Skip connection check to avoid potential deadlock - assume connection is active
+        // The actual send will fail if connection is lost anyway
+        info!("🚀 SOCKS5 SEND_TO: Starting send operation to {}", target);
         
         let relay_addr = {
-            let relay_guard = self.relay_addr.read().await;
-            relay_guard.ok_or_else(|| NetworkError::Transport {
-                reason: "SOCKS5 UDP association not established".to_string()
-            })?
+            // Try to get relay address with timeout to avoid hanging
+            let relay_guard = tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                self.relay_addr.read()
+            ).await;
+            
+            match relay_guard {
+                Ok(guard) => guard.ok_or_else(|| NetworkError::Transport {
+                    reason: "SOCKS5 UDP association not established".to_string()
+                })?,
+                Err(_) => {
+                    return Err(NetworkError::Transport {
+                        reason: "Timeout getting SOCKS5 relay address - possible deadlock".to_string()
+                    });
+                }
+            }
         };
         
-        let socket_guard = self.udp_socket.lock().await;
+        let socket_guard = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            self.udp_socket.lock()
+        ).await.map_err(|_| NetworkError::Transport {
+            reason: "Timeout acquiring UDP socket lock - possible contention".to_string()
+        })?;
+        
         let socket = socket_guard.as_ref().ok_or_else(|| NetworkError::Transport {
             reason: "UDP socket not available".to_string()
         })?;
@@ -492,6 +507,8 @@ impl Socks5UdpClient {
         packet.put_slice(data);
         
         // Send to proxy relay address with error handling
+        info!("🌐 SOCKS5 SEND_TO: Sending {} bytes (+ {} header) to proxy relay {}", data.len(), header_bytes.len(), relay_addr);
+        info!("🎯 SOCKS5 SEND_TO: Target destination: {}", target);
         match socket.send_to(&packet, relay_addr).await {
             Ok(bytes_sent) => {
                 if bytes_sent != packet.len() {

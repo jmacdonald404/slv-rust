@@ -134,7 +134,9 @@ impl AuthenticationService {
     }
 
     async fn fetch_capabilities(&self, url: &str) -> NetworkResult<HashMap<String, String>> {
-        tracing::info!("Fetching capabilities from {}", url);
+        use crate::networking::capabilities::seed::SeedCapabilityClient;
+        
+        tracing::info!("🌱 Fetching comprehensive capabilities from {}", url);
         
         // Create ureq agent with the same proxy configuration as the authentication client
         let agent = if let Some(ref proxy_settings) = self.proxy_settings {
@@ -163,44 +165,9 @@ impl AuthenticationService {
             ureq::Agent::new_with_defaults()
         };
         
-        // Second Life capabilities servers expect POST requests with LLSD format
-        // Send an empty LLSD map as the request body
-        // Request specific capabilities that we need for Phase 1 implementation
-        let request_body = r#"<?xml version="1.0" ?><llsd><array><string>EventQueueGet</string></array></llsd>"#;
-        let url_clone = url.to_string();
-        
-        // Use spawn_blocking since ureq is synchronous
-        let (status_code, response_text) = tokio::task::spawn_blocking(move || -> Result<(u16, String), ureq::Error> {
-            let mut response = agent
-                .post(&url_clone)
-                .header("Content-Type", "application/llsd+xml")
-                .send(request_body)?;
-
-            let status_code = response.status();
-            let response_text = response.body_mut().read_to_string()?;
-            
-            Ok((status_code.into(), response_text))
-        }).await
-        .map_err(|e| NetworkError::Transport { reason: format!("Failed to execute capabilities request task: {}", e) })?
-        .map_err(|e| NetworkError::Transport { reason: format!("Failed to fetch capabilities: {}", e) })?;
-
-        if status_code < 200 || status_code >= 300 {
-            return Err(NetworkError::Transport { reason: format!("Failed to fetch capabilities, status: {}", status_code) });
-        }
-
-        tracing::info!("🔍 CAPABILITIES RESPONSE: Raw response body:");
-        tracing::info!("{}", response_text);
-        tracing::debug!("Capabilities response: {}", response_text);
-
-        // Try to parse as JSON first, then as LLSD if JSON fails
-        let capabilities: HashMap<String, String> = if let Ok(json) = serde_json::from_str::<HashMap<String, String>>(&response_text) {
-            json
-        } else {
-            // If JSON parsing fails, try to parse as LLSD (Linden Lab Structured Data)
-            self.parse_llsd_xml(&response_text)?
-        };
-
-        Ok(capabilities)
+        // Use the comprehensive seed capability client that matches official viewer behavior
+        let seed_client = SeedCapabilityClient::new(agent);
+        seed_client.fetch_capabilities(url).await
     }
 
     fn parse_llsd_xml(&self, xml_text: &str) -> NetworkResult<HashMap<String, String>> {

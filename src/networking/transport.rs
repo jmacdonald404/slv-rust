@@ -413,10 +413,21 @@ impl UdpTransport {
                             // Use SOCKS5 client for integrated transparent mode
                             // Skip connection checking for now - assume connection is active
                             // This prevents unnecessary reconnection attempts that cause Hippolyzer errors
+                            info!("🔗 TRANSPORT SENDER: About to send {} bytes via SOCKS5 to {}", data.len(), dest);
                             let socks5_guard = socks5_client.read().await;
                             if let Some(client) = socks5_guard.as_ref() {
-                                client.send_to(&data, dest).await
+                                match client.send_to(&data, dest).await {
+                                    Ok(()) => {
+                                        info!("✅ TRANSPORT SENDER: Successfully sent {} bytes via SOCKS5 to {}", data.len(), dest);
+                                        Ok(())
+                                    }
+                                    Err(e) => {
+                                        error!("❌ TRANSPORT SENDER: Failed to send via SOCKS5 to {}: {}", dest, e);
+                                        Err(e)
+                                    }
+                                }
                             } else {
+                                error!("❌ TRANSPORT SENDER: No SOCKS5 client available in WinHippoAutoProxy mode");
                                 Err(NetworkError::Transport {
                                     reason: "SOCKS5 proxy not available in WinHippoAutoProxy mode".to_string()
                                 })

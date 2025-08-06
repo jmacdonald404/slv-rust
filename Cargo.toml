@@ -75,6 +75,18 @@ path = "src/bin/simple_ureq_test.rs"
 name = "test_custom_ca"
 path = "src/bin/test_custom_ca.rs"
 
+[[bin]]
+name = "hippolog_analyzer"
+path = "src/bin/hippolog_analyzer.rs"
+
+[[bin]]
+name = "simple_hippolog_test"
+path = "src/bin/simple_hippolog_test.rs"
+
+[[bin]]
+name = "hippolog_debug"
+path = "src/bin/hippolog_debug.rs"
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
@@ -137,10 +149,11 @@ rapier3d = { version = "0.26.1", optional = true }
 cpal = { version = "0.16.0", optional = true }
 rodio = { version = "0.20.1", optional = true }
 # Compression
-flate2 = { version = "1.1.2", optional = true }
+flate2 = "1.1.2"
 lz4 = { version = "1.28.1", optional = true }
 md5 = "0.8.0"
 byteorder = "1.5.0"
+base64 = "0.22"
 
 # --- HTTP Clients ---
 reqwest = { version = "0.12", features = ["json", "rustls-tls"] }

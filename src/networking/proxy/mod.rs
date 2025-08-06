@@ -83,9 +83,15 @@ impl ProxyMode {
             ProxyMode::ManualSocks5
         }
         
-        // On Linux/Mac, use manual SOCKS5
+        // On Linux/Mac, check if Hippolyzer is running first
         #[cfg(not(target_os = "windows"))]
         {
+            // Check if Hippolyzer is running (works on all platforms)
+            if Self::detect_hippolyzer_running_cross_platform() {
+                info!("🔍 Detected Hippolyzer running on non-Windows platform - using WinHippoAutoProxy mode");
+                return ProxyMode::WinHippoAutoProxy;
+            }
+            
             info!("🔍 Non-Windows platform - using manual SOCKS5 proxy mode");
             ProxyMode::ManualSocks5
         }
@@ -135,6 +141,33 @@ impl ProxyMode {
         }
     }
     
+    /// Detect if Hippolyzer is running by checking if proxy ports are available (cross-platform)
+    fn detect_hippolyzer_running_cross_platform() -> bool {
+        use std::net::TcpStream;
+        use std::time::Duration;
+        
+        // Check if Hippolyzer's SOCKS5 proxy port (9061) is listening
+        let socks5_check = TcpStream::connect_timeout(
+            &"127.0.0.1:9061".parse().unwrap(),
+            Duration::from_millis(100)
+        ).is_ok();
+        
+        // Check if Hippolyzer's HTTP proxy port (9062) is listening  
+        let http_check = TcpStream::connect_timeout(
+            &"127.0.0.1:9062".parse().unwrap(),
+            Duration::from_millis(100)
+        ).is_ok();
+        
+        let is_running = socks5_check && http_check;
+        if is_running {
+            info!("✅ Hippolyzer proxy ports detected: SOCKS5={}, HTTP={}", socks5_check, http_check);
+        } else {
+            info!("❌ Hippolyzer proxy ports not detected: SOCKS5={}, HTTP={}", socks5_check, http_check);
+        }
+        
+        is_running
+    }
+
     /// Force a specific proxy mode (for testing or manual configuration)
     pub fn force(mode: ProxyMode) -> Self {
         match mode {

@@ -75,7 +75,7 @@ impl XmlRpcClient {
                 .proxy(Some(proxy))
                 .tls_config(tls_config)
                 .timeout_global(Some(Duration::from_secs(60)))
-                .user_agent("Second Life Release 7.1.15 (15596336374)")
+                .user_agent("Second Life Release 7.1.15 (1559633637437)")
                 .build()
                 .into()
         } else {
@@ -87,7 +87,7 @@ impl XmlRpcClient {
                         .proxy(Some(proxy))
                         .tls_config(tls_config)
                         .timeout_global(Some(Duration::from_secs(60)))
-                        .user_agent("Second Life Release 7.1.15 (15596336374)")
+                        .user_agent("Second Life Release 7.1.15 (1559633637437)")
                         .build()
                         .into()
                 }
@@ -96,7 +96,7 @@ impl XmlRpcClient {
                     Agent::config_builder()
                         .proxy(Some(proxy))
                         .timeout_global(Some(Duration::from_secs(60)))
-                        .user_agent("Second Life Release 7.1.15 (15596336374)")
+                        .user_agent("Second Life Release 7.1.15 (1559633637437)")
                         .build()
                         .into()
                 }
@@ -138,7 +138,7 @@ impl XmlRpcClient {
             let mut response = agent_clone
                 .post(&url_clone)
                 .header("Content-Type", "text/xml")
-                .header("User-Agent", "Second Life Release 7.1.15 (15596336374)")
+                .header("User-Agent", "Second Life Release 7.1.15 (1559633637437)")
                 .send(&xml_request)
                 .map_err(|e| anyhow::anyhow!("ureq send error: {}", e))?;
 
@@ -300,6 +300,9 @@ impl XmlRpcClient {
 
         let mut response = LoginResponse::default();
         
+        tracing::info!("🔍 XML-RPC Response parsing - found {} members", 
+                       struct_elem.children().filter(|n| n.tag_name().name() == "member").count());
+        
         for member in struct_elem.children().filter(|n| n.tag_name().name() == "member") {
             let name_elem = member
                 .children()
@@ -320,8 +323,19 @@ impl XmlRpcClient {
                     self.extract_value_text(value_node)
                 };
                 
+                tracing::info!("📝 XML-RPC field: {} = {}", name, 
+                              if value_text.len() > 100 { format!("{}...", &value_text[..100]) } else { value_text.clone() });
+                
                 self.set_response_field(&mut response, name, &value_text)?;
             }
+        }
+        
+        // Check if we got the essential fields
+        if response.agent_id == uuid::Uuid::nil() {
+            tracing::error!("❌ Missing agent_id in login response");
+        }
+        if response.session_id == uuid::Uuid::nil() {
+            tracing::error!("❌ Missing session_id in login response");
         }
 
         Ok(response)
@@ -639,7 +653,7 @@ impl LoginParameters {
             password_hash: Self::hash_password(password),
             start_location: "last".to_string(),
             channel: "Second Life Release".to_string(), // Match official viewer
-            version: "7.1.15.15596336374".to_string(), // Match official viewer version
+            version: "7.1.15.1559633637437".to_string(), // Match official viewer version
             platform: Self::get_platform(),
             platform_string: Self::get_platform_string(),
             platform_version: Self::get_platform_version(),
@@ -648,7 +662,7 @@ impl LoginParameters {
             address_size: Self::get_address_size(),
             extended_errors: true,
             host_id: String::new(),
-            last_exec_duration: 0,
+            last_exec_duration: 52,
             last_exec_event: 0,
             last_exec_session_id: "00000000-0000-0000-0000-000000000000".to_string(),
             agree_to_tos: true,
@@ -661,7 +675,8 @@ impl LoginParameters {
     }
 
     fn hash_password(password: &str) -> String {
-        // SecondLife only uses first 16 characters of password
+        // SecondLife password hashing: simple MD5 of first 16 chars, formatted as $1$<hash>
+        // Based on analysis of hippolog data and SL protocol documentation
         let truncated = password.chars().take(16).collect::<String>();
         let digest = md5::compute(truncated.as_bytes());
         format!("$1${:x}", digest)
@@ -737,11 +752,9 @@ impl LoginParameters {
     }
 
     fn get_mac_address() -> String {
-        // Generate a realistic-looking MAC address based on machine ID
+        // Generate MAC address in official viewer format (plain hex, no colons)
         let digest = md5::compute(b"slv-rust-mac-address");
-        let bytes = digest.0;
-        format!("{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5])
+        format!("{:x}", digest)
     }
 
     fn get_machine_id() -> String {
