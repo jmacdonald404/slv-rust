@@ -163,7 +163,7 @@ impl SeedCapabilityClient {
                 .header("Accept-Encoding", "deflate, gzip")
                 .header("Connection", "keep-alive")
                 .header("Keep-Alive", "300")
-                .header("User-Agent", "Second Life Release 7.1.15 (15596336374)")
+                .header("User-Agent", "Second Life Release 7.1.15 (1559633637437)")
                 .send(&request_body)?;
 
             let status_code = response.status();

@@ -7,6 +7,8 @@ use std::net::SocketAddr;
 use std::time::Duration;
 use uuid::Uuid;
 use ureq::{Agent, Proxy};
+use ureq::tls::{TlsConfig, RootCerts, Certificate};
+use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::io::Read;
 use serde_json;
@@ -133,6 +135,116 @@ impl AuthenticationService {
         }
     }
 
+    /// Load custom CA certificate from PEM file (copied from XmlRpcClient)
+    fn load_custom_ca_cert() -> Result<Certificate<'static>> {
+        let ca_pem_path = std::path::Path::new("src/assets/CA.pem");
+        
+        if !ca_pem_path.exists() {
+            anyhow::bail!("Custom CA certificate not found at: {}", ca_pem_path.display());
+        }
+        
+        let ca_pem_data = std::fs::read(ca_pem_path)
+            .with_context(|| format!("Failed to read CA certificate from: {}", ca_pem_path.display()))?;
+        
+        Certificate::from_pem(&ca_pem_data)
+            .with_context(|| format!("Failed to parse CA certificate from: {}", ca_pem_path.display()))
+    }
+
+    /// Perform OpenID POST authentication (similar to main branch implementation)
+    async fn perform_openid_post(&self, openid_token: &str, openid_url: &str) -> NetworkResult<()> {
+        tracing::info!("🔐 Sending OpenID token to {}", openid_url);
+        tracing::debug!("🔐 OpenID token: {}", openid_token);
+
+        let agent = if let Some(ref proxy_settings) = self.proxy_settings {
+            if proxy_settings.enabled {
+                let proxy_url = format!("http://{}:{}", proxy_settings.http_host, proxy_settings.http_port);
+                let proxy = Proxy::new(&proxy_url)
+                    .map_err(|e| NetworkError::Transport { 
+                        reason: format!("Failed to create proxy for OpenID: {}", e) 
+                    })?;
+
+                let agent: ureq::Agent = if proxy_settings.disable_cert_validation {
+                    let tls_config = TlsConfig::builder()
+                        .disable_verification(true)
+                        .build();
+                    
+                    ureq::Agent::config_builder()
+                        .proxy(Some(proxy))
+                        .tls_config(tls_config)
+                        .timeout_global(Some(std::time::Duration::from_secs(60)))
+                        .user_agent("Second Life Release 7.1.15 (1559633637437)")
+                        .build()
+                        .into()
+                } else {
+                    match Self::load_custom_ca_cert() {
+                        Ok(custom_ca) => {
+                            let custom_certs = vec![custom_ca];
+                            let root_certs = RootCerts::new_with_certs(&custom_certs);
+                            let tls_config = TlsConfig::builder()
+                                .root_certs(root_certs)
+                                .build();
+                            
+                            ureq::Agent::config_builder()
+                                .proxy(Some(proxy))
+                                .tls_config(tls_config)
+                                .timeout_global(Some(std::time::Duration::from_secs(60)))
+                                .user_agent("Second Life Release 7.1.15 (1559633637437)")
+                                .build()
+                                .into()
+                        }
+                        Err(e) => {
+                            tracing::warn!("⚠️ Failed to load custom CA certificate for OpenID: {}. Using default configuration.", e);
+                            ureq::Agent::config_builder()
+                                .proxy(Some(proxy))
+                                .timeout_global(Some(std::time::Duration::from_secs(60)))
+                                .user_agent("Second Life Release 7.1.15 (1559633637437)")
+                                .build()
+                                .into()
+                        }
+                    }
+                };
+                agent
+            } else {
+                ureq::Agent::new_with_defaults()
+            }
+        } else {
+            ureq::Agent::new_with_defaults()
+        };
+
+        // Use spawn_blocking since ureq is synchronous
+        let url_clone = openid_url.to_string();
+        let token_clone = openid_token.to_string();
+        
+        let (status_code, response_text) = tokio::task::spawn_blocking(move || -> Result<(u16, String), ureq::Error> {
+            let mut response = agent
+                .post(&url_clone)
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .header("Accept", "*/*")
+                .header("Accept-Encoding", "gzip, deflate")
+                .header("Connection", "keep-alive")
+                .header("Keep-Alive", "300")
+                .send(&token_clone)?;
+
+            let status_code = response.status();
+            let response_text = response.body_mut().read_to_string()?;
+            
+            Ok((status_code.into(), response_text))
+        }).await
+        .map_err(|e| NetworkError::Transport { reason: format!("Failed to execute OpenID request: {}", e) })?
+        .map_err(|e| NetworkError::Transport { reason: format!("Failed to send OpenID request: {}", e) })?;
+
+        if status_code < 200 || status_code >= 300 {
+            tracing::warn!("⚠️ OpenID POST returned status {}: {}", status_code, 
+                          response_text.chars().take(200).collect::<String>());
+            return Err(NetworkError::Transport { 
+                reason: format!("OpenID POST failed with status: {}", status_code) 
+            });
+        }
+
+        tracing::info!("✅ OpenID POST completed successfully (status {})", status_code);
+        Ok(())
+    }
+
     async fn fetch_capabilities(&self, url: &str) -> NetworkResult<HashMap<String, String>> {
         use crate::networking::capabilities::seed::SeedCapabilityClient;
         
@@ -150,12 +262,50 @@ impl AuthenticationService {
                         reason: format!("Failed to create proxy for capabilities: {}", e) 
                     })?;
                 
-                let agent = ureq::Agent::new_with_defaults();
-                
-                if proxy_settings.disable_cert_validation {
+                // Create agent with proxy configuration (like XML-RPC client does)
+                let agent: ureq::Agent = if proxy_settings.disable_cert_validation {
                     tracing::warn!("⚠️ Certificate validation disabled for capabilities client");
-                    tracing::warn!("⚠️ ureq relies on system TLS settings for certificate validation");
-                }
+                    let tls_config = ureq::tls::TlsConfig::builder()
+                        .disable_verification(true)
+                        .build();
+                    
+                    ureq::Agent::config_builder()
+                        .proxy(Some(proxy))
+                        .tls_config(tls_config)
+                        .timeout_global(Some(std::time::Duration::from_secs(60)))
+                        .user_agent("Second Life Release 7.1.15 (1559633637437)")
+                        .build()
+                        .into()
+                } else {
+                    // Use custom CA certificate like XML-RPC client
+                    match Self::load_custom_ca_cert() {
+                        Ok(custom_ca) => {
+                            let custom_certs = vec![custom_ca];
+                            let root_certs = ureq::tls::RootCerts::new_with_certs(&custom_certs);
+                            let tls_config = ureq::tls::TlsConfig::builder()
+                                .root_certs(root_certs)
+                                .build();
+                            
+                            tracing::info!("🔐 Configuring capabilities client with custom CA certificate");
+                            ureq::Agent::config_builder()
+                                .proxy(Some(proxy))
+                                .tls_config(tls_config)
+                                .timeout_global(Some(std::time::Duration::from_secs(60)))
+                                .user_agent("Second Life Release 7.1.15 (1559633637437)")
+                                .build()
+                                .into()
+                        }
+                        Err(e) => {
+                            tracing::warn!("⚠️ Failed to load custom CA certificate for capabilities: {}. Using default configuration.", e);
+                            ureq::Agent::config_builder()
+                                .proxy(Some(proxy))
+                                .timeout_global(Some(std::time::Duration::from_secs(60)))
+                                .user_agent("Second Life Release 7.1.15 (1559633637437)")
+                                .build()
+                                .into()
+                        }
+                    }
+                };
                 
                 agent
             } else {
@@ -339,6 +489,17 @@ impl AuthenticationService {
         } else {
             tracing::info!("Successfully stored credentials in keychain for grid {}", 
                           credentials.grid.name());
+        }
+
+        // Step 2.5: Perform OpenID POST if token is available
+        if let (Some(ref token), Some(ref url)) = (&login_response.openid_token, &login_response.openid_url) {
+            tracing::info!("🔐 Performing OpenID authentication POST");
+            if let Err(e) = self.perform_openid_post(token, url).await {
+                tracing::warn!("⚠️ OpenID POST failed: {}", e);
+                // Don't fail login if OpenID POST fails - it may not be critical
+            }
+        } else {
+            tracing::info!("ℹ️ No OpenID token received, skipping OpenID authentication");
         }
 
         // Step 3: Create session info - prioritize capabilities hostname
