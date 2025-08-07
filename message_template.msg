@@ -18,6 +18,15 @@ version 2.0
 
 // Test Message
 
+// Unknown message type Low:0 - placeholder to handle mystery messages
+{
+    UnknownLow0Message Low 0 NotTrusted Zerocoded
+    {
+        TestBlock1 Single
+        {   Unknown1   U32 }
+    }
+}
+
 {
     TestMessage Low 1 NotTrusted Zerocoded
     {
@@ -1594,6 +1603,8 @@ version 2.0
         {   Far             F32             }
         {   ControlFlags    U32             }
         {   Flags           U8              }
+        {   UnknownField1   U32             }
+        {   UnknownField2   U32             }
     }
 }
 

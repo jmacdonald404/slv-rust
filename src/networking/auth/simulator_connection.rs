@@ -211,7 +211,15 @@ pub async fn complete_authentication_with_proxy(
     let xml_client = match proxy_config {
         Some((host, port)) => {
             info!("🔧 Using HTTP proxy: {}:{}", host, port);
-            crate::networking::auth::xmlrpc::XmlRpcClient::new_with_proxy(host, port, false)?
+            let proxy_settings = crate::ui::proxy::ProxySettings {
+                enabled: true,
+                socks5_host: host.to_string(),
+                socks5_port: port,
+                http_host: host.to_string(),
+                http_port: port,
+                disable_cert_validation: false,
+            };
+            crate::networking::auth::xmlrpc::XmlRpcClient::new_with_proxy(Some(&proxy_settings))?
         }
         None => {
             crate::networking::auth::xmlrpc::XmlRpcClient::new()

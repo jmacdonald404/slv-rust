@@ -57,6 +57,14 @@ impl TransportType {
             TransportType::Udp(transport) => transport.set_packet_callback(callback).await,
         }
     }
+    
+    /// Get the local UDP listen port
+    pub fn local_addr(&self) -> SocketAddr {
+        match self {
+            TransportType::Quic(transport) => transport.local_addr(),
+            TransportType::Udp(transport) => transport.local_addr(),
+        }
+    }
 }
 
 /// Core networking controller following ADR-0002 transport selection
@@ -371,5 +379,10 @@ impl Core {
     /// Get handler registry (for adding custom handlers)
     pub fn handler_registry(&self) -> Arc<PacketHandlerRegistry> {
         Arc::clone(&self.handler_registry)
+    }
+    
+    /// Get the local UDP listen address
+    pub fn local_addr(&self) -> SocketAddr {
+        self.transport.local_addr()
     }
 }

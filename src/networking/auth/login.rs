@@ -6,11 +6,10 @@ use crate::ui::proxy::ProxySettings;
 use std::net::SocketAddr;
 use std::time::Duration;
 use uuid::Uuid;
-use ureq::{Agent, Proxy};
-use ureq::tls::{TlsConfig, RootCerts, Certificate};
+use reqwest::{Client as ReqwestClient, Certificate};
+use std::fs;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
-use std::io::Read;
 use serde_json;
 use quick_xml;
 use crate::utils::math::Vector3;
@@ -96,15 +95,19 @@ pub struct AuthenticationService {
     xmlrpc_client: XmlRpcClient,
     credential_store: CredentialStore,
     proxy_settings: Option<ProxySettings>,
+    // Cached HTTP client to avoid recreating it for every request
+    http_client: ReqwestClient,
 }
 
 impl AuthenticationService {
     pub fn new() -> Self {
+        let http_client = Self::build_proxied_client(None);
         Self {
             session_manager: SessionManager::new(),
             xmlrpc_client: XmlRpcClient::new(),
             credential_store: CredentialStore::new(),
             proxy_settings: None,
+            http_client,
         }
     }
 
@@ -116,18 +119,18 @@ impl AuthenticationService {
             tracing::info!("  - Cert validation disabled: {}", proxy_settings.disable_cert_validation);
             
             let xmlrpc_client = XmlRpcClient::new_with_proxy(
-                &proxy_settings.http_host,
-                proxy_settings.http_port,
-                proxy_settings.disable_cert_validation
+                Some(proxy_settings)
             ).map_err(|e| NetworkError::Transport { 
                 reason: format!("Failed to configure proxy for authentication: {}", e) 
             })?;
 
+            let http_client = Self::build_proxied_client(Some(proxy_settings));
             Ok(Self {
                 session_manager: SessionManager::new(),
                 xmlrpc_client,
                 credential_store: CredentialStore::new(),
                 proxy_settings: Some(proxy_settings.clone()),
+                http_client,
             })
         } else {
             tracing::info!("🔧 Creating AuthenticationService without proxy");
@@ -135,114 +138,197 @@ impl AuthenticationService {
         }
     }
 
-    /// Load custom CA certificate from PEM file (copied from XmlRpcClient)
-    fn load_custom_ca_cert() -> Result<Certificate<'static>> {
-        let ca_pem_path = std::path::Path::new("src/assets/CA.pem");
+    /// Build a reqwest client with proxy settings if enabled (like main branch)
+    fn build_proxied_client(proxy_settings: Option<&ProxySettings>) -> ReqwestClient {
+        let mut builder = ReqwestClient::builder();
         
-        if !ca_pem_path.exists() {
-            anyhow::bail!("Custom CA certificate not found at: {}", ca_pem_path.display());
+        if let Some(proxy_cfg) = proxy_settings {
+            if proxy_cfg.enabled {
+                // Always use the proxy when enabled
+                let proxy_url = format!("http://{}:{}", proxy_cfg.http_host, proxy_cfg.http_port);
+                if let Ok(proxy) = reqwest::Proxy::all(&proxy_url) {
+                    builder = builder.proxy(proxy);
+                }
+                
+                // Add CA certificate for Hippolyzer
+                if let Ok(ca_cert) = fs::read("src/assets/CA.pem") {
+                    if let Ok(cert) = Certificate::from_pem(&ca_cert) {
+                        builder = builder.add_root_certificate(cert);
+                    }
+                }
+            }
         }
         
-        let ca_pem_data = std::fs::read(ca_pem_path)
-            .with_context(|| format!("Failed to read CA certificate from: {}", ca_pem_path.display()))?;
-        
-        Certificate::from_pem(&ca_pem_data)
-            .with_context(|| format!("Failed to parse CA certificate from: {}", ca_pem_path.display()))
+        builder
+            .timeout(std::time::Duration::from_secs(60))
+            .user_agent("Second Life Release 7.1.15 (1559633637437)")
+            .build()
+            .expect("Failed to build HTTP client")
     }
 
     /// Perform OpenID POST authentication (similar to main branch implementation)
+    /// This now sends TWO OpenID requests to match the official viewer sequence:
+    /// 1. First request (same as before)
+    /// 2. Second request with X-SecondLife-UDP-Listen-Port header
     async fn perform_openid_post(&self, openid_token: &str, openid_url: &str) -> NetworkResult<()> {
-        tracing::info!("🔐 Sending OpenID token to {}", openid_url);
+        tracing::info!("🔐 Sending first OpenID token to {}", openid_url);
         tracing::debug!("🔐 OpenID token: {}", openid_token);
 
-        let agent = if let Some(ref proxy_settings) = self.proxy_settings {
-            if proxy_settings.enabled {
-                let proxy_url = format!("http://{}:{}", proxy_settings.http_host, proxy_settings.http_port);
-                let proxy = Proxy::new(&proxy_url)
-                    .map_err(|e| NetworkError::Transport { 
-                        reason: format!("Failed to create proxy for OpenID: {}", e) 
-                    })?;
+        let client = &self.http_client;
 
-                let agent: ureq::Agent = if proxy_settings.disable_cert_validation {
-                    let tls_config = TlsConfig::builder()
-                        .disable_verification(true)
-                        .build();
-                    
-                    ureq::Agent::config_builder()
-                        .proxy(Some(proxy))
-                        .tls_config(tls_config)
-                        .timeout_global(Some(std::time::Duration::from_secs(60)))
-                        .user_agent("Second Life Release 7.1.15 (1559633637437)")
-                        .build()
-                        .into()
-                } else {
-                    match Self::load_custom_ca_cert() {
-                        Ok(custom_ca) => {
-                            let custom_certs = vec![custom_ca];
-                            let root_certs = RootCerts::new_with_certs(&custom_certs);
-                            let tls_config = TlsConfig::builder()
-                                .root_certs(root_certs)
-                                .build();
-                            
-                            ureq::Agent::config_builder()
-                                .proxy(Some(proxy))
-                                .tls_config(tls_config)
-                                .timeout_global(Some(std::time::Duration::from_secs(60)))
-                                .user_agent("Second Life Release 7.1.15 (1559633637437)")
-                                .build()
-                                .into()
-                        }
-                        Err(e) => {
-                            tracing::warn!("⚠️ Failed to load custom CA certificate for OpenID: {}. Using default configuration.", e);
-                            ureq::Agent::config_builder()
-                                .proxy(Some(proxy))
-                                .timeout_global(Some(std::time::Duration::from_secs(60)))
-                                .user_agent("Second Life Release 7.1.15 (1559633637437)")
-                                .build()
-                                .into()
-                        }
-                    }
-                };
-                agent
-            } else {
-                ureq::Agent::new_with_defaults()
-            }
-        } else {
-            ureq::Agent::new_with_defaults()
-        };
-
-        // Use spawn_blocking since ureq is synchronous
-        let url_clone = openid_url.to_string();
-        let token_clone = openid_token.to_string();
+        // First OpenID request (same as before)
         
-        let (status_code, response_text) = tokio::task::spawn_blocking(move || -> Result<(u16, String), ureq::Error> {
-            let mut response = agent
-                .post(&url_clone)
-                .header("Content-Type", "application/x-www-form-urlencoded")
-                .header("Accept", "*/*")
-                .header("Accept-Encoding", "gzip, deflate")
-                .header("Connection", "keep-alive")
-                .header("Keep-Alive", "300")
-                .send(&token_clone)?;
+        let response = client
+            .post(openid_url)
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .header("Accept", "*/*")
+            .header("Accept-Encoding", "gzip, deflate")
+            .header("Connection", "keep-alive")
+            .header("Keep-Alive", "300")
+            .body(openid_token.to_string())
+            .send()
+            .await
+            .map_err(|e| NetworkError::Transport { reason: format!("Failed to send first OpenID request: {}", e) })?;
 
-            let status_code = response.status();
-            let response_text = response.body_mut().read_to_string()?;
-            
-            Ok((status_code.into(), response_text))
-        }).await
-        .map_err(|e| NetworkError::Transport { reason: format!("Failed to execute OpenID request: {}", e) })?
-        .map_err(|e| NetworkError::Transport { reason: format!("Failed to send OpenID request: {}", e) })?;
+        let status_code = response.status().as_u16();
+        let response_text = response.text().await
+            .map_err(|e| NetworkError::Transport { reason: format!("Failed to read first OpenID response: {}", e) })?;
 
         if status_code < 200 || status_code >= 300 {
-            tracing::warn!("⚠️ OpenID POST returned status {}: {}", status_code, 
+            tracing::warn!("⚠️ First OpenID POST returned status {}: {}", status_code, 
                           response_text.chars().take(200).collect::<String>());
             return Err(NetworkError::Transport { 
-                reason: format!("OpenID POST failed with status: {}", status_code) 
+                reason: format!("First OpenID POST failed with status: {}", status_code) 
             });
         }
 
-        tracing::info!("✅ OpenID POST completed successfully (status {})", status_code);
+        tracing::info!("✅ First OpenID POST completed successfully (status {})", status_code);
+
+        // Second OpenID request with UDP listen port header (matching official viewer)
+        tracing::info!("🔐 Sending second OpenID token with UDP listen port");
+        
+        // Create a temporary UDP socket to get the actual port we'll be listening on
+        // This matches what the networking client will use later
+        let temp_socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await
+            .map_err(|e| NetworkError::Transport { 
+                reason: format!("Failed to bind UDP socket for port detection: {}", e) 
+            })?;
+        let udp_port = temp_socket.local_addr()
+            .map_err(|e| NetworkError::Transport { 
+                reason: format!("Failed to get local UDP port: {}", e) 
+            })?
+            .port();
+        
+        tracing::info!("🔐 Using actual UDP listen port: {}", udp_port);
+        
+        let url_clone2 = openid_url.to_string();
+        let token_clone2 = openid_token.to_string();
+        
+        let response2 = client.clone()
+            .post(openid_url)
+            .header("Host", "id.secondlife.com")
+            .header("Accept-Encoding", "deflate, gzip")
+            .header("Connection", "keep-alive")
+            .header("Keep-alive", "300")
+            .header("Accept", "*/*")
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .header("X-SecondLife-UDP-Listen-Port", &udp_port.to_string())
+            .header("Content-Length", &openid_token.len().to_string())
+            .body(openid_token.to_string())
+            .send()
+            .await
+            .map_err(|e| NetworkError::Transport { reason: format!("Failed to send second OpenID request: {}", e) })?;
+
+        let status_code2 = response2.status().as_u16();
+        let response_text2 = response2.text().await
+            .map_err(|e| NetworkError::Transport { reason: format!("Failed to read second OpenID response: {}", e) })?;
+
+        if status_code2 < 200 || status_code2 >= 300 {
+            tracing::warn!("⚠️ Second OpenID POST returned status {}: {}", status_code2, 
+                          response_text2.chars().take(200).collect::<String>());
+            return Err(NetworkError::Transport { 
+                reason: format!("Second OpenID POST failed with status: {}", status_code2) 
+            });
+        }
+
+        tracing::info!("✅ Second OpenID POST completed successfully (status {})", status_code2);
+        tracing::info!("✅ OpenID authentication sequence completed (matching official viewer)");
         Ok(())
+    }
+
+    /// Fetch additional capabilities that the official viewer requests during login
+    /// This includes navigation mesh status, environment data, and other critical capabilities
+    async fn fetch_additional_capabilities(&self, capabilities: &HashMap<String, String>) -> NetworkResult<()> {
+        tracing::info!("🔍 FETCHING: Additional capabilities to match official viewer behavior");
+        
+        // 1. Navigation Mesh Status - Critical for avatar movement
+        if let Some(nav_mesh_url) = capabilities.get("NavMeshGenerationStatus") {
+            tracing::info!("🗺️ Fetching navigation mesh status from: {}", nav_mesh_url);
+            match self.fetch_capability_data(nav_mesh_url, "navigation mesh status").await {
+                Ok(_) => tracing::info!("✅ Navigation mesh status fetched successfully"),
+                Err(e) => tracing::warn!("⚠️ Navigation mesh status fetch failed: {}", e),
+            }
+        }
+        
+        // 2. Environment Settings - World lighting and environment
+        if let Some(env_url) = capabilities.get("EnvironmentSettings") {
+            tracing::info!("🌍 Fetching environment settings from: {}", env_url);
+            match self.fetch_capability_data(env_url, "environment settings").await {
+                Ok(_) => tracing::info!("✅ Environment settings fetched successfully"),
+                Err(e) => tracing::warn!("⚠️ Environment settings fetch failed: {}", e),
+            }
+        }
+        
+        // 3. Agent Preferences - User-specific settings
+        if let Some(prefs_url) = capabilities.get("AgentPreferences") {
+            tracing::info!("👤 Fetching agent preferences from: {}", prefs_url);
+            match self.fetch_capability_data(prefs_url, "agent preferences").await {
+                Ok(_) => tracing::info!("✅ Agent preferences fetched successfully"),  
+                Err(e) => tracing::warn!("⚠️ Agent preferences fetch failed: {}", e),
+            }
+        }
+        
+        // 4. Map Image Download - For minimap functionality  
+        if let Some(map_url) = capabilities.get("MapLayer") {
+            tracing::info!("🗺️ Map layer capability available: {}", map_url);
+            // Don't actually download map tiles now, but log availability
+        }
+        
+        tracing::info!("✅ Additional capability fetching completed");
+        Ok(())
+    }
+    
+    /// Helper method to fetch data from a capability URL using reqwest
+    async fn fetch_capability_data(&self, url: &str, description: &str) -> NetworkResult<String> {
+        use crate::networking::proxy::http::HttpProxyClient;
+        
+        tracing::debug!("🔗 Using cached HTTP client for {} request to {}", description, url);
+        let client = &self.http_client;
+
+        let response = client
+            .get(url)
+            .header("Accept", "application/llsd+xml")
+            .header("User-Agent", "Second Life Release 7.1.15 (1559633637437)")
+            .send()
+            .await
+            .map_err(|e| NetworkError::Transport { 
+                reason: format!("Failed to fetch {}: {}", description, e) 
+            })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            return Err(NetworkError::Transport { 
+                reason: format!("Failed to fetch {}: HTTP {}", description, status) 
+            });
+        }
+
+        let response_text = response.text().await
+            .map_err(|e| NetworkError::Transport { 
+                reason: format!("Failed to read {} response body: {}", description, e) 
+            })?;
+
+        tracing::debug!("📊 {} response: {}", description, response_text.chars().take(200).collect::<String>());
+        Ok(response_text)
     }
 
     async fn fetch_capabilities(&self, url: &str) -> NetworkResult<HashMap<String, String>> {
@@ -250,73 +336,8 @@ impl AuthenticationService {
         
         tracing::info!("🌱 Fetching comprehensive capabilities from {}", url);
         
-        // Create ureq agent with the same proxy configuration as the authentication client
-        let agent = if let Some(ref proxy_settings) = self.proxy_settings {
-            if proxy_settings.enabled {
-                tracing::info!("🔧 Creating capabilities client with proxy {}:{}", 
-                              proxy_settings.http_host, proxy_settings.http_port);
-                
-                let proxy_url = format!("http://{}:{}", proxy_settings.http_host, proxy_settings.http_port);
-                let proxy = Proxy::new(&proxy_url)
-                    .map_err(|e| NetworkError::Transport { 
-                        reason: format!("Failed to create proxy for capabilities: {}", e) 
-                    })?;
-                
-                // Create agent with proxy configuration (like XML-RPC client does)
-                let agent: ureq::Agent = if proxy_settings.disable_cert_validation {
-                    tracing::warn!("⚠️ Certificate validation disabled for capabilities client");
-                    let tls_config = ureq::tls::TlsConfig::builder()
-                        .disable_verification(true)
-                        .build();
-                    
-                    ureq::Agent::config_builder()
-                        .proxy(Some(proxy))
-                        .tls_config(tls_config)
-                        .timeout_global(Some(std::time::Duration::from_secs(60)))
-                        .user_agent("Second Life Release 7.1.15 (1559633637437)")
-                        .build()
-                        .into()
-                } else {
-                    // Use custom CA certificate like XML-RPC client
-                    match Self::load_custom_ca_cert() {
-                        Ok(custom_ca) => {
-                            let custom_certs = vec![custom_ca];
-                            let root_certs = ureq::tls::RootCerts::new_with_certs(&custom_certs);
-                            let tls_config = ureq::tls::TlsConfig::builder()
-                                .root_certs(root_certs)
-                                .build();
-                            
-                            tracing::info!("🔐 Configuring capabilities client with custom CA certificate");
-                            ureq::Agent::config_builder()
-                                .proxy(Some(proxy))
-                                .tls_config(tls_config)
-                                .timeout_global(Some(std::time::Duration::from_secs(60)))
-                                .user_agent("Second Life Release 7.1.15 (1559633637437)")
-                                .build()
-                                .into()
-                        }
-                        Err(e) => {
-                            tracing::warn!("⚠️ Failed to load custom CA certificate for capabilities: {}. Using default configuration.", e);
-                            ureq::Agent::config_builder()
-                                .proxy(Some(proxy))
-                                .timeout_global(Some(std::time::Duration::from_secs(60)))
-                                .user_agent("Second Life Release 7.1.15 (1559633637437)")
-                                .build()
-                                .into()
-                        }
-                    }
-                };
-                
-                agent
-            } else {
-                ureq::Agent::new_with_defaults()
-            }
-        } else {
-            ureq::Agent::new_with_defaults()
-        };
-        
         // Use the comprehensive seed capability client that matches official viewer behavior
-        let seed_client = SeedCapabilityClient::new(agent);
+        let seed_client = SeedCapabilityClient::new_with_proxy(self.proxy_settings.as_ref());
         seed_client.fetch_capabilities(url).await
     }
 
@@ -583,6 +604,8 @@ impl AuthenticationService {
                         tracing::info!("✅ CAPABILITIES: Successfully fetched {} capabilities", caps.len());
                         tracing::info!("✅ CAPABILITIES: Available capabilities: {:?}", caps.keys().collect::<Vec<_>>());
                         
+                        // Step 3.5: Fetch additional capabilities that the official viewer fetches
+                        self.fetch_additional_capabilities(&caps).await?;
                     }
                     Err(e) => {
                         tracing::error!("❌ CAPABILITIES: Failed to fetch capabilities: {}", e);

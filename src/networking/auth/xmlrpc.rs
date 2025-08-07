@@ -1,21 +1,21 @@
 use anyhow::{Context, Result};
-use ureq::{Agent, Proxy};
-use ureq::tls::{TlsConfig, RootCerts, Certificate};
+use reqwest::{Client, Certificate};
 use roxmltree;
 use crate::utils::math::{Vector3, parsing as math_parsing};
+use crate::ui::proxy::ProxySettings;
 use std::time::Duration;
-use std::io::Read;
 use std::sync::Arc;
 use super::types::*;
+use std::fs;
 
 /// XML-RPC client for SecondLife login servers
 pub struct XmlRpcClient {
-    agent: Agent,
+    client: Client,
 }
 
 impl XmlRpcClient {
     /// Load custom CA certificate from PEM file
-    fn load_custom_ca_cert() -> Result<Certificate<'static>> {
+    fn load_custom_ca_cert() -> Result<Certificate> {
         let ca_pem_path = std::path::Path::new("src/assets/CA.pem");
         
         if !ca_pem_path.exists() {
@@ -29,90 +29,57 @@ impl XmlRpcClient {
             .with_context(|| format!("Failed to parse CA certificate from: {}", ca_pem_path.display()))
     }
 
-    /// Create TLS configuration with custom CA certificate
-    pub fn create_tls_config_with_custom_ca() -> Result<TlsConfig> {
-        let custom_ca = Self::load_custom_ca_cert()?;
-        
-        // Create a vector with the custom CA certificate
-        let custom_certs = vec![custom_ca];
-        let root_certs = RootCerts::new_with_certs(&custom_certs);
-        
-        let tls_config = TlsConfig::builder()
-            .root_certs(root_certs)
-            .build();
-        
-        tracing::info!("✅ Custom CA certificate loaded and configured for TLS verification");
-        
-        Ok(tls_config)
-    }
-
     pub fn new() -> Self {
         tracing::info!("🌐 Configuring XML-RPC client for direct connection (using system CA certificates)");
-        let agent: Agent = Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(60)))
-            .user_agent("Second Life Release 7.1.15 (15596336374)")
+        let client = Client::builder()
+            .timeout(Duration::from_secs(120))
+            .user_agent("Second Life Release 7.1.15 (1559633637437)")
             .build()
-            .into();
+            .unwrap();
         
-        Self { agent }
+        Self { client }
     }
 
     /// Create a new XML-RPC client with proxy configuration
-    pub fn new_with_proxy(proxy_host: &str, proxy_port: u16, disable_cert_validation: bool) -> Result<Self> {
-        tracing::info!("🔧 Configuring XML-RPC client with HTTP proxy {}:{}", proxy_host, proxy_port);
+    pub fn new_with_proxy(proxy_settings: Option<&ProxySettings>) -> Result<Self> {
+        let client = Self::build_proxied_client(proxy_settings);
         
-        let proxy_url = format!("http://{}:{}", proxy_host, proxy_port);
-        let proxy = Proxy::new(&proxy_url)
-            .context("Failed to create HTTP proxy")?;
+        tracing::info!("✅ XML-RPC client configured with reqwest proxy support");
         
-        let agent: Agent = if disable_cert_validation {
-            tracing::warn!("⚠️ Certificate validation disabled for proxy connection");
-            let tls_config = TlsConfig::builder()
-                .disable_verification(true)
-                .build();
-            
-            Agent::config_builder()
-                .proxy(Some(proxy))
-                .tls_config(tls_config)
-                .timeout_global(Some(Duration::from_secs(60)))
-                .user_agent("Second Life Release 7.1.15 (1559633637437)")
-                .build()
-                .into()
-        } else {
-            // Use custom CA certificate for SSL verification
-            match Self::create_tls_config_with_custom_ca() {
-                Ok(tls_config) => {
-                    tracing::info!("🔐 Configuring proxy client with custom CA certificate");
-                    Agent::config_builder()
-                        .proxy(Some(proxy))
-                        .tls_config(tls_config)
-                        .timeout_global(Some(Duration::from_secs(60)))
-                        .user_agent("Second Life Release 7.1.15 (1559633637437)")
-                        .build()
-                        .into()
+        Ok(Self { client })
+    }
+
+    /// Build a reqwest client with proxy settings if enabled (copied from main branch)
+    fn build_proxied_client(proxy_settings: Option<&ProxySettings>) -> Client {
+        let mut builder = Client::builder();
+        
+        if let Some(proxy_cfg) = proxy_settings {
+            if proxy_cfg.enabled {
+                // Always use the proxy when enabled
+                let proxy_url = format!("http://{}:{}", proxy_cfg.http_host, proxy_cfg.http_port);
+                if let Ok(proxy) = reqwest::Proxy::all(&proxy_url) {
+                    builder = builder.proxy(proxy);
                 }
-                Err(e) => {
-                    tracing::warn!("⚠️ Failed to load custom CA certificate: {}. Using default configuration.", e);
-                    Agent::config_builder()
-                        .proxy(Some(proxy))
-                        .timeout_global(Some(Duration::from_secs(60)))
-                        .user_agent("Second Life Release 7.1.15 (1559633637437)")
-                        .build()
-                        .into()
+                
+                // Add CA certificate for Hippolyzer
+                if let Ok(ca_cert) = fs::read("src/assets/CA.pem") {
+                    if let Ok(cert) = Certificate::from_pem(&ca_cert) {
+                        builder = builder.add_root_certificate(cert);
+                    }
                 }
             }
-        };
+        }
         
-        tracing::info!("✅ XML-RPC client configured with ureq proxy support");
-        
-        Ok(Self { agent })
+        builder
+            .timeout(Duration::from_secs(120))
+            .user_agent("Second Life Release 7.1.15 (1559633637437)")
+            .build()
+            .expect("Failed to build HTTP client")
     }
 
     /// Send XML-RPC request to SecondLife login server
     pub async fn login_to_simulator(&self, url: &str, params: LoginParameters) -> Result<LoginResponse> {
         let xml_request = self.build_login_request(&params)?;
-        let url_clone = url.to_string();
-        let agent_clone = self.agent.clone();
         
         tracing::info!("🔗 Starting login to {} for user {}.{}", url, params.first_name, params.last_name);
         tracing::info!("📡 Request details:");
@@ -133,22 +100,19 @@ impl XmlRpcClient {
         tracing::info!("  - User-Agent: slv-rust/0.3.0");
         tracing::info!("  - Content-Type: text/xml");
         
-        // Use spawn_blocking since ureq is synchronous
-        let (status_code, xml_body) = tokio::task::spawn_blocking(move || -> Result<(u16, String)> {
-            let mut response = agent_clone
-                .post(&url_clone)
-                .header("Content-Type", "text/xml")
-                .header("User-Agent", "Second Life Release 7.1.15 (1559633637437)")
-                .send(&xml_request)
-                .map_err(|e| anyhow::anyhow!("ureq send error: {}", e))?;
+        // Use reqwest async client
+        let response = self.client
+            .post(url)
+            .header("Content-Type", "text/xml")
+            .header("User-Agent", "Second Life Release 7.1.15 (1559633637437)")
+            .body(xml_request)
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!("reqwest send error: {}", e))?;
 
-            let status_code = response.status();
-            let xml_body = response.body_mut().read_to_string()
-                .context("Failed to read login response")?;
-            
-            Ok((status_code.into(), xml_body))
-        }).await
-        .context("Failed to execute login request task")??;
+        let status_code = response.status().as_u16();
+        let xml_body = response.text().await
+            .context("Failed to read login response")?;
 
         let elapsed = start_time.elapsed();
         

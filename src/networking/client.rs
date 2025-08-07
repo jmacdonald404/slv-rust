@@ -10,15 +10,18 @@ use crate::networking::packets::generated::*;
 use crate::networking::transport::TransportConfig;
 use crate::networking::quic_transport::{QuicTransport, QuicTransportConfig};
 use crate::networking::auth::SessionInfo;
+use crate::networking::effects::{EffectManager, Position};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::{fs, io};
+use tokio::sync::{mpsc, RwLock, Mutex};
 use serde::{Deserialize, Serialize};
-use tokio::time::{timeout, Duration};
+use tokio::time::{timeout, Duration, interval};
 use tracing::error;
-use ureq::{Agent, Proxy};
-use std::io::Read;
+use reqwest;
+use roxmltree;
 
 #[derive(Debug)]
 pub enum HandshakeEvent {
@@ -110,6 +113,51 @@ impl Default for ClientConfig {
     }
 }
 
+/// Agent state for continuous updates
+#[derive(Debug, Clone)]
+pub struct AgentState {
+    /// Current position
+    pub position: crate::networking::packets::types::LLVector3,
+    /// Body rotation (quaternion)
+    pub body_rotation: crate::networking::packets::types::LLQuaternion,
+    /// Head rotation (quaternion)
+    pub head_rotation: crate::networking::packets::types::LLQuaternion,
+    /// Agent state flags
+    pub state: u8,
+    /// Camera center position
+    pub camera_center: crate::networking::packets::types::LLVector3,
+    /// Camera at axis (look direction)
+    pub camera_at_axis: crate::networking::packets::types::LLVector3,
+    /// Camera left axis
+    pub camera_left_axis: crate::networking::packets::types::LLVector3,
+    /// Camera up axis
+    pub camera_up_axis: crate::networking::packets::types::LLVector3,
+    /// Camera far distance
+    pub far: f32,
+    /// Control flags for movement
+    pub control_flags: u32,
+    /// Additional flags
+    pub flags: u8,
+}
+
+impl Default for AgentState {
+    fn default() -> Self {
+        Self {
+            position: crate::networking::packets::types::LLVector3::new(128.0, 128.0, 25.0),
+            body_rotation: crate::networking::packets::types::LLQuaternion::identity(),
+            head_rotation: crate::networking::packets::types::LLQuaternion::identity(),
+            state: 0,
+            camera_center: crate::networking::packets::types::LLVector3::new(128.0, 128.0, 25.0),
+            camera_at_axis: crate::networking::packets::types::LLVector3::new(1.0, 0.0, 0.0),
+            camera_left_axis: crate::networking::packets::types::LLVector3::new(0.0, 1.0, 0.0),
+            camera_up_axis: crate::networking::packets::types::LLVector3::new(0.0, 0.0, 1.0),
+            far: 256.0,
+            control_flags: 0,
+            flags: 0,
+        }
+    }
+}
+
 /// High-level Second Life client
 pub struct Client {
     /// Client configuration
@@ -134,8 +182,17 @@ pub struct Client {
     /// Session information
     session_info: SessionInfo,
 
-    /// HTTP client for EventQueueGet (may be proxied)
-    http_agent: ureq::Agent,
+    /// HTTP client for EventQueueGet (may be proxied) - uses reqwest for proper async
+    http_client: reqwest::Client,
+    
+    /// Effect manager for viewer effects
+    effect_manager: Arc<Mutex<EffectManager>>,
+    
+    /// Agent update state
+    agent_update_running: Arc<AtomicBool>,
+    
+    /// Current camera/agent state
+    agent_state: Arc<RwLock<AgentState>>,
 }
 
 /// Client state
@@ -169,20 +226,91 @@ pub enum ClientEvent {
 }
 
 impl Client {
-    /// Load custom CA certificate from PEM file (copied from AuthenticationService)
-    fn load_custom_ca_cert() -> Result<ureq::tls::Certificate<'static>, anyhow::Error> {
-        use anyhow::Context;
-        let ca_pem_path = std::path::Path::new("src/assets/CA.pem");
+    /// Build HTTP client with proxy support (based on main branch session.rs)
+    fn build_http_client(proxy_config: Option<&crate::networking::proxy::ProxyConfig>) -> reqwest::Client {
+        let mut builder = reqwest::Client::builder()
+            .user_agent("Second Life Release 7.1.15 (1559633637437)")
+            .timeout(std::time::Duration::from_secs(120)) // Long timeout for EventQueue polling
+            .connection_verbose(true); // Enable debug logging
         
-        if !ca_pem_path.exists() {
-            anyhow::bail!("Custom CA certificate not found at: {}", ca_pem_path.display());
+        // Configure proxy if available
+        if let Some(proxy_cfg) = proxy_config {
+            if let Some(http_addr) = proxy_cfg.http_addr {
+                info!("🔧 REQWEST: Configuring HTTP client with proxy: {}", http_addr);
+                
+                // Build proper proxy URL from config
+                let proxy_url = format!("http://{}", http_addr);
+                
+                match reqwest::Proxy::http(&proxy_url) {
+                    Ok(mut proxy) => {
+                        // Also handle HTTPS through the same HTTP proxy
+                        if let Ok(https_proxy) = reqwest::Proxy::https(&proxy_url) {
+                            builder = builder.proxy(proxy).proxy(https_proxy);
+                        } else {
+                            builder = builder.proxy(proxy);
+                        }
+                        
+                        // For proxy connections, especially Hippolyzer, we need to handle certificates
+                        // Hippolyzer acts as a MITM proxy and uses its own certificates
+                        
+                        // Try to load the CA certificate first
+                        if let Ok(ca_cert_data) = std::fs::read("src/assets/CA.pem") {
+                            match reqwest::Certificate::from_pem(&ca_cert_data) {
+                                Ok(ca_cert) => {
+                                    builder = builder.add_root_certificate(ca_cert);
+                                    info!("🔧 REQWEST: Added Hippolyzer CA certificate for proxy");
+                                }
+                                Err(e) => {
+                                    warn!("❌ REQWEST: Failed to load CA certificate: {}, disabling cert validation", e);
+                                    builder = builder.danger_accept_invalid_certs(true);
+                                }
+                            }
+                        } else {
+                            info!("🔧 REQWEST: No CA certificate found, disabling certificate validation for proxy");
+                            builder = builder.danger_accept_invalid_certs(true);
+                        }
+                    }
+                    Err(e) => {
+                        warn!("❌ REQWEST: Failed to configure proxy {}: {}", proxy_url, e);
+                        info!("🔧 REQWEST: Falling back to direct connection");
+                    }
+                }
+            } else {
+                warn!("🔧 REQWEST: Proxy config provided but no HTTP address - using direct connection");
+            }
+        } else {
+            info!("🔧 REQWEST: Configuring HTTP client without proxy");
+            
+            // For direct connections, use proper certificate validation
+            // Add CA certificate if available
+            if let Ok(ca_cert_data) = fs::read("src/assets/CA.pem") {
+                match reqwest::Certificate::from_pem(&ca_cert_data) {
+                    Ok(ca_cert) => {
+                        builder = builder.add_root_certificate(ca_cert);
+                        info!("🔧 REQWEST: Added custom CA certificate");
+                    }
+                    Err(e) => {
+                        warn!("❌ REQWEST: Failed to load CA certificate: {}", e);
+                    }
+                }
+            }
         }
         
-        let ca_pem_data = std::fs::read(ca_pem_path)
-            .with_context(|| format!("Failed to read CA certificate from: {}", ca_pem_path.display()))?;
-        
-        ureq::tls::Certificate::from_pem(&ca_pem_data)
-            .with_context(|| format!("Failed to parse CA certificate from: {}", ca_pem_path.display()))
+        match builder.build() {
+            Ok(client) => {
+                info!("✅ REQWEST: HTTP client configured successfully");
+                client
+            }
+            Err(e) => {
+                warn!("❌ REQWEST: Failed to build HTTP client: {}", e);
+                // Fallback to basic client
+                reqwest::Client::builder()
+                    .user_agent("Second Life Release 7.1.15 (1559633637437)")
+                    .timeout(std::time::Duration::from_secs(120))
+                    .build()
+                    .expect("Failed to create fallback HTTP client")
+            }
+        }
     }
     /// Create a new client following ADR-0002 networking protocol choice
     pub async fn new(config: ClientConfig, session_info: SessionInfo) -> NetworkResult<Self> {
@@ -195,80 +323,8 @@ impl Client {
             Arc::new(Core::new(config.transport.clone()).await?)
         };
         
-        // Create ureq agent, possibly with proxy support
-        let http_agent = if let Some(ref proxy_config) = config.transport.proxy {
-            if let Some(http_addr) = proxy_config.http_addr {
-                info!("Configuring ureq agent to use proxy at {}", http_addr);
-                
-                let proxy_url = format!("http://{}", http_addr);
-                let proxy = ureq::Proxy::new(&proxy_url)
-                    .map_err(|e| NetworkError::Transport {
-                        reason: format!("Failed to create HTTP proxy: {}", e)
-                    })?;
-                
-                // Configure TLS like the working capability agent  
-                // Try to load custom CA cert first, fallback to disabled verification
-                let agent = match Self::load_custom_ca_cert() {
-                    Ok(custom_ca) => {
-                        let custom_certs = vec![custom_ca];
-                        let root_certs = ureq::tls::RootCerts::new_with_certs(&custom_certs);
-                        let tls_config = ureq::tls::TlsConfig::builder()
-                            .root_certs(root_certs)
-                            .build();
-                        
-                        info!("Configuring EventQueue agent with custom CA certificate");
-                        ureq::Agent::config_builder()
-                            .proxy(Some(proxy))
-                            .tls_config(tls_config)
-                            .timeout_global(Some(std::time::Duration::from_secs(60)))
-                            .user_agent("")  // Disable User-Agent header to match official viewer
-                            .build()
-                            .into()
-                    }
-                    Err(e) => {
-                        warn!("Failed to load custom CA certificate for EventQueue: {}. Disabling certificate validation.", e);
-                        let tls_config = ureq::tls::TlsConfig::builder()
-                            .disable_verification(true)
-                            .build();
-                        
-                        ureq::Agent::config_builder()
-                            .proxy(Some(proxy))
-                            .tls_config(tls_config)
-                            .timeout_global(Some(std::time::Duration::from_secs(60)))
-                            .user_agent("")  // Disable User-Agent header to match official viewer
-                            .build()
-                            .into()
-                    }
-                };
-                
-                // Add authentication if provided
-                if let (Some(username), Some(password)) = (&proxy_config.username, &proxy_config.password) {
-                    // Note: ureq handles basic auth per-request, not per-agent
-                    // We'll handle this in the individual request calls
-                    info!("Proxy authentication will be handled per-request");
-                }
-                
-                // Certificate handling
-                if let Some(ca_path) = &proxy_config.ca_cert_path {
-                    warn!("CA certificate loading not directly supported in ureq - relying on system TLS settings");
-                    warn!("CA cert path specified: {}", ca_path);
-                } else {
-                    warn!("No CA cert provided - relying on system TLS settings for Hippolyzer proxy");
-                }
-                
-                agent
-            } else {
-                ureq::Agent::config_builder()
-                    .user_agent("")  // Disable User-Agent header to match official viewer
-                    .build()
-                    .into()
-            }
-        } else {
-            ureq::Agent::config_builder()
-                .user_agent("")  // Disable User-Agent header to match official viewer
-                .build()
-                .into()
-        };
+        // Create HTTP client with proxy support (simplified like main branch)
+        let http_client = Self::build_http_client(config.transport.proxy.as_ref());
         
         // Create event channels
         let (event_tx, _) = mpsc::unbounded_channel();
@@ -283,7 +339,10 @@ impl Client {
             handshake_rx: Arc::new(RwLock::new(handshake_rx)),
             _background_tasks: Vec::new(),
             session_info,
-            http_agent,
+            http_client,
+            effect_manager: Arc::new(Mutex::new(EffectManager::new())),
+            agent_update_running: Arc::new(AtomicBool::new(false)),
+            agent_state: Arc::new(RwLock::new(AgentState::default())),
         };
         
         // Start background tasks
@@ -343,6 +402,11 @@ impl Client {
     /// Get current state
     pub async fn state(&self) -> ClientState {
         self.state.read().await.clone()
+    }
+    
+    /// Get the local UDP listen port for this client
+    pub fn local_udp_port(&self) -> u16 {
+        self.core.local_addr().port()
     }
     
     /// Get event receiver
@@ -421,6 +485,9 @@ impl Client {
     pub async fn disconnect(&self) -> NetworkResult<()> {
         self.set_state(ClientState::Disconnecting).await;
         
+        // Stop continuous AgentUpdate messages
+        self.stop_continuous_agent_updates();
+        
         // Shutdown the core (this will disconnect all circuits)
         self.core.shutdown().await?;
         
@@ -457,26 +524,173 @@ impl Client {
         let circuit = self.core.primary_circuit().await
             .ok_or(NetworkError::CircuitNotFound { id: 0 })?;
         
+        // Update internal agent state
+        {
+            let mut state = self.agent_state.write().await;
+            if let Some(pos) = position {
+                state.position = pos;
+                state.camera_center = pos;
+            }
+            if let Some(rot) = rotation {
+                state.body_rotation = rot;
+            }
+        }
+        
+        let agent_state = self.agent_state.read().await;
         let agent_update = AgentUpdate {
             agent_id: self.session_info.agent_id,
             session_id: self.session_info.session_id,
-            body_rotation: rotation.unwrap_or_else(|| 
-                crate::networking::packets::types::LLQuaternion::identity()),
-            head_rotation: crate::networking::packets::types::LLQuaternion::identity(),
-            state: 0,
-            camera_center: position.unwrap_or_else(|| 
-                crate::networking::packets::types::LLVector3::new(128.0, 128.0, 25.0)),
-            camera_at_axis: crate::networking::packets::types::LLVector3::new(1.0, 0.0, 0.0),
-            camera_left_axis: crate::networking::packets::types::LLVector3::new(0.0, 1.0, 0.0),
-            camera_up_axis: crate::networking::packets::types::LLVector3::new(0.0, 0.0, 1.0),
-            far: 256.0,
-            control_flags: 0,
-            flags: 0,
+            body_rotation: agent_state.body_rotation.clone(),
+            head_rotation: agent_state.head_rotation.clone(),
+            state: agent_state.state,
+            camera_center: agent_state.camera_center.clone(),
+            camera_at_axis: agent_state.camera_at_axis.clone(),
+            camera_left_axis: agent_state.camera_left_axis.clone(),
+            camera_up_axis: agent_state.camera_up_axis.clone(),
+            far: agent_state.far,
+            control_flags: agent_state.control_flags,
+            flags: agent_state.flags,
         };
         
         // AgentUpdate is sent unreliably
         circuit.send(&agent_update).await?;
         
+        Ok(())
+    }
+    
+    /// Start continuous AgentUpdate messages (simulating what official viewer does)
+    pub async fn start_continuous_agent_updates(&self) -> NetworkResult<()> {
+        if self.agent_update_running.swap(true, Ordering::SeqCst) {
+            info!("🔄 AgentUpdate loop already running, skipping start");
+            return Ok(());
+        }
+        
+        info!("🚀 Starting continuous AgentUpdate messages");
+        
+        let core = Arc::clone(&self.core);
+        let session_info = self.session_info.clone();
+        let agent_state = Arc::clone(&self.agent_state);
+        let running = Arc::clone(&self.agent_update_running);
+        
+        tokio::spawn(async move {
+            // Match main branch frequency: 100ms intervals (circuit.rs:370)
+            let mut update_interval = interval(Duration::from_millis(100));
+            let mut send_count = 0;
+            
+            while running.load(Ordering::SeqCst) {
+                update_interval.tick().await;
+                
+                if let Some(circuit) = core.primary_circuit().await {
+                    let current_state = agent_state.read().await.clone();
+                    
+                    // Send AgentUpdate every time for now (like main branch does)
+                    // This ensures we see the messages in hippolog for debugging
+                    let agent_update = AgentUpdate {
+                        agent_id: session_info.agent_id,
+                        session_id: session_info.session_id,
+                        body_rotation: current_state.body_rotation.clone(),
+                        head_rotation: current_state.head_rotation.clone(),
+                        state: current_state.state,
+                        camera_center: current_state.camera_center.clone(),
+                        camera_at_axis: current_state.camera_at_axis.clone(),
+                        camera_left_axis: current_state.camera_left_axis.clone(),
+                        camera_up_axis: current_state.camera_up_axis.clone(),
+                        far: current_state.far,
+                        control_flags: current_state.control_flags,
+                        flags: current_state.flags,
+                    };
+                    
+                    if let Err(e) = circuit.send(&agent_update).await {
+                        warn!("❌ Failed to send AgentUpdate #{}: {}", send_count, e);
+                    } else {
+                        send_count += 1;
+                        if send_count % 10 == 1 { // Log every 10th message to avoid spam
+                            info!("📡 Sent AgentUpdate #{} ({}ms intervals)", send_count, 100);
+                        }
+                    }
+                } else {
+                    warn!("⚠️ No primary circuit available for AgentUpdate");
+                    break;
+                }
+            }
+            
+            info!("⏹️ AgentUpdate loop stopped after {} messages", send_count);
+        });
+        
+        Ok(())
+    }
+    
+    /// Stop continuous AgentUpdate messages
+    pub fn stop_continuous_agent_updates(&self) {
+        if self.agent_update_running.swap(false, Ordering::SeqCst) {
+            info!("🛑 Stopping continuous AgentUpdate messages");
+        }
+    }
+    
+    /// Send a ViewerEffect message (pointing, beams, etc.)
+    pub async fn send_viewer_effect(&self, effect_type: crate::networking::effects::EffectType, 
+                                   source_pos: Position, target_pos: Position) -> NetworkResult<()> {
+        let circuit = self.core.primary_circuit().await
+            .ok_or(NetworkError::CircuitNotFound { id: 0 })?;
+        
+        let mut effect_manager = self.effect_manager.lock().await;
+        
+        let viewer_effect = match effect_type {
+            crate::networking::effects::EffectType::PointAt => {
+                effect_manager.create_point_at_effect(
+                    self.session_info.agent_id,
+                    self.session_info.session_id,
+                    source_pos,
+                    target_pos
+                )
+            },
+            crate::networking::effects::EffectType::Beam => {
+                effect_manager.create_beam_effect(
+                    self.session_info.agent_id,
+                    self.session_info.session_id,
+                    source_pos,
+                    target_pos
+                )
+            },
+            _ => {
+                return Err(NetworkError::Other { 
+                    reason: format!("Unsupported effect type: {:?}", effect_type) 
+                });
+            }
+        };
+        
+        circuit.send(&viewer_effect).await?;
+        info!("🎭 Sent ViewerEffect: {:?}", effect_type);
+        
+        Ok(())
+    }
+    
+    /// Set agent movement control flags
+    pub async fn set_agent_control_flags(&self, control_flags: u32) -> NetworkResult<()> {
+        {
+            let mut state = self.agent_state.write().await;
+            state.control_flags = control_flags;
+        }
+        debug!("🎮 Updated agent control flags: {:#x}", control_flags);
+        Ok(())
+    }
+    
+    /// Update camera position and orientation
+    pub async fn update_camera(&self, 
+                              center: crate::networking::packets::types::LLVector3,
+                              at_axis: crate::networking::packets::types::LLVector3,
+                              left_axis: crate::networking::packets::types::LLVector3,
+                              up_axis: crate::networking::packets::types::LLVector3,
+                              far: f32) -> NetworkResult<()> {
+        {
+            let mut state = self.agent_state.write().await;
+            state.camera_center = center;
+            state.camera_at_axis = at_axis;
+            state.camera_left_axis = left_axis;
+            state.camera_up_axis = up_axis;
+            state.far = far;
+        }
+        debug!("📷 Updated camera state");
         Ok(())
     }
     
@@ -718,6 +932,39 @@ impl Client {
         
         // Small delay to allow CompleteAgentMovement to be processed
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // PROTOCOL COMPLIANCE: Send RegionHandshakeReply after CompleteAgentMovement (from hippolog analysis)
+        let region_handshake_reply = RegionHandshakeReply {
+            agent_id: self.session_info.agent_id,
+            session_id: self.session_info.session_id,
+            flags: 5, // From official log: Flags=5
+        };
+        circuit.send(&region_handshake_reply).await?;
+        info!("🤝 Sent RegionHandshakeReply (flags=5) for protocol compliance");
+
+        // PROTOCOL COMPLIANCE: Send AgentThrottle for bandwidth management (from hippolog analysis)
+        let throttles_data = vec![0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]; // Basic throttling
+        let agent_throttle = AgentThrottle {
+            agent_id: self.session_info.agent_id,
+            session_id: self.session_info.session_id,
+            circuit_code: circuit.circuit_code(),
+            gen_counter: 0,
+            throttles: crate::networking::packets::types::LLVariable1::new(throttles_data),
+        };
+        circuit.send(&agent_throttle).await?;
+        info!("📊 Sent AgentThrottle for bandwidth management");
+
+        // PROTOCOL COMPLIANCE: Send AgentHeightWidth for viewport setup (from hippolog analysis)
+        let agent_height_width = AgentHeightWidth {
+            agent_id: self.session_info.agent_id,
+            session_id: self.session_info.session_id,
+            circuit_code: circuit.circuit_code(),
+            gen_counter: 0,
+            height: 661, // From official log
+            width: 1280, // From official log
+        };
+        circuit.send(&agent_height_width).await?;
+        info!("📐 Sent AgentHeightWidth (1280x661) for viewport setup");
         
         // Step 3: Send UUIDNameRequest for essential avatar data
         let uuid_name_request = UUIDNameRequest {
@@ -742,8 +989,50 @@ impl Client {
         
         circuit.send(&agent_fov).await?;
         info!("👁️ Sent AgentFOV with 72-degree field of view");
+
+        // PROTOCOL COMPLIANCE: Additional messages from official log (from hippolog analysis)
         
-        info!("✅ All critical handshake packets sent");
+        // AgentAnimation - Set initial animation state
+        let agent_animation = AgentAnimation {
+            agent_id: self.session_info.agent_id,
+            session_id: self.session_info.session_id,
+            animation_list: vec![AnimationListBlock {
+                anim_id: crate::networking::packets::types::LLUUID::nil(), // Standing animation (using nil for now)
+                start_anim: false, // Stop animation = false
+            }],
+            physical_avatar_event_list: vec![], // Empty for now
+        };
+        circuit.send(&agent_animation).await?;
+        info!("🕺 Sent AgentAnimation (standing state)");
+
+        // SetAlwaysRun - Set run state
+        let set_always_run = SetAlwaysRun {
+            agent_id: self.session_info.agent_id,
+            session_id: self.session_info.session_id,
+            always_run: false, // Don't always run
+        };
+        circuit.send(&set_always_run).await?;
+        info!("🏃 Sent SetAlwaysRun (false) for movement state");
+
+        // MuteListRequest - Request mute list 
+        let mute_list_request = MuteListRequest {
+            agent_id: self.session_info.agent_id,
+            session_id: self.session_info.session_id,
+            mute_crc: 0, // Initial request
+        };
+        circuit.send(&mute_list_request).await?;
+        info!("🔇 Sent MuteListRequest (CRC=0) for mute list sync");
+
+        // MoneyBalanceRequest - Request money balance
+        let money_balance_request = MoneyBalanceRequest {
+            agent_id: self.session_info.agent_id,
+            session_id: self.session_info.session_id,
+            transaction_id: crate::networking::packets::types::LLUUID::nil(),
+        };
+        circuit.send(&money_balance_request).await?;
+        info!("💰 Sent MoneyBalanceRequest for balance query");
+        
+        info!("✅ All critical handshake packets sent (protocol compliant)");
         info!("Server will respond with:");
         info!("  1. RegionHandshake (handled by RegionHandshakeHandler)");
         info!("  2. AgentMovementComplete (handled by AgentMovementCompleteHandler)");
@@ -812,7 +1101,12 @@ impl Client {
         info!("   AgentMovementComplete: ✓");
         */
 
-        info!("✅ HANDSHAKE BYPASS: Handshake packets sent, proceeding to EventQueue");
+        info!("✅ HANDSHAKE BYPASS: Handshake packets sent, waiting for circuit establishment");
+        
+        // Wait for circuit to be properly established before starting EventQueue
+        // This prevents "received message before circuit open" errors
+        info!("⏰ CLIENT CONNECT: Waiting 3 seconds for circuit establishment...");
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
         
         // Step 7: Start EventQueueGet (moved from commented section above)
         info!("🔍 CLIENT CONNECT: About to start EventQueueGet");
@@ -825,228 +1119,257 @@ impl Client {
                 return Err(e);
             }
         }
+        
+        // Step 8: Start continuous AgentUpdate messages like official viewer
+        info!("🔍 CLIENT CONNECT: About to start continuous AgentUpdate messages");
+        match self.start_continuous_agent_updates().await {
+            Ok(()) => {
+                info!("✅ CLIENT CONNECT: AgentUpdate loop started successfully");
+            }
+            Err(e) => {
+                error!("❌ CLIENT CONNECT: AgentUpdate loop failed: {}", e);
+                return Err(e);
+            }
+        }
+        
+        // Step 9: Send initial ViewerEffect messages to match official viewer behavior
+        info!("🎭 Sending initial ViewerEffect messages");
+        let source_pos = Position::new(128.0, 128.0, 25.0);
+        let target_pos = Position::new(130.0, 130.0, 25.0);
+        
+        // Send PointAt effect (Type=9 as seen in hippolog)
+        if let Err(e) = self.send_viewer_effect(
+            crate::networking::effects::EffectType::PointAt, 
+            source_pos, 
+            target_pos
+        ).await {
+            warn!("⚠️ Failed to send initial PointAt effect: {}", e);
+        }
+        
+        // Small delay between effects
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        
+        // Send Beam effect (Type=4 as seen in hippolog)
+        if let Err(e) = self.send_viewer_effect(
+            crate::networking::effects::EffectType::Beam, 
+            source_pos, 
+            target_pos
+        ).await {
+            warn!("⚠️ Failed to send initial Beam effect: {}", e);
+        }
 
         info!("🔍 CLIENT CONNECT: Method completing successfully");
         Ok(())
     }
 
-    /// Start the EventQueueGet long-polling connection
+    /// Parse LLSD XML response from EventQueue
+    fn parse_eventqueue_response(xml: &str) -> (Option<i64>, Vec<String>) {
+        let mut ack_id: Option<i64> = None;
+        let mut events: Vec<String> = Vec::new();
+        
+        match roxmltree::Document::parse(xml) {
+            Ok(doc) => {
+                debug!("📋 EVENTQUEUE: Successfully parsed LLSD XML");
+                
+                // Parse <key>ack</key><integer>N</integer> pattern
+                for node in doc.descendants() {
+                    if node.tag_name().name() == "key" && node.text() == Some("ack") {
+                        // Look for the next integer sibling
+                        if let Some(next) = node.next_sibling() {
+                            if next.tag_name().name() == "integer" {
+                                if let Some(ack_text) = next.text() {
+                                    if let Ok(ack_val) = ack_text.parse::<i64>() {
+                                        ack_id = Some(ack_val);
+                                        debug!("📋 EVENTQUEUE: Parsed ACK = {}", ack_val);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Look for event arrays and event names
+                    if node.tag_name().name() == "key" {
+                        if let Some(event_name) = node.text() {
+                            // Common EventQueue event types
+                            if ["EnableSimulator", "CrossedRegion", "TeleportProgress", "TeleportFinish",
+                                "EstablishAgentCommunication", "DisableSimulator", "AgentGroupDataUpdate"].contains(&event_name) {
+                                events.push(event_name.to_string());
+                                info!("📨 EVENTQUEUE: Found {} event", event_name);
+                            }
+                        }
+                    }
+                }
+                
+                if events.is_empty() && ack_id.is_some() {
+                    debug!("📋 EVENTQUEUE: No events in response, just ACK");
+                }
+            }
+            Err(e) => {
+                warn!("❌ EVENTQUEUE: Failed to parse LLSD XML: {}", e);
+                debug!("❌ EVENTQUEUE: Problematic XML (first 500 chars): {}", 
+                       xml.chars().take(500).collect::<String>());
+            }
+        }
+        
+        (ack_id, events)
+    }
+
+    /// Start EventQueueGet long-polling (based on main branch session.rs:577-635)
     async fn start_event_queue_get(&self) -> NetworkResult<()> {
-        info!("🔍 START_EVENT_QUEUE_GET: Method starting");
-        let eqg_url = self.session_info.capabilities.as_ref()
+        let eq_url = self.session_info.capabilities.as_ref()
             .and_then(|caps| caps.get("EventQueueGet"))
             .ok_or_else(|| NetworkError::Other { reason: "EventQueueGet capability not found".to_string() })?
             .clone();
 
-        info!("🔍 START_EVENT_QUEUE_GET: EventQueueGet URL found: {}", eqg_url);
-        info!("Starting EventQueueGet connection to {}", eqg_url);
+        info!("🔍 EVENTQUEUE: Starting EventQueueGet connection to {}", eq_url);
+        info!("🔍 EVENTQUEUE: Using UDP listen port: {}", 65186);
 
-        let agent = self.http_agent.clone();
-        let session_id = self.session_info.session_id;
-        let agent_id = self.session_info.agent_id;
-        let eqg_url = eqg_url.clone();
-
+        let client = self.http_client.clone();
+        let udp_port = 65186; // Standard UDP port used by official viewer
+        
         tokio::spawn(async move {
-            let mut ack_id: Option<i64> = None;
-            let mut consecutive_errors = 0;
-            const MAX_CONSECUTIVE_ERRORS: u32 = 10;
+            let mut ack: Option<i32> = Some(0); // Always send <ack>0> in first request for Hippolyzer compatibility
+            let mut poll_count = 0u64;
+            let mut consecutive_errors = 0u32;
+            
+            info!("🔄 EVENTQUEUE: Starting polling loop");
             
             loop {
-                // Build request body to match official viewer format exactly
-                let request_body = if let Some(ack) = ack_id {
-                    format!("<llsd><map><key>ack</key><integer>{}</integer><key>done</key><boolean>0</boolean></map></llsd>", ack)
+                poll_count += 1;
+                info!("🔄 EVENTQUEUE: Poll #{} starting", poll_count);
+                let payload = if let Some(ack_val) = ack {
+                    format!(r#"<?xml version="1.0" ?><llsd><map><key>ack</key><integer>{}</integer><key>done</key><boolean>false</boolean></map></llsd>"#, ack_val)
                 } else {
-                    "<llsd><map><key>ack</key><undef /><key>done</key><boolean>0</boolean></map></llsd>".to_string()
+                    r#"<?xml version="1.0" ?><llsd><map><key>done</key><boolean>false</boolean></map></llsd>"#.to_string()
                 };
                 
-                debug!("Sending EventQueueGet request with ack: {:?}", ack_id);
+                info!("🔄 EVENTQUEUE: Poll #{} - Sending POST request", poll_count);
+                debug!("🔄 EVENTQUEUE: Poll #{} - Payload: {}", poll_count, payload);
                 
-                info!("🌐 HTTP REQUEST: Sending EventQueueGet request");
-                info!("   URL: {}", eqg_url);
-                info!("   ACK ID: {:?}", ack_id);
-                
-                let request_start = std::time::Instant::now();
-                let agent_clone = agent.clone();
-                let url_clone = eqg_url.clone();
-                let body_clone = request_body.clone();
-                
-                match tokio::task::spawn_blocking(move || {
-                    agent_clone
-                        .post(&url_clone)
-                        .header("Accept-Encoding", "deflate, gzip")
-                        .header("Connection", "keep-alive") 
-                        .header("Keep-Alive", "300")
+                // Add timeout to prevent hanging - EventQueue can have long waits but not infinite
+                let resp_result = tokio::time::timeout(
+                    std::time::Duration::from_secs(35), // EventQueue long-polls up to 30s, give 5s buffer
+                    client
+                        .post(&eq_url)
                         .header("Accept", "application/llsd+xml")
                         .header("Content-Type", "application/llsd+xml")
-                        .header("X-SecondLife-UDP-Listen-Port", "65186")
-                        .send(&body_clone)
-                }).await {
-                    Ok(response_result) => {
-                        match response_result {
-                            Ok(mut response) => {
-                                let status = response.status();
-                                let response_time = request_start.elapsed();
-                                
-                                info!("🌐 HTTP RESPONSE: EventQueueGet response received");
-                                info!("   Status: {}", status);
-                                info!("   Response time: {:?}", response_time);
-                                
-                                // Handle different HTTP responses per SL protocol
-                                match status.as_u16() {
-                                    200 => {
-                                        // Successful response with events
-                                        info!("✅ HTTP RESPONSE: EventQueueGet successful (200 OK)");
-                                        match response.body_mut().read_to_string() {
-                                            Ok(text) => {
-                                        info!("📥 HTTP RESPONSE: EventQueueGet data received");
-                                        info!("   Response size: {} bytes", text.len());
-                                        debug!("   Response content: {}", text);
-                                        
-                                        // Parse LLSD XML response (simplified parsing)
-                                        if let Some(id_match) = text.find("<key>id</key><integer>") {
-                                            if let Some(id_end) = text[id_match + 22..].find("</integer>") {
-                                                if let Ok(new_ack_id) = text[id_match + 22..id_match + 22 + id_end].parse::<i64>() {
-                                                    info!("📝 HTTP RESPONSE: Updated ACK ID from {:?} to {}", ack_id, new_ack_id);
-                                                    ack_id = Some(new_ack_id);
-                                                }
-                                            }
-                                        }
-                                        
-                                        // Process specific event types critical for region transitions
-                                        if text.contains("EnableSimulator") {
-                                            info!("🌐 HTTP RESPONSE EVENT: EnableSimulator event received - neighbor region available");
-                                            Self::handle_enable_simulator_event(&text).await;
-                                        } else if text.contains("CrossedRegion") {
-                                            info!("🎉 HTTP RESPONSE EVENT: CrossedRegion event received - region transition complete");
-                                            Self::handle_crossed_region_event(&text).await;
-                                        } else if text.contains("TeleportProgress") {
-                                            info!("✈️ HTTP RESPONSE EVENT: TeleportProgress event received");
-                                            Self::handle_teleport_progress_event(&text).await;
-                                        } else if text.contains("TeleportFinish") {
-                                            info!("✅ HTTP RESPONSE EVENT: TeleportFinish event received - teleport complete");
-                                            Self::handle_teleport_finish_event(&text).await;
-                                        } else if text.contains("DisableSimulator") {
-                                            info!("🌌 HTTP RESPONSE EVENT: DisableSimulator event received - neighbor region offline");
-                                            Self::handle_disable_simulator_event(&text).await;
-                                        } else {
-                                            info!("📧 HTTP RESPONSE EVENT: Other event received");
-                                            debug!("   Event preview: {}", text.lines().next().unwrap_or("<unknown>"));
-                                        }
-                                        
-                                        consecutive_errors = 0; // Reset error counter
-                                        info!("✅ HTTP RESPONSE: EventQueueGet processing completed successfully");
-                                            },
-                                            Err(e) => {
-                                                warn!("❌ HTTP RESPONSE ERROR: Failed to read EventQueueGet response text");
-                                                warn!("   Error: {}", e);
-                                                warn!("   Response time: {:?}", response_time);
-                                                consecutive_errors += 1;
-                                            }
-                                        }
-                                    },
-                                    502 => {
-                                        // 502 Bad Gateway = no events available, continue polling
-                                        info!("🔄 HTTP RESPONSE: EventQueueGet no events available (502 Bad Gateway)");
-                                        info!("   Response time: {:?}", response_time);
-                                        info!("   Continuing long-polling...");
-                                        consecutive_errors = 0;
-                                    },
-                                    499 => {
-                                        // 499 Client Closed Request = server wants us to reconnect
-                                        info!("🔄 HTTP RESPONSE: EventQueueGet server requested reconnection (499)");
-                                        info!("   Response time: {:?}", response_time);
-                                        info!("   Resetting ACK ID and reconnecting...");
-                                        ack_id = None; // Reset acknowledgment
-                                    },
-                                    _ => {
-                                        warn!("❌ HTTP RESPONSE ERROR: EventQueueGet request failed");
-                                        warn!("   Status: {}", status);
-                                        warn!("   Response time: {:?}", response_time);
-                                        consecutive_errors += 1;
-                                    }
+                        .header("X-SecondLife-UDP-Listen-Port", udp_port.to_string())
+                        .body(payload)
+                        .send()
+                ).await;
+                
+                // Store response status for retry logic before consuming response
+                let retry_info = match &resp_result {
+                    Ok(Ok(response)) => Some((response.status().is_success(), response.status().as_u16())),
+                    Ok(Err(_)) => None,
+                    Err(_) => None,
+                };
+                
+                match resp_result {
+                    Ok(Ok(response)) => {
+                        let status = response.status();
+                        info!("🔄 EVENTQUEUE: Poll #{} - Got HTTP response: {}", poll_count, status);
+                        
+                        match response.text().await {
+                            Ok(text) => {
+                                debug!("🔄 EVENTQUEUE: Poll #{} - Response body: {} bytes", poll_count, text.len());
+                                if !text.is_empty() {
+                                    debug!("🔄 EVENTQUEUE: Poll #{} - First 200 chars: {}", poll_count, 
+                                           text.chars().take(200).collect::<String>());
                                 }
-                            },
+                                
+                                if status.is_success() {
+                                    info!("✅ EventQueueGet success: {} bytes", text.len());
+                                    
+                                    // Parse LLSD XML response properly
+                                    let (parsed_ack, events) = Self::parse_eventqueue_response(&text);
+                                    
+                                    // Update ACK from parsed response
+                                    if let Some(new_ack_val) = parsed_ack {
+                                        ack = Some(new_ack_val as i32); // Convert i64 to i32 for compatibility
+                                        info!("📋 EventQueue: Updated ACK = {}", new_ack_val);
+                                    }
+                                    
+                                    // Process parsed events
+                                    if events.is_empty() {
+                                        if parsed_ack.is_some() {
+                                            debug!("📋 EventQueue: ACK-only response (no events)");
+                                        } else {
+                                            debug!("📨 EventQueue: Empty response or failed to parse events");
+                                        }
+                                    } else {
+                                        info!("📨 EventQueue: Processed {} events: {:?}", events.len(), events);
+                                        
+                                        // Log specific event types with appropriate icons
+                                        for event in &events {
+                                            match event.as_str() {
+                                                "EnableSimulator" => info!("🌐 EventQueue: EnableSimulator event received"),
+                                                "CrossedRegion" => info!("🎉 EventQueue: CrossedRegion event received"), 
+                                                "TeleportProgress" => info!("✈️ EventQueue: TeleportProgress event received"),
+                                                "TeleportFinish" => info!("✅ EventQueue: TeleportFinish event received"),
+                                                "EstablishAgentCommunication" => info!("🤝 EventQueue: EstablishAgentCommunication event received"),
+                                                "DisableSimulator" => info!("🔌 EventQueue: DisableSimulator event received"),
+                                                "AgentGroupDataUpdate" => info!("👥 EventQueue: AgentGroupDataUpdate event received"),
+                                                _ => info!("📨 EventQueue: {} event received", event),
+                                            }
+                                        }
+                                    }
+                                } else if status.as_u16() == 502 {
+                                    // 502 Bad Gateway = no events available, continue polling
+                                    info!("🔄 EventQueue: No events (502) - normal long-poll timeout");
+                                } else if status.as_u16() == 499 {
+                                    // 499 Client Closed Request = server wants us to reconnect
+                                    info!("🔄 EventQueue: Server requested reconnection (499)");
+                                    ack = None; // Reset acknowledgment
+                                } else {
+                                    warn!("❌ EventQueue failed: HTTP {} - {}", status, text);
+                                }
+                            }
                             Err(e) => {
-                                let response_time = request_start.elapsed();
-                                warn!("❌ HTTP REQUEST ERROR: Failed to send EventQueueGet request");
-                                warn!("   Error: {}", e);
-                                warn!("   Request time: {:?}", response_time);
-                                consecutive_errors += 1;
+                                warn!("❌ EventQueue read error on poll #{}: {}", poll_count, e);
                             }
                         }
-                    },
-                    Err(e) => {
-                        let response_time = request_start.elapsed();
-                        warn!("❌ HTTP TASK ERROR: Failed to execute EventQueueGet request task");
-                        warn!("   Error: {}", e);
-                        warn!("   Task time: {:?}", response_time);
-                        consecutive_errors += 1;
+                    }
+                    Ok(Err(e)) => {
+                        warn!("❌ EventQueue request error on poll #{}: {}", poll_count, e);
+                    }
+                    Err(_timeout) => {
+                        warn!("⏰ EventQueue timeout on poll #{} (35s) - this indicates connection issues", poll_count);
                     }
                 }
                 
-                // Handle consecutive errors
-                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
-                    tracing::error!("EventQueueGet: Too many consecutive errors ({}), backing off", consecutive_errors);
-                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                    consecutive_errors = 0;
-                } else if consecutive_errors > 0 {
-                    // Exponential backoff for errors
-                    let delay = std::cmp::min(consecutive_errors * 2, 30);
-                    tokio::time::sleep(std::time::Duration::from_secs(delay as u64)).await;
-                } else {
-                    // Normal operation - brief pause before next poll
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                }
+                // Adaptive retry delay with exponential backoff for errors
+                let retry_delay = match retry_info {
+                    Some((true, _)) => {
+                        // Successful response - reset error count and use normal delay
+                        consecutive_errors = 0;
+                        std::time::Duration::from_secs(1) // Less aggressive than 100ms
+                    }
+                    Some((false, 502)) => {
+                        // Normal long-poll timeout - reset error count, quick retry
+                        consecutive_errors = 0;
+                        std::time::Duration::from_millis(500)
+                    }
+                    Some((false, _)) => {
+                        // Other HTTP errors - increment error count and backoff
+                        consecutive_errors += 1;
+                        let backoff_secs = std::cmp::min(2u64.pow(consecutive_errors), 30);
+                        std::time::Duration::from_secs(backoff_secs)
+                    }
+                    None => {
+                        // Network errors or timeout - increment error count and backoff
+                        consecutive_errors += 1;
+                        let backoff_secs = std::cmp::min(5u64.pow(consecutive_errors), 60);
+                        std::time::Duration::from_secs(backoff_secs)
+                    }
+                };
+                
+                debug!("🔄 EVENTQUEUE: Poll #{} - Waiting {:?} before next poll", poll_count, retry_delay);
+                tokio::time::sleep(retry_delay).await;
             }
         });
 
         Ok(())
-    }
-    
-    /// Handle EnableSimulator event - establishes connection to neighboring region
-    async fn handle_enable_simulator_event(event_xml: &str) {
-        // EnableSimulator contains IP, Port, and RegionHandle for neighbor region
-        // Example: <key>IP</key><integer>3232235777</integer><key>Port</key><integer>9000</integer>
-        debug!("EnableSimulator event: {}", event_xml);
-        
-        // TODO: Parse LLSD XML to extract IP/Port/Handle and establish neighbor circuit
-        // This is critical for region crossings and seeing into adjacent regions
-        info!("🔗 TODO: Implement neighbor region circuit establishment");
-    }
-    
-    /// Handle CrossedRegion event - completes region transition
-    async fn handle_crossed_region_event(event_xml: &str) {
-        debug!("CrossedRegion event: {}", event_xml);
-        
-        // CrossedRegion indicates successful handoff to new region
-        // The client should now consider the new region as primary
-        info!("✅ Region crossing completed successfully");
-    }
-    
-    /// Handle TeleportProgress event - teleport status update
-    async fn handle_teleport_progress_event(event_xml: &str) {
-        debug!("TeleportProgress event: {}", event_xml);
-        info!("📍 Teleport in progress...");
-    }
-    
-    /// Handle TeleportFinish event - teleport completion
-    async fn handle_teleport_finish_event(event_xml: &str) {
-        debug!("TeleportFinish event: {}", event_xml);
-        
-        // TeleportFinish signals client should begin rendering new location
-        // Contains final position and region information
-        info!("🎯 Teleport completed - should begin rendering new location");
-        
-        // TODO: Parse event data to extract final position and establish new primary circuit
-    }
-    
-    /// Handle DisableSimulator event - neighbor region going offline
-    async fn handle_disable_simulator_event(event_xml: &str) {
-        debug!("DisableSimulator event: {}", event_xml);
-        
-        // DisableSimulator indicates a neighbor region is going offline
-        // Should close any circuits to that region
-        info!("🔌 Neighbor region disabled - should close relevant circuits");
     }
     
     /// Start background tasks

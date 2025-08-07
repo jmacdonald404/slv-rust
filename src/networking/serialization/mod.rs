@@ -5,7 +5,11 @@
 
 use crate::networking::{NetworkError, NetworkResult};
 use crate::networking::packets::{Packet, PacketFrequency, PacketWrapper};
-use crate::networking::packets::generated::{UseCircuitCode, CompleteAgentMovement};
+use crate::networking::packets::generated::{
+    UseCircuitCode, CompleteAgentMovement, RegionHandshakeReply, AgentThrottle, 
+    AgentHeightWidth, AgentAnimation, SetAlwaysRun, MuteListRequest, 
+    MoneyBalanceRequest, UUIDNameRequest, AgentFOV, ViewerEffect, AgentUpdate
+};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use std::collections::HashMap;
 use std::any::Any;
@@ -78,6 +82,28 @@ impl PacketSerializer {
             self.serialize_use_circuit_code(use_circuit_code, &mut data)?;
         } else if let Some(complete_agent_movement) = packet_any.downcast_ref::<CompleteAgentMovement>() {
             self.serialize_complete_agent_movement(complete_agent_movement, &mut data)?;
+        } else if let Some(region_handshake_reply) = packet_any.downcast_ref::<RegionHandshakeReply>() {
+            self.serialize_region_handshake_reply(region_handshake_reply, &mut data)?;
+        } else if let Some(agent_throttle) = packet_any.downcast_ref::<AgentThrottle>() {
+            self.serialize_agent_throttle(agent_throttle, &mut data)?;
+        } else if let Some(agent_height_width) = packet_any.downcast_ref::<AgentHeightWidth>() {
+            self.serialize_agent_height_width(agent_height_width, &mut data)?;
+        } else if let Some(agent_animation) = packet_any.downcast_ref::<AgentAnimation>() {
+            self.serialize_agent_animation(agent_animation, &mut data)?;
+        } else if let Some(set_always_run) = packet_any.downcast_ref::<SetAlwaysRun>() {
+            self.serialize_set_always_run(set_always_run, &mut data)?;
+        } else if let Some(mute_list_request) = packet_any.downcast_ref::<MuteListRequest>() {
+            self.serialize_mute_list_request(mute_list_request, &mut data)?;
+        } else if let Some(money_balance_request) = packet_any.downcast_ref::<MoneyBalanceRequest>() {
+            self.serialize_money_balance_request(money_balance_request, &mut data)?;
+        } else if let Some(uuid_name_request) = packet_any.downcast_ref::<UUIDNameRequest>() {
+            self.serialize_uuid_name_request(uuid_name_request, &mut data)?;
+        } else if let Some(agent_fov) = packet_any.downcast_ref::<AgentFOV>() {
+            self.serialize_agent_fov(agent_fov, &mut data)?;
+        } else if let Some(viewer_effect) = packet_any.downcast_ref::<ViewerEffect>() {
+            self.serialize_viewer_effect(viewer_effect, &mut data)?;
+        } else if let Some(agent_update) = packet_any.downcast_ref::<AgentUpdate>() {
+            self.serialize_agent_update(agent_update, &mut data)?;
         } else {
             // Fallback to bincode for unimplemented packets
             let bincode_data = bincode::serialize(packet)
@@ -134,6 +160,316 @@ impl PacketSerializer {
             .map_err(|e| NetworkError::PacketEncode { 
                 reason: format!("Failed to write circuit code: {}", e) 
             })?;
+        
+        Ok(())
+    }
+
+    /// Serialize RegionHandshakeReply packet in proper SL format
+    fn serialize_region_handshake_reply(&self, packet: &RegionHandshakeReply, data: &mut Vec<u8>) -> NetworkResult<()> {
+        use byteorder::{WriteBytesExt, LittleEndian};
+        
+        // AgentID: LLUUID (16 bytes)
+        data.extend_from_slice(packet.agent_id.as_bytes());
+        // SessionID: LLUUID (16 bytes) 
+        data.extend_from_slice(packet.session_id.as_bytes());
+        // Flags: U32 (4 bytes, little-endian)
+        data.write_u32::<LittleEndian>(packet.flags)
+            .map_err(|e| NetworkError::PacketEncode { reason: format!("Failed to write flags: {}", e) })?;
+        Ok(())
+    }
+
+    /// Serialize AgentThrottle packet in proper SL format
+    fn serialize_agent_throttle(&self, packet: &AgentThrottle, data: &mut Vec<u8>) -> NetworkResult<()> {
+        use byteorder::{WriteBytesExt, LittleEndian};
+        
+        // AgentID: LLUUID (16 bytes)
+        data.extend_from_slice(packet.agent_id.as_bytes());
+        // SessionID: LLUUID (16 bytes)
+        data.extend_from_slice(packet.session_id.as_bytes());
+        // CircuitCode: U32 (4 bytes, little-endian)
+        data.write_u32::<LittleEndian>(packet.circuit_code)
+            .map_err(|e| NetworkError::PacketEncode { reason: format!("Failed to write circuit code: {}", e) })?;
+        // GenCounter: U32 (4 bytes, little-endian)
+        data.write_u32::<LittleEndian>(packet.gen_counter)
+            .map_err(|e| NetworkError::PacketEncode { reason: format!("Failed to write gen counter: {}", e) })?;
+        // Throttles: Variable1 (1 byte length + data)
+        data.write_u8(packet.throttles.data.len() as u8)
+            .map_err(|e| NetworkError::PacketEncode { reason: format!("Failed to write throttle length: {}", e) })?;
+        data.extend_from_slice(&packet.throttles.data);
+        Ok(())
+    }
+
+    /// Serialize AgentHeightWidth packet in proper SL format  
+    fn serialize_agent_height_width(&self, packet: &AgentHeightWidth, data: &mut Vec<u8>) -> NetworkResult<()> {
+        use byteorder::{WriteBytesExt, LittleEndian};
+        
+        // AgentID: LLUUID (16 bytes)
+        data.extend_from_slice(packet.agent_id.as_bytes());
+        // SessionID: LLUUID (16 bytes)
+        data.extend_from_slice(packet.session_id.as_bytes());
+        // CircuitCode: U32 (4 bytes, little-endian)
+        data.write_u32::<LittleEndian>(packet.circuit_code)
+            .map_err(|e| NetworkError::PacketEncode { reason: format!("Failed to write circuit code: {}", e) })?;
+        // GenCounter: U32 (4 bytes, little-endian)
+        data.write_u32::<LittleEndian>(packet.gen_counter)
+            .map_err(|e| NetworkError::PacketEncode { reason: format!("Failed to write gen counter: {}", e) })?;
+        // Height: U16 (2 bytes, little-endian)
+        data.write_u16::<LittleEndian>(packet.height)
+            .map_err(|e| NetworkError::PacketEncode { reason: format!("Failed to write height: {}", e) })?;
+        // Width: U16 (2 bytes, little-endian)
+        data.write_u16::<LittleEndian>(packet.width)
+            .map_err(|e| NetworkError::PacketEncode { reason: format!("Failed to write width: {}", e) })?;
+        Ok(())
+    }
+
+    /// Serialize AgentAnimation packet in proper SL format
+    fn serialize_agent_animation(&self, packet: &AgentAnimation, data: &mut Vec<u8>) -> NetworkResult<()> {
+        use byteorder::{WriteBytesExt, LittleEndian};
+        
+        // AgentID: LLUUID (16 bytes)
+        data.extend_from_slice(packet.agent_id.as_bytes());
+        // SessionID: LLUUID (16 bytes)
+        data.extend_from_slice(packet.session_id.as_bytes());
+        
+        // AnimationList variable block
+        data.write_u8(packet.animation_list.len() as u8)
+            .map_err(|e| NetworkError::PacketEncode { reason: format!("Failed to write animation list length: {}", e) })?;
+        for anim in &packet.animation_list {
+            // AnimID: LLUUID (16 bytes)
+            data.extend_from_slice(anim.anim_id.as_bytes());
+            // StartAnim: Bool (1 byte)
+            data.write_u8(if anim.start_anim { 1 } else { 0 })
+                .map_err(|e| NetworkError::PacketEncode { reason: format!("Failed to write start_anim: {}", e) })?;
+        }
+        
+        // PhysicalAvatarEventList variable block  
+        data.write_u8(packet.physical_avatar_event_list.len() as u8)
+            .map_err(|e| NetworkError::PacketEncode { reason: format!("Failed to write physical avatar event list length: {}", e) })?;
+        for event in &packet.physical_avatar_event_list {
+            // TypeData: Variable1 (length + data)
+            data.write_u8(event.type_data.data.len() as u8)
+                .map_err(|e| NetworkError::PacketEncode { reason: format!("Failed to write type data length: {}", e) })?;
+            data.extend_from_slice(&event.type_data.data);
+        }
+        Ok(())
+    }
+
+    /// Serialize SetAlwaysRun packet in proper SL format
+    fn serialize_set_always_run(&self, packet: &SetAlwaysRun, data: &mut Vec<u8>) -> NetworkResult<()> {
+        // AgentID: LLUUID (16 bytes)
+        data.extend_from_slice(packet.agent_id.as_bytes());
+        // SessionID: LLUUID (16 bytes)
+        data.extend_from_slice(packet.session_id.as_bytes());
+        // AlwaysRun: Bool (1 byte)
+        data.push(if packet.always_run { 1 } else { 0 });
+        Ok(())
+    }
+
+    /// Serialize MuteListRequest packet in proper SL format
+    fn serialize_mute_list_request(&self, packet: &MuteListRequest, data: &mut Vec<u8>) -> NetworkResult<()> {
+        use byteorder::{WriteBytesExt, LittleEndian};
+        
+        // AgentID: LLUUID (16 bytes)
+        data.extend_from_slice(packet.agent_id.as_bytes());
+        // SessionID: LLUUID (16 bytes)
+        data.extend_from_slice(packet.session_id.as_bytes());
+        // MuteCRC: U32 (4 bytes, little-endian)
+        data.write_u32::<LittleEndian>(packet.mute_crc)
+            .map_err(|e| NetworkError::PacketEncode { reason: format!("Failed to write mute crc: {}", e) })?;
+        Ok(())
+    }
+
+    /// Serialize MoneyBalanceRequest packet in proper SL format
+    fn serialize_money_balance_request(&self, packet: &MoneyBalanceRequest, data: &mut Vec<u8>) -> NetworkResult<()> {
+        // AgentID: LLUUID (16 bytes)
+        data.extend_from_slice(packet.agent_id.as_bytes());
+        // SessionID: LLUUID (16 bytes)
+        data.extend_from_slice(packet.session_id.as_bytes());
+        // TransactionID: LLUUID (16 bytes)
+        data.extend_from_slice(packet.transaction_id.as_bytes());
+        Ok(())
+    }
+
+    /// Serialize UUIDNameRequest packet in proper SL format
+    fn serialize_uuid_name_request(&self, packet: &UUIDNameRequest, data: &mut Vec<u8>) -> NetworkResult<()> {
+        // UUIDNameBlock variable block
+        data.push(packet.uuidname_block.len() as u8);
+        for block in &packet.uuidname_block {
+            // ID: LLUUID (16 bytes)
+            data.extend_from_slice(block.id.as_bytes());
+        }
+        Ok(())
+    }
+
+    /// Serialize AgentFOV packet in proper SL format
+    fn serialize_agent_fov(&self, packet: &AgentFOV, data: &mut Vec<u8>) -> NetworkResult<()> {
+        use byteorder::{WriteBytesExt, LittleEndian};
+        
+        // AgentID: LLUUID (16 bytes)
+        data.extend_from_slice(packet.agent_id.as_bytes());
+        // SessionID: LLUUID (16 bytes)
+        data.extend_from_slice(packet.session_id.as_bytes());
+        // CircuitCode: U32 (4 bytes, little-endian)
+        data.write_u32::<LittleEndian>(packet.circuit_code)
+            .map_err(|e| NetworkError::PacketEncode { reason: format!("Failed to write circuit code: {}", e) })?;
+        // GenCounter: U32 (4 bytes, little-endian)
+        data.write_u32::<LittleEndian>(packet.gen_counter)
+            .map_err(|e| NetworkError::PacketEncode { reason: format!("Failed to write gen counter: {}", e) })?;
+        // VerticalAngle: F32 (4 bytes, little-endian)
+        data.write_f32::<LittleEndian>(packet.vertical_angle)
+            .map_err(|e| NetworkError::PacketEncode { reason: format!("Failed to write vertical angle: {}", e) })?;
+        Ok(())
+    }
+
+    /// Serialize ViewerEffect packet in proper SL format
+    /// Based on message_template.msg:
+    /// - AgentData Single block: AgentID + SessionID
+    /// - Effect Variable block: count + (ID + AgentID + Type + Duration + Color[4] + TypeData[Variable1]) for each effect
+    fn serialize_viewer_effect(&self, packet: &ViewerEffect, data: &mut Vec<u8>) -> NetworkResult<()> {
+        use byteorder::{WriteBytesExt, LittleEndian};
+        
+        // AgentData single block (32 bytes)
+        data.extend_from_slice(packet.agent_id.as_bytes());   // LLUUID (16 bytes)
+        data.extend_from_slice(packet.session_id.as_bytes()); // LLUUID (16 bytes)
+        
+        // Effect Variable block
+        if packet.effect.len() > 255 {
+            return Err(NetworkError::PacketEncode {
+                reason: "ViewerEffect: Too many effects (max 255)".to_string()
+            });
+        }
+        data.push(packet.effect.len() as u8); // Variable block count (1 byte)
+        
+        for effect in &packet.effect {
+            // ID: LLUUID (16 bytes)
+            data.extend_from_slice(effect.id.as_bytes());
+            
+            // AgentID: LLUUID (16 bytes) 
+            data.extend_from_slice(effect.agent_id.as_bytes());
+            
+            // Type: U8 (1 byte)
+            data.push(effect.r#type);
+            
+            // Duration: F32 (4 bytes, little-endian)
+            data.write_f32::<LittleEndian>(effect.duration)
+                .map_err(|e| NetworkError::PacketEncode { reason: format!("Failed to write effect duration: {}", e) })?;
+            
+            // Color: Fixed 4 bytes (Color4U format: R,G,B,A)
+            if effect.color.len() != 4 {
+                return Err(NetworkError::PacketEncode {
+                    reason: format!("ViewerEffect: Color must be exactly 4 bytes, got {}", effect.color.len())
+                });
+            }
+            data.extend_from_slice(&effect.color);
+            
+            // TypeData: Variable1 (length byte + data)
+            let type_data = &effect.type_data.data;
+            if type_data.len() > 255 {
+                return Err(NetworkError::PacketEncode {
+                    reason: format!("ViewerEffect: TypeData too large (max 255 bytes), got {}", type_data.len())
+                });
+            }
+            data.push(type_data.len() as u8);  // Variable1 length (1 byte)
+            data.extend_from_slice(type_data);  // Variable1 data (n bytes)
+        }
+        
+        Ok(())
+    }
+
+    /// Serialize AgentUpdate packet in proper SL format
+    /// Based on message_template.msg: AgentData Single block with precise field layout
+    fn serialize_agent_update(&self, packet: &AgentUpdate, data: &mut Vec<u8>) -> NetworkResult<()> {
+        use byteorder::{WriteBytesExt, LittleEndian};
+        
+        // AgentData single block - following exact template order:
+        // AgentID (16 bytes), SessionID (16 bytes), BodyRotation (16 bytes), HeadRotation (16 bytes),
+        // State (1 byte), CameraCenter (12 bytes), CameraAtAxis (12 bytes), CameraLeftAxis (12 bytes),
+        // CameraUpAxis (12 bytes), Far (4 bytes), ControlFlags (4 bytes), Flags (1 byte)
+        // Total: 16+16+16+16+1+12+12+12+12+4+4+1 = 122 bytes
+        
+        // AgentID: LLUUID (16 bytes)
+        data.extend_from_slice(packet.agent_id.as_bytes());
+        
+        // SessionID: LLUUID (16 bytes)  
+        data.extend_from_slice(packet.session_id.as_bytes());
+        
+        // BodyRotation: LLQuaternion (16 bytes: x,y,z,w as f32s - AgentUpdate uses FULL quaternions, not compressed)
+        data.write_f32::<LittleEndian>(packet.body_rotation.x)
+            .map_err(|e| NetworkError::PacketEncode { reason: format!("Failed to write body rotation x: {}", e) })?;
+        data.write_f32::<LittleEndian>(packet.body_rotation.y)
+            .map_err(|e| NetworkError::PacketEncode { reason: format!("Failed to write body rotation y: {}", e) })?;
+        data.write_f32::<LittleEndian>(packet.body_rotation.z)
+            .map_err(|e| NetworkError::PacketEncode { reason: format!("Failed to write body rotation z: {}", e) })?;
+        // Calculate and write W component: W = sqrt(1 - (X² + Y² + Z²))
+        let x = packet.body_rotation.x;
+        let y = packet.body_rotation.y; 
+        let z = packet.body_rotation.z;
+        let w_squared = 1.0 - (x*x + y*y + z*z);
+        let w = if w_squared > 0.0 { w_squared.sqrt() } else { 0.0 };
+        data.write_f32::<LittleEndian>(w)
+            .map_err(|e| NetworkError::PacketEncode { reason: format!("Failed to write body rotation w: {}", e) })?;
+        
+        // HeadRotation: LLQuaternion (16 bytes: x,y,z,w as f32s - AgentUpdate uses FULL quaternions, not compressed)
+        data.write_f32::<LittleEndian>(packet.head_rotation.x)
+            .map_err(|e| NetworkError::PacketEncode { reason: format!("Failed to write head rotation x: {}", e) })?;
+        data.write_f32::<LittleEndian>(packet.head_rotation.y)
+            .map_err(|e| NetworkError::PacketEncode { reason: format!("Failed to write head rotation y: {}", e) })?;
+        data.write_f32::<LittleEndian>(packet.head_rotation.z)
+            .map_err(|e| NetworkError::PacketEncode { reason: format!("Failed to write head rotation z: {}", e) })?;
+        // Calculate and write W component: W = sqrt(1 - (X² + Y² + Z²))
+        let hx = packet.head_rotation.x;
+        let hy = packet.head_rotation.y;
+        let hz = packet.head_rotation.z;
+        let hw_squared = 1.0 - (hx*hx + hy*hy + hz*hz);
+        let hw = if hw_squared > 0.0 { hw_squared.sqrt() } else { 0.0 };
+        data.write_f32::<LittleEndian>(hw)
+            .map_err(|e| NetworkError::PacketEncode { reason: format!("Failed to write head rotation w: {}", e) })?;
+        
+        // State: U8 (1 byte)
+        data.push(packet.state);
+        
+        // CameraCenter: LLVector3 (12 bytes: x,y,z as f32s)
+        data.write_f32::<LittleEndian>(packet.camera_center.x)
+            .map_err(|e| NetworkError::PacketEncode { reason: format!("Failed to write camera center x: {}", e) })?;
+        data.write_f32::<LittleEndian>(packet.camera_center.y)
+            .map_err(|e| NetworkError::PacketEncode { reason: format!("Failed to write camera center y: {}", e) })?;
+        data.write_f32::<LittleEndian>(packet.camera_center.z)
+            .map_err(|e| NetworkError::PacketEncode { reason: format!("Failed to write camera center z: {}", e) })?;
+        
+        // CameraAtAxis: LLVector3 (12 bytes: x,y,z as f32s)
+        data.write_f32::<LittleEndian>(packet.camera_at_axis.x)
+            .map_err(|e| NetworkError::PacketEncode { reason: format!("Failed to write camera at axis x: {}", e) })?;
+        data.write_f32::<LittleEndian>(packet.camera_at_axis.y)
+            .map_err(|e| NetworkError::PacketEncode { reason: format!("Failed to write camera at axis y: {}", e) })?;
+        data.write_f32::<LittleEndian>(packet.camera_at_axis.z)
+            .map_err(|e| NetworkError::PacketEncode { reason: format!("Failed to write camera at axis z: {}", e) })?;
+        
+        // CameraLeftAxis: LLVector3 (12 bytes: x,y,z as f32s)
+        data.write_f32::<LittleEndian>(packet.camera_left_axis.x)
+            .map_err(|e| NetworkError::PacketEncode { reason: format!("Failed to write camera left axis x: {}", e) })?;
+        data.write_f32::<LittleEndian>(packet.camera_left_axis.y)
+            .map_err(|e| NetworkError::PacketEncode { reason: format!("Failed to write camera left axis y: {}", e) })?;
+        data.write_f32::<LittleEndian>(packet.camera_left_axis.z)
+            .map_err(|e| NetworkError::PacketEncode { reason: format!("Failed to write camera left axis z: {}", e) })?;
+        
+        // CameraUpAxis: LLVector3 (12 bytes: x,y,z as f32s)
+        data.write_f32::<LittleEndian>(packet.camera_up_axis.x)
+            .map_err(|e| NetworkError::PacketEncode { reason: format!("Failed to write camera up axis x: {}", e) })?;
+        data.write_f32::<LittleEndian>(packet.camera_up_axis.y)
+            .map_err(|e| NetworkError::PacketEncode { reason: format!("Failed to write camera up axis y: {}", e) })?;
+        data.write_f32::<LittleEndian>(packet.camera_up_axis.z)
+            .map_err(|e| NetworkError::PacketEncode { reason: format!("Failed to write camera up axis z: {}", e) })?;
+        
+        // Far: F32 (4 bytes)
+        data.write_f32::<LittleEndian>(packet.far)
+            .map_err(|e| NetworkError::PacketEncode { reason: format!("Failed to write far: {}", e) })?;
+        
+        // ControlFlags: U32 (4 bytes, little-endian)
+        data.write_u32::<LittleEndian>(packet.control_flags)
+            .map_err(|e| NetworkError::PacketEncode { reason: format!("Failed to write control flags: {}", e) })?;
+        
+        // Flags: U8 (1 byte)
+        data.push(packet.flags);
         
         Ok(())
     }

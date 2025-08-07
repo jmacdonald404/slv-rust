@@ -800,47 +800,58 @@ impl Circuit {
         let address = self.options.address;
         let state = Arc::clone(&self.state);
         
-        // Only start ACK sender for UDP transport (QUIC handles ACKs internally)
-        if matches!(&*transport.as_ref(), CircuitTransport::Udp(_)) {
-            tokio::spawn(async move {
-                let mut interval = tokio::time::interval(Duration::from_millis(250));
+        // PROTOCOL COMPLIANCE: PacketAck is required at application layer for both transports
+        // Even with QUIC, SL protocol expects PacketAck messages for reliable packets
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_millis(200));
+            
+            loop {
+                interval.tick().await;
                 
-                loop {
-                    interval.tick().await;
+                // Check if circuit is still active
+                if matches!(*state.read().await, CircuitState::Disconnected) {
+                    break;
+                }
+                
+                // Get pending acknowledgments
+                let acks = {
+                    let mut ack = acknowledger.lock().await;
+                    ack.take_pending_acks()
+                };
+                
+                // Send acknowledgment packet if we have any - PROTOCOL COMPLIANCE REQUIRES THIS
+                if !acks.is_empty() {
+                    use crate::networking::packets::generated::*;
                     
-                    // Check if circuit is still active
-                    if *state.read().await == CircuitState::Disconnected {
-                        break;
-                    }
-                    
-                    // Get pending acknowledgments
-                    let acks = {
-                        let mut ack = acknowledger.lock().await;
-                        ack.take_pending_acks()
+                    let packet_ack = PacketAck {
+                        packets: acks.into_iter()
+                            .map(|id| PacketsBlock { id })
+                            .collect(),
                     };
                     
-                    // Send acknowledgment packet if we have any
-                    if !acks.is_empty() {
-                        use crate::networking::packets::generated::*;
-                        
-                        let packet_ack = PacketAck {
-                            packets: acks.into_iter()
-                                .map(|id| PacketsBlock { id })
-                                .collect(),
-                        };
-                        
-                        if let CircuitTransport::Udp(packet_tx) = &*transport.as_ref() {
+                    match &*transport.as_ref() {
+                        CircuitTransport::Udp(packet_tx) => {
                             let mut serializer = serializer.lock().await;
                             if let Ok((data, _)) = serializer.serialize(&packet_ack, false) {
                                 let _ = packet_tx.send((data, address));
+                                info!("📮 Sent {} PacketAck(s) via UDP for protocol compliance", packet_ack.packets.len());
+                            }
+                        },
+                        CircuitTransport::Quic(quic_transport) => {
+                            // PROTOCOL COMPLIANCE: Send PacketAck even over QUIC (application layer requirement)
+                            let mut serializer = serializer.lock().await;
+                            if let Ok((data, _)) = serializer.serialize(&packet_ack, false) {
+                                if let Err(e) = quic_transport.get_sender().send((data, address)) {
+                                    warn!("Failed to send PacketAck via QUIC: {}", e);
+                                } else {
+                                    info!("📮 Sent {} PacketAck(s) via QUIC for protocol compliance", packet_ack.packets.len());
+                                }
                             }
                         }
                     }
                 }
-            });
-        } else {
-            debug!("🔐 QUIC transport - ACK sender not needed (built-in acknowledgment)");
-        }
+            }
+        });
     }
     
     /// Handle received acknowledgment packet

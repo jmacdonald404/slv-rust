@@ -10,8 +10,9 @@ use tokio::sync::RwLock;
 use tracing::{debug, info, warn, error};
 use std::sync::Arc;
 use uuid::Uuid;
-use ureq::Agent;
-use std::io::Read;
+use reqwest::{Client, Certificate};
+use crate::ui::proxy::ProxySettings;
+use std::fs;
 
 pub mod client;
 pub mod handlers;
@@ -36,7 +37,7 @@ pub struct CapabilitiesManager {
     /// Map of capability name to capability info
     capabilities: Arc<RwLock<HashMap<String, Capability>>>,
     /// HTTP client for making capability requests
-    http_agent: ureq::Agent,
+    http_client: reqwest::Client,
     /// Session information
     session_info: SessionInfo,
 }
@@ -52,20 +53,59 @@ pub struct SessionInfo {
 impl CapabilitiesManager {
     /// Create a new capabilities manager
     pub fn new(session_info: SessionInfo) -> Self {
-        let http_agent = ureq::Agent::new_with_defaults();
+        let http_client = reqwest::Client::new();
 
         Self {
             capabilities: Arc::new(RwLock::new(HashMap::new())),
-            http_agent,
+            http_client,
             session_info,
         }
+    }
+
+    /// Create a new capabilities manager with proxy configuration
+    pub fn new_with_proxy(session_info: SessionInfo, proxy_settings: Option<&ProxySettings>) -> Self {
+        let http_client = Self::build_proxied_client(proxy_settings);
+        
+        Self {
+            capabilities: Arc::new(RwLock::new(HashMap::new())),
+            http_client,
+            session_info,
+        }
+    }
+
+    /// Build a reqwest client with proxy settings if enabled (like main branch)
+    fn build_proxied_client(proxy_settings: Option<&ProxySettings>) -> Client {
+        let mut builder = Client::builder();
+        
+        if let Some(proxy_cfg) = proxy_settings {
+            if proxy_cfg.enabled {
+                // Always use the proxy when enabled
+                let proxy_url = format!("http://{}:{}", proxy_cfg.http_host, proxy_cfg.http_port);
+                if let Ok(proxy) = reqwest::Proxy::all(&proxy_url) {
+                    builder = builder.proxy(proxy);
+                }
+                
+                // Add CA certificate for Hippolyzer
+                if let Ok(ca_cert) = fs::read("src/assets/CA.pem") {
+                    if let Ok(cert) = Certificate::from_pem(&ca_cert) {
+                        builder = builder.add_root_certificate(cert);
+                    }
+                }
+            }
+        }
+        
+        builder
+            .timeout(std::time::Duration::from_secs(60))
+            .user_agent("Second Life Release 7.1.15 (1559633637437)")
+            .build()
+            .expect("Failed to build HTTP client")
     }
 
     /// Fetch and register capabilities from a seed capability URL
     pub async fn fetch_and_register_capabilities(&self, seed_url: &str) -> Result<(), CapabilityError> {
         info!("🌱 CAPABILITIES MANAGER: Fetching capabilities from seed URL");
         
-        let seed_client = seed::SeedCapabilityClient::new(self.http_agent.clone());
+        let seed_client = seed::SeedCapabilityClient::new(self.http_client.clone());
         let capabilities = seed_client.fetch_capabilities(seed_url).await
             .map_err(|e| CapabilityError::HttpError(e.to_string()))?;
         
@@ -119,62 +159,59 @@ impl CapabilitiesManager {
         }
         
         let request_start = std::time::Instant::now();
-        let agent = self.http_agent.clone();
+        let client = self.http_client.clone();
         let url = capability.url.clone();
-        let body_json = body.map(|b| serde_json::to_string(&b)).transpose()
-            .map_err(|e| CapabilityError::ParseError(e.to_string()))?;
         
-        // Use spawn_blocking since ureq is synchronous
-        let (status, headers_map, response_body) = tokio::task::spawn_blocking(move || -> Result<(u16, HashMap<String, String>, String), ureq::Error> {
-            let mut response = match method {
-                CapabilityMethod::Get => {
-                    let request = agent.get(&url)
-                        .header("X-SecondLife-Shard", "Production")
-                        .header("User-Agent", "slv-rust/0.3.0");
-                    request.call()?
-                },
-                CapabilityMethod::Post => {
-                    let request = agent.post(&url)
-                        .header("X-SecondLife-Shard", "Production")
-                        .header("User-Agent", "slv-rust/0.3.0")
-                        .header("Content-Type", "application/json");
-                    if let Some(body_str) = body_json {
-                        request.send(&body_str)?
-                    } else {
-                        request.send("")?
-                    }
-                },
-                CapabilityMethod::Put => {
-                    let request = agent.put(&url)
-                        .header("X-SecondLife-Shard", "Production")
-                        .header("User-Agent", "slv-rust/0.3.0")
-                        .header("Content-Type", "application/json");
-                    if let Some(body_str) = body_json {
-                        request.send(&body_str)?
-                    } else {
-                        request.send("")?
-                    }
-                },
-                CapabilityMethod::Delete => {
-                    let request = agent.delete(&url)
-                        .header("X-SecondLife-Shard", "Production")
-                        .header("User-Agent", "slv-rust/0.3.0");
-                    request.call()?
+        // Use reqwest async client
+        let response = match method {
+            CapabilityMethod::Get => {
+                client.get(&url)
+                    .header("X-SecondLife-Shard", "Production")
+                    .header("User-Agent", "slv-rust/0.3.0")
+                    .send()
+                    .await
+            },
+            CapabilityMethod::Post => {
+                let mut request = client.post(&url)
+                    .header("X-SecondLife-Shard", "Production")
+                    .header("User-Agent", "slv-rust/0.3.0")
+                    .header("Content-Type", "application/json");
+                
+                if let Some(body_value) = body {
+                    request = request.json(&body_value);
                 }
-            };
+                
+                request.send().await
+            },
+            CapabilityMethod::Put => {
+                let mut request = client.put(&url)
+                    .header("X-SecondLife-Shard", "Production")
+                    .header("User-Agent", "slv-rust/0.3.0")
+                    .header("Content-Type", "application/json");
+                
+                if let Some(body_value) = body {
+                    request = request.json(&body_value);
+                }
+                
+                request.send().await
+            },
+            CapabilityMethod::Delete => {
+                client.delete(&url)
+                    .header("X-SecondLife-Shard", "Production")
+                    .header("User-Agent", "slv-rust/0.3.0")
+                    .send()
+                    .await
+            }
+        }.map_err(|e| CapabilityError::HttpError(e.to_string()))?;
 
-            let status = response.status();
-            let headers_map: HashMap<String, String> = response.headers()
-                .iter()
-                .map(|(name, value)| (name.to_string(), value.to_str().unwrap_or("").to_string()))
-                .collect();
-            
-            let response_body = response.body_mut().read_to_string()?;
-            
-            Ok((status.into(), headers_map, response_body))
-        }).await
-        .map_err(|e| CapabilityError::HttpError(e.to_string()))?
-        .map_err(|e| CapabilityError::HttpError(e.to_string()))?;
+        let status = response.status().as_u16();
+        let headers_map: HashMap<String, String> = response.headers()
+            .iter()
+            .map(|(name, value)| (name.to_string(), value.to_str().unwrap_or("").to_string()))
+            .collect();
+        
+        let response_body = response.text().await
+            .map_err(|e| CapabilityError::HttpError(e.to_string()))?;
 
         let response_time = request_start.elapsed();
 

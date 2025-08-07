@@ -157,3 +157,32 @@ impl TypedPacketHandler<ImprovedTerseObjectUpdate> for ImprovedTerseObjectUpdate
         Ok(())
     }
 }
+
+/// Handler for AttachedSound packets (Medium packet ID 13)
+/// Temporary raw handler until AttachedSound struct is generated
+pub struct AttachedSoundHandler;
+
+impl AttachedSoundHandler {
+    pub fn new() -> Self {
+        Self
+    }
+    
+    /// Handle raw AttachedSound packet
+    pub async fn handle_raw(&self, packet_data: &[u8], context: &HandlerContext) -> NetworkResult<()> {
+        debug!("🔊 Received AttachedSound packet ({} bytes)", packet_data.len());
+        
+        // Basic parsing of AttachedSound structure based on message_template.msg:
+        // DataBlock: SoundID (LLUUID), ObjectID (LLUUID), OwnerID (LLUUID), 
+        //           Gain (F32), Flags (U8)
+        if packet_data.len() >= 52 { // 16 + 16 + 16 + 4 bytes minimum
+            // For now, just acknowledge receipt to reduce log spam
+            // TODO: Parse sound data properly when AttachedSound struct is generated
+            // TODO: Implement audio system integration
+            debug!("🔊 AttachedSound packet acknowledged (audio system not implemented)");
+        } else {
+            warn!("🔊 AttachedSound packet too short: {} bytes", packet_data.len());
+        }
+        
+        Ok(())
+    }
+}

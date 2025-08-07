@@ -20,7 +20,8 @@
       "Bash(git commit:*)",
       "WebFetch(domain:github.com)",
       "Bash(grep:*)",
-      "WebFetch(domain:docs.rs)"
+      "WebFetch(domain:docs.rs)",
+      "Bash(target/debug/hippolog_analyzer:*)"
     ],
     "deny": []
   }

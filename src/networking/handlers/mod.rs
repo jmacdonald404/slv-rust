@@ -241,6 +241,9 @@ impl PacketHandlerRegistry {
         // self.register_typed(crate::networking::handover::handlers::EstablishAgentCommunicationHandler::new()).await;
         self.register_typed(crate::networking::handover::handlers::ConfirmEnableSimulatorHandler::new()).await;
         
+        // Register temporary raw handlers for missing packets to reduce log spam
+        self.register(AttachedSoundRawHandler::new()).await;
+        
         info!("Initialized {} default packet handlers", self.handler_count().await);
     }
 }
@@ -320,5 +323,41 @@ impl PacketProcessor {
         
         let total_time = start_time.elapsed();
         info!("🏭 PACKET PROCESSOR: Stopped after processing {} packets in {:?}", packet_count, total_time);
+    }
+}
+
+/// Temporary raw handler for AttachedSound packets (Medium ID 13, type 65549)
+/// Reduces log spam until proper AttachedSound struct is generated
+pub struct AttachedSoundRawHandler;
+
+impl AttachedSoundRawHandler {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[async_trait]
+impl PacketHandler for AttachedSoundRawHandler {
+    async fn handle(&self, packet: PacketWrapper, _context: &HandlerContext) -> NetworkResult<()> {
+        debug!("🔊 AttachedSound packet received ({} bytes) - audio system not implemented", 
+               packet.data.len());
+        
+        // Basic validation - AttachedSound should have at least:
+        // SoundID (16) + ObjectID (16) + OwnerID (16) + Gain (4) + Flags (1) = 53 bytes minimum
+        if packet.data.len() < 53 {
+            warn!("🔊 AttachedSound packet too short: {} bytes (expected >= 53)", packet.data.len());
+        }
+        
+        // TODO: Parse sound data when AttachedSound struct is generated
+        // TODO: Implement audio system integration
+        Ok(())
+    }
+    
+    fn packet_type(&self) -> u32 {
+        65549 // Medium frequency (1 << 16) + packet ID 13
+    }
+    
+    fn name(&self) -> &'static str {
+        "AttachedSoundRawHandler"
     }
 }

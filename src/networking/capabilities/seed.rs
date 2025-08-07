@@ -6,9 +6,10 @@
 
 use std::collections::HashMap;
 use tracing::{info, debug, warn, error};
-use ureq::Agent;
-use std::io::Read;
+use reqwest::Client;
 use crate::networking::{NetworkError, NetworkResult};
+use crate::ui::proxy::ProxySettings;
+use std::fs;
 
 /// Complete list of capabilities requested by the official Second Life viewer
 /// This list is derived from hippolog analysis of official viewer behavior
@@ -130,13 +131,47 @@ pub const OFFICIAL_VIEWER_CAPABILITIES: &[&str] = &[
 
 /// Seed capability client that handles fetching all capabilities from a seed URL
 pub struct SeedCapabilityClient {
-    agent: Agent,
+    client: Client,
 }
 
 impl SeedCapabilityClient {
     /// Create new seed capability client
-    pub fn new(agent: Agent) -> Self {
-        Self { agent }
+    pub fn new(client: Client) -> Self {
+        Self { client }
+    }
+
+    /// Create new seed capability client with proxy configuration
+    pub fn new_with_proxy(proxy_settings: Option<&ProxySettings>) -> Self {
+        let client = Self::build_proxied_client(proxy_settings);
+        Self { client }
+    }
+
+    /// Build a reqwest client with proxy settings if enabled (like main branch)
+    fn build_proxied_client(proxy_settings: Option<&ProxySettings>) -> Client {
+        let mut builder = Client::builder();
+        
+        if let Some(proxy_cfg) = proxy_settings {
+            if proxy_cfg.enabled {
+                // Always use the proxy when enabled
+                let proxy_url = format!("http://{}:{}", proxy_cfg.http_host, proxy_cfg.http_port);
+                if let Ok(proxy) = reqwest::Proxy::all(&proxy_url) {
+                    builder = builder.proxy(proxy);
+                }
+                
+                // Add CA certificate for Hippolyzer
+                if let Ok(ca_cert) = fs::read("src/assets/CA.pem") {
+                    if let Ok(cert) = reqwest::Certificate::from_pem(&ca_cert) {
+                        builder = builder.add_root_certificate(cert);
+                    }
+                }
+            }
+        }
+        
+        builder
+            .timeout(std::time::Duration::from_secs(60))
+            .user_agent("Second Life Release 7.1.15 (1559633637437)")
+            .build()
+            .expect("Failed to build HTTP client")
     }
 
     /// Fetch all capabilities from the seed capability URL
@@ -151,32 +186,27 @@ impl SeedCapabilityClient {
         debug!("🌱 SEED CAPABILITY: Request body length: {} bytes", request_body.len());
         debug!("🌱 SEED CAPABILITY: Request capabilities: {:?}", OFFICIAL_VIEWER_CAPABILITIES);
         
-        let url_clone = seed_url.to_string();
-        let agent = self.agent.clone();
-        
-        // Use spawn_blocking since ureq is synchronous
-        let (status_code, response_headers, response_text) = tokio::task::spawn_blocking(move || -> Result<(u16, HashMap<String, String>, String), ureq::Error> {
-            let mut response = agent
-                .post(&url_clone)
-                .header("Content-Type", "application/llsd+xml")
-                .header("Accept", "application/llsd+xml")
-                .header("Accept-Encoding", "deflate, gzip")
-                .header("Connection", "keep-alive")
-                .header("Keep-Alive", "300")
-                .header("User-Agent", "Second Life Release 7.1.15 (1559633637437)")
-                .send(&request_body)?;
+        // Use reqwest async client
+        let response = self.client
+            .post(seed_url)
+            .header("Content-Type", "application/llsd+xml")
+            .header("Accept", "application/llsd+xml")
+            .header("Accept-Encoding", "deflate, gzip")
+            .header("Connection", "keep-alive")
+            .header("Keep-Alive", "300")
+            .header("User-Agent", "Second Life Release 7.1.15 (1559633637437)")
+            .body(request_body)
+            .send()
+            .await
+            .map_err(|e| NetworkError::Transport { reason: format!("Failed to send seed capability request: {}", e) })?;
 
-            let status_code = response.status();
-            let headers: HashMap<String, String> = response.headers()
-                .iter()
-                .map(|(name, value)| (name.to_string(), value.to_str().unwrap_or("").to_string()))
-                .collect();
-            let response_text = response.body_mut().read_to_string()?;
-            
-            Ok((status_code.into(), headers, response_text))
-        }).await
-        .map_err(|e| NetworkError::Transport { reason: format!("Failed to execute seed capability request: {}", e) })?
-        .map_err(|e| NetworkError::Transport { reason: format!("Failed to fetch seed capabilities: {}", e) })?;
+        let status_code = response.status().as_u16();
+        let response_headers: HashMap<String, String> = response.headers()
+            .iter()
+            .map(|(name, value)| (name.to_string(), value.to_str().unwrap_or("").to_string()))
+            .collect();
+        let response_text = response.text().await
+            .map_err(|e| NetworkError::Transport { reason: format!("Failed to read seed capability response: {}", e) })?;
 
         if status_code < 200 || status_code >= 300 {
             error!("❌ SEED CAPABILITY: Request failed with status {}", status_code);
@@ -324,7 +354,7 @@ mod tests {
 
     #[test]
     fn test_capability_request_generation() {
-        let client = SeedCapabilityClient::new(ureq::Agent::new_with_defaults());
+        let client = SeedCapabilityClient::new(reqwest::Client::new());
         let request = client.generate_capability_request_llsd();
         
         // Should contain all official capabilities

@@ -11,7 +11,6 @@ use tracing::{info, debug, warn, error};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::io::Read;
 use tokio::sync::RwLock;
 
 /// Handler for RegionHandshakeReply packets that contain seed capability
@@ -95,22 +94,18 @@ impl CapabilitiesManager {
         info!("🌱 Initializing capabilities from seed: {}", seed_url);
         
         // Make request to seed capability to get full capability list
-        let agent = self.http_agent.clone();
-        let seed_url = seed_url.to_string();
+        let client = self.http_client.clone();
         
-        let (status, response_text) = tokio::task::spawn_blocking(move || -> Result<(u16, String), ureq::Error> {
-            let mut response = agent.get(&seed_url)
-                .header("User-Agent", "slv-rust/0.3.0")
-                .header("Content-Type", "application/json")
-                .call()?;
+        let response = client.get(seed_url)
+            .header("User-Agent", "slv-rust/0.3.0")
+            .header("Content-Type", "application/json")
+            .send()
+            .await
+            .map_err(|e| super::CapabilityError::HttpError(e.to_string()))?;
             
-            let status = response.status();
-            let response_text = response.body_mut().read_to_string()?;
-            
-            Ok((status.into(), response_text))
-        }).await
-        .map_err(|e| super::CapabilityError::HttpError(e.to_string()))?
-        .map_err(|e| super::CapabilityError::HttpError(e.to_string()))?;
+        let status = response.status().as_u16();
+        let response_text = response.text().await
+            .map_err(|e| super::CapabilityError::HttpError(e.to_string()))?;
         
         if status < 200 || status >= 300 {
             return Err(super::CapabilityError::HttpError(format!("HTTP {}", status)));
@@ -165,8 +160,8 @@ impl CapabilitiesManager {
                     }
                 }
                 
-                // Small delay before next poll
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                // Wait before next poll - EventQueue should be polled every 5-10 seconds, not aggressively
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
             }
         });
         
@@ -179,7 +174,7 @@ impl Clone for CapabilitiesManager {
     fn clone(&self) -> Self {
         Self {
             capabilities: Arc::clone(&self.capabilities),
-            http_agent: self.http_agent.clone(),
+            http_client: self.http_client.clone(),
             session_info: self.session_info.clone(),
         }
     }

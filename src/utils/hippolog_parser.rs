@@ -497,6 +497,13 @@ except Exception as e:
                 }
             }
             
+            // Search in message name (for LLUDP entries)
+            if let Some(message_name) = Self::extract_message_name(entry) {
+                if self.text_contains(&message_name, &pattern_lower, case_sensitive) {
+                    entry_matches.push(HippologMatchLocation::Data);
+                }
+            }
+            
             // Search in data content (convert to JSON string for searching)
             let data_str = serde_json::to_string(&entry.data).unwrap_or_default();
             if self.text_contains(&data_str, &pattern_lower, case_sensitive) {
@@ -522,6 +529,33 @@ except Exception as e:
         } else {
             text.to_lowercase().contains(pattern)
         }
+    }
+
+    /// Extract message name from an LLUDP log entry
+    fn extract_message_name(entry: &LogEntry) -> Option<String> {
+        use base64::{Engine as _, engine::general_purpose};
+        
+        // For LLUDP entries, try to extract message name from the decoded data
+        if entry.entry_type == "LLUDP" {
+            if let Some(message_obj) = entry.data.get("message") {
+                if let Some(message_bytes) = message_obj.get("__bytes__") {
+                    if let Some(encoded_str) = message_bytes.as_str() {
+                        if let Ok(decoded_bytes) = general_purpose::STANDARD.decode(encoded_str) {
+                            if let Ok(decoded_str) = String::from_utf8(decoded_bytes) {
+                                // Look for 'message':'MessageName' pattern
+                                if let Some(start) = decoded_str.find("'message':'") {
+                                    let start_pos = start + "'message':'".len();
+                                    if let Some(end) = decoded_str[start_pos..].find("'") {
+                                        return Some(decoded_str[start_pos..start_pos + end].to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
     }
 
     /// Get summary statistics

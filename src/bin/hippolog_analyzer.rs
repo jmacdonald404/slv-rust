@@ -1,8 +1,36 @@
 use anyhow::{Context, Result};
 use std::env;
 use std::path::Path;
+use base64::prelude::*;
 
-use slv_rust::utils::hippolog_parser::HippologParser;
+use slv_rust::utils::hippolog_parser::{HippologParser, LogEntry};
+
+fn extract_message_name(entry: &LogEntry) -> Option<String> {
+    // For LLUDP entries, try to extract message name from the decoded data
+    if entry.entry_type == "LLUDP" {
+        if let Some(message_obj) = entry.data.get("message") {
+            if let Some(message_bytes) = message_obj.get("__bytes__") {
+                if let Some(encoded_str) = message_bytes.as_str() {
+                    if let Ok(decoded_bytes) = base64::prelude::Engine::decode(
+                        &base64::prelude::BASE64_STANDARD, 
+                        encoded_str
+                    ) {
+                        if let Ok(decoded_str) = String::from_utf8(decoded_bytes) {
+                            // Look for 'message':'MessageName' pattern
+                            if let Some(start) = decoded_str.find("'message':'") {
+                                let start_pos = start + "'message':'".len();
+                                if let Some(end) = decoded_str[start_pos..].find("'") {
+                                    return Some(decoded_str[start_pos..start_pos + end].to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
 
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
@@ -17,6 +45,8 @@ fn main() -> Result<()> {
         eprintln!("  grep <pattern> [--case-sensitive] - Search for pattern in entries");
         eprintln!("  detail <index> [--pretty] [--decode-bytes] - Show full details for entry at index");
         eprintln!("  export    - Export back to hippolog format");
+        eprintln!("  list      - Show packet headers (type, method, index) only");
+        eprintln!("  http-summary - Show HTTP request summaries (method, URL, status)");
         return Ok(());
     }
 
@@ -178,8 +208,97 @@ fn main() -> Result<()> {
             }
         }
         
+        "list" => {
+            let entries = parser.entries();
+            println!("Packet List ({} total):", entries.len());
+            for (i, entry) in entries.iter().enumerate() {
+                let message_name = extract_message_name(entry);
+                let message_display = if let Some(name) = message_name {
+                    format!("({}) ", name)
+                } else {
+                    String::new()
+                };
+                
+                println!("{}: [{}] {} - {}{}", 
+                    i + 1, 
+                    entry.entry_type,
+                    entry.meta.method,
+                    message_display,
+                    entry.summary.chars().take(80).collect::<String>()
+                );
+            }
+        }
+        
+        "http-summary" => {
+            let http_entries = parser.http_entries();
+            println!("HTTP Request Summary ({} entries):", http_entries.len());
+            for (i, entry) in http_entries.iter().enumerate() {
+                if let Some(flow) = entry.data.get("flow") {
+                    let method = flow.get("request")
+                        .and_then(|r| r.get("method"))
+                        .and_then(|m| m.get("__bytes__"))
+                        .and_then(|b| base64::prelude::Engine::decode(&base64::prelude::BASE64_STANDARD, b.as_str().unwrap_or("")).ok())
+                        .and_then(|bytes| String::from_utf8(bytes).ok())
+                        .unwrap_or_else(|| entry.meta.method.clone());
+                    
+                    let host = flow.get("request")
+                        .and_then(|r| r.get("host"))
+                        .and_then(|h| h.as_str())
+                        .unwrap_or("unknown");
+                    
+                    let path = flow.get("request")
+                        .and_then(|r| r.get("path"))
+                        .and_then(|p| p.get("__bytes__"))
+                        .and_then(|b| base64::prelude::Engine::decode(&base64::prelude::BASE64_STANDARD, b.as_str().unwrap_or("")).ok())
+                        .and_then(|bytes| String::from_utf8(bytes).ok())
+                        .unwrap_or_else(|| "/".to_string());
+                    
+                    let status = flow.get("response")
+                        .and_then(|r| r.get("status_code"))
+                        .and_then(|s| s.as_u64())
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| "???".to_string());
+                    
+                    println!("{}: {} {} {}{} -> {}", 
+                        i + 1, 
+                        method,
+                        host,
+                        path,
+                        if path.len() > 50 { "..." } else { "" },
+                        status
+                    );
+                    
+                    // Show content type if available
+                    if let Some(content_type) = flow.get("response")
+                        .and_then(|r| r.get("headers"))
+                        .and_then(|h| h.as_array())
+                        .and_then(|headers| {
+                            headers.iter().find(|header| {
+                                header.as_array()
+                                    .and_then(|h| h.first())
+                                    .and_then(|k| k.get("__bytes__"))
+                                    .and_then(|b| base64::prelude::Engine::decode(&base64::prelude::BASE64_STANDARD, b.as_str().unwrap_or("")).ok())
+                                    .and_then(|bytes| String::from_utf8(bytes).ok())
+                                    .map(|s| s.to_lowercase() == "content-type")
+                                    .unwrap_or(false)
+                            })
+                        })
+                        .and_then(|header| header.as_array())
+                        .and_then(|h| h.get(1))
+                        .and_then(|v| v.get("__bytes__"))
+                        .and_then(|b| base64::prelude::Engine::decode(&base64::prelude::BASE64_STANDARD, b.as_str().unwrap_or("")).ok())
+                        .and_then(|bytes| String::from_utf8(bytes).ok())
+                    {
+                        if !content_type.is_empty() && content_type != "text/html; charset=utf-8" {
+                            println!("    Content-Type: {}", content_type);
+                        }
+                    }
+                }
+            }
+        }
+        
         _ => {
-            eprintln!("Unknown command: {}. Use 'stats', 'http', 'lludp', 'eq', 'grep', 'detail', or 'export'", command);
+            eprintln!("Unknown command: {}. Use 'stats', 'http', 'lludp', 'eq', 'grep', 'detail', 'list', 'http-summary', or 'export'", command);
             return Ok(());
         }
     }

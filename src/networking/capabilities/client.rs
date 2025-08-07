@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
-use std::io::Read;
 
 impl CapabilitiesManager {
     /// Fetch inventory using the FetchInventory2 capability
@@ -49,21 +48,18 @@ impl CapabilitiesManager {
         
         debug!("🖼️ Requesting texture: {}", texture_id);
         
-        let agent = self.http_agent.clone();
-        let texture_url_clone = texture_url.clone();
+        let client = self.http_client.clone();
         
-        let (status, texture_data) = tokio::task::spawn_blocking(move || -> Result<(u16, Vec<u8>), ureq::Error> {
-            let mut response = agent.get(&texture_url_clone)
-                .header("User-Agent", "slv-rust/0.3.0")
-                .call()?;
+        let response = client.get(&texture_url)
+            .header("User-Agent", "slv-rust/0.3.0")
+            .send()
+            .await
+            .map_err(|e| CapabilityError::HttpError(e.to_string()))?;
             
-            let status = response.status();
-            let texture_data = response.body_mut().read_to_vec()?;
-            
-            Ok((status.into(), texture_data))
-        }).await
-        .map_err(|e| CapabilityError::HttpError(e.to_string()))?
-        .map_err(|e| CapabilityError::HttpError(e.to_string()))?;
+        let status = response.status().as_u16();
+        let texture_data = response.bytes().await
+            .map_err(|e| CapabilityError::HttpError(e.to_string()))?
+            .to_vec();
 
         if status >= 200 && status < 300 {
             info!("🖼️ Downloaded texture {}: {} bytes", texture_id, texture_data.len());
@@ -85,21 +81,18 @@ impl CapabilitiesManager {
         
         debug!("🔺 Requesting mesh: {}", mesh_id);
         
-        let agent = self.http_agent.clone();
-        let mesh_url_clone = mesh_url.clone();
+        let client = self.http_client.clone();
         
-        let (status, mesh_data) = tokio::task::spawn_blocking(move || -> Result<(u16, Vec<u8>), ureq::Error> {
-            let mut response = agent.get(&mesh_url_clone)
-                .header("User-Agent", "slv-rust/0.3.0")
-                .call()?;
+        let response = client.get(&mesh_url)
+            .header("User-Agent", "slv-rust/0.3.0")
+            .send()
+            .await
+            .map_err(|e| CapabilityError::HttpError(e.to_string()))?;
             
-            let status = response.status();
-            let mesh_data = response.body_mut().read_to_vec()?;
-            
-            Ok((status.into(), mesh_data))
-        }).await
-        .map_err(|e| CapabilityError::HttpError(e.to_string()))?
-        .map_err(|e| CapabilityError::HttpError(e.to_string()))?;
+        let status = response.status().as_u16();
+        let mesh_data = response.bytes().await
+            .map_err(|e| CapabilityError::HttpError(e.to_string()))?
+            .to_vec();
 
         if status >= 200 && status < 300 {
             info!("🔺 Downloaded mesh {}: {} bytes", mesh_id, mesh_data.len());
