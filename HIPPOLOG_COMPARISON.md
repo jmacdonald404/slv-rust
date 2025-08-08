@@ -1,14 +1,15 @@
-# Hippolog Comparison Guide
+# Hippolog Analysis Tool Guide
+
+> **Note:** If you are reading this, refactoring probably just happened and it's necessary to review `slv.hippolog`, `oa.hippolog`, and `log.txt`. `slv.hippolog` contains the hippolyzer packet logs from the last run. `oa.hippolog` is a reference run of the official Second Life viewer through hippolyzer and should be adhered to strictly and maximally in order to handle the protocols properly. `log.txt` contains the Rust logs from the last run of SLV and helps track down which parts of our logic deviate from official behavior.
 
 ## Overview
 
-When I say "compare the hippo logs", this refers to using the `target/debug/hippolog_analyzer` tool to analyze and compare packet logs between our custom implementation and the official Second Life viewer.
+The `target/debug/hippolog_analyzer` tool analyzes and compares packet logs between different Second Life viewer implementations to identify protocol compliance issues and implementation gaps.
 
 ## File Structure
 
-- **`slv.hippolog`** - Our latest packet logs captured through the proxy from our SLV implementation
-- **`oa.hippolog`** - Official Second Life viewer packet logs for comparison baseline  
-- **`log.txt`** - Previous run logs that should be factored into comparison analysis
+- **`.hippolog files`** - Packet logs captured through the proxy from viewer implementations
+- **`log.txt`** - Runtime logs that provide context for packet analysis
 
 ## Command Structure
 
@@ -74,7 +75,35 @@ target/debug/hippolog_analyzer oa.hippolog list | grep AgentUpdate
 44: [LLUDP] OUT - (AgentUpdate) BodyRotation=<-0.0, 0.0…, HeadRotation=<0.0, 0.0,…
 ```
 
-### 5. Other Commands
+### 5. `flags` - Enhanced Packet Flags Analysis
+Shows detailed packet flags, frequency, and trust level information:
+```bash
+target/debug/hippolog_analyzer slv.hippolog flags
+target/debug/hippolog_analyzer oa.hippolog flags
+```
+
+**Output format:** `entry: [TYPE] Direction [Flags] Frequency/Trust #ID - (MessageName) Summary`
+
+**Flag Legend:**
+- `R` = Reliable (requires ACK)
+- `RS` = Resent packet  
+- `Z` = Zero-coded
+- `A` = Appended ACKs
+
+**Example output:**
+```
+18: [LLUDP] OUT [R] Fixed/NotTrusted #1 - (UseCircuitCode) Code=535237060, SessionID=...
+19: [LLUDP] IN [-] Fixed/NotTrusted #1 - (PacketAck) ID=1
+24: [LLUDP] IN [R|Z] Low/Trusted #2 - (AgentDataUpdate) FirstName=Fresh..., LastName=...
+```
+
+**Summary Statistics:**
+- Reliable packet counts and percentages  
+- Frequency distribution (High/Medium/Low/Fixed)
+- Trust level distribution (Trusted/NotTrusted)
+- Flag usage statistics
+
+### 6. Other Commands
 - `http` - Show HTTP entries only
 - `lludp` - Show LLUDP entries only  
 - `eq` - Show EQ entries only
@@ -85,8 +114,8 @@ target/debug/hippolog_analyzer oa.hippolog list | grep AgentUpdate
 
 ### Step 1: Basic Statistics Comparison
 ```bash
-target/debug/hippolog_analyzer slv.hippolog stats
-target/debug/hippolog_analyzer oa.hippolog stats
+target/debug/hippolog_analyzer implementation.hippolog stats
+target/debug/hippolog_analyzer baseline.hippolog stats
 ```
 
 Compare:
@@ -97,30 +126,31 @@ Compare:
 ### Step 2: Find Missing Message Types
 ```bash
 # Use enhanced list command to quickly identify message types
-target/debug/hippolog_analyzer slv.hippolog list | grep "(ViewerEffect)"
-target/debug/hippolog_analyzer oa.hippolog list | grep "(ViewerEffect)"
+target/debug/hippolog_analyzer implementation.hippolog list | grep "(ViewerEffect)"
+target/debug/hippolog_analyzer baseline.hippolog list | grep "(ViewerEffect)"
 
 # Search for outgoing messages in both logs
-target/debug/hippolog_analyzer slv.hippolog grep "OUT"
-target/debug/hippolog_analyzer oa.hippolog grep "OUT" 
+target/debug/hippolog_analyzer implementation.hippolog grep "OUT"
+target/debug/hippolog_analyzer baseline.hippolog grep "OUT" 
 
 # Search for specific message types (alternative method)
-target/debug/hippolog_analyzer oa.hippolog grep "ViewerEffect"
-target/debug/hippolog_analyzer slv.hippolog grep "ViewerEffect"
+target/debug/hippolog_analyzer baseline.hippolog grep "ViewerEffect"
+target/debug/hippolog_analyzer implementation.hippolog grep "ViewerEffect"
 ```
 
 ### Step 3: Detailed Packet Analysis
 ```bash
 # Examine specific packets that differ
-target/debug/hippolog_analyzer oa.hippolog detail 22 --pretty --decode-bytes
-target/debug/hippolog_analyzer slv.hippolog detail 3 --pretty --decode-bytes
+target/debug/hippolog_analyzer baseline.hippolog detail 22 --pretty --decode-bytes
+target/debug/hippolog_analyzer implementation.hippolog detail 3 --pretty --decode-bytes
 ```
 
 ### Step 4: Implementation Gap Analysis
 Review `log.txt` for:
-- Previous implementation attempts
-- Known issues or limitations
-- Protocol compliance notes
+- Runtime context and error messages
+- Protocol compliance information
+- Implementation notes
+
 
 ## Common Comparison Patterns
 
@@ -133,31 +163,41 @@ Review `log.txt` for:
 ### Example Analysis Session
 ```bash
 # Basic comparison
-target/debug/hippolog_analyzer slv.hippolog stats
-target/debug/hippolog_analyzer oa.hippolog stats
+target/debug/hippolog_analyzer implementation.hippolog stats
+target/debug/hippolog_analyzer baseline.hippolog stats
 
-# Quick packet overview with message names
-target/debug/hippolog_analyzer oa.hippolog list | head -25
+# Comprehensive packet flags analysis
+target/debug/hippolog_analyzer baseline.hippolog flags | head -30
+target/debug/hippolog_analyzer implementation.hippolog flags | head -30
+
+# Find reliable packets
+target/debug/hippolog_analyzer baseline.hippolog flags | grep "\[R"
+target/debug/hippolog_analyzer implementation.hippolog flags | grep "\[R"
+
+# Enhanced packet overview with flags and trust levels
+target/debug/hippolog_analyzer baseline.hippolog list | head -25
 
 # Compare specific message types between implementations
-target/debug/hippolog_analyzer oa.hippolog list | grep "(ViewerEffect)"
-target/debug/hippolog_analyzer slv.hippolog list | grep "(ViewerEffect)"
+target/debug/hippolog_analyzer baseline.hippolog list | grep "(ViewerEffect)"
+target/debug/hippolog_analyzer implementation.hippolog list | grep "(ViewerEffect)"
+
+# Find specific message types
+target/debug/hippolog_analyzer baseline.hippolog list | grep "(MessageType)"
+target/debug/hippolog_analyzer implementation.hippolog list | grep "(MessageType)"
 
 # Check for problematic message types (from console parsing errors)
-target/debug/hippolog_analyzer oa.hippolog list | grep "(AgentUpdate)"
-target/debug/hippolog_analyzer slv.hippolog list | grep "(AgentUpdate)"
+target/debug/hippolog_analyzer baseline.hippolog list | grep "(AgentUpdate)"
+target/debug/hippolog_analyzer implementation.hippolog list | grep "(AgentUpdate)"
 
 # HTTP request analysis
-target/debug/hippolog_analyzer oa.hippolog http-summary | head -20
+target/debug/hippolog_analyzer baseline.hippolog http-summary | head -20
 
-# Find what we're missing
-target/debug/hippolog_analyzer oa.hippolog grep "Type=" --case-sensitive
+# Detailed packet analysis with frequency/trust/flags
+target/debug/hippolog_analyzer baseline.hippolog detail 19 --pretty
+target/debug/hippolog_analyzer implementation.hippolog detail 8 --pretty
 
-# Examine specific missing packets
-target/debug/hippolog_analyzer oa.hippolog detail 22 --pretty
-
-# Check what we currently send
-target/debug/hippolog_analyzer slv.hippolog lludp
+# Check outgoing messages
+target/debug/hippolog_analyzer implementation.hippolog lludp
 ```
 
 ## Integration with Log Analysis
@@ -230,3 +270,4 @@ Left 16 bytes unread past end of AgentUpdate message, is your message template u
 4. Test with updated templates
 
 This systematic approach helps identify implementation gaps and guides the next development phase.
+
