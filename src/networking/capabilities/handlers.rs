@@ -38,8 +38,8 @@ impl TypedPacketHandler<RegionHandshakeReply> for RegionHandshakeReplyHandler {
         info!("🤝 Received RegionHandshakeReply with capabilities");
         
         debug!("🌍 Region handshake reply: Agent={}, Session={}", 
-               handshake_reply.agent_id,
-               handshake_reply.session_id);
+               handshake_reply.agent_data.agent_id,
+               handshake_reply.agent_data.session_id);
         
         // Extract seed capability from the handshake reply
         // The seed capability is typically in the region_info.sim_access field as a URL
@@ -72,8 +72,8 @@ impl TypedPacketHandler<EstateOwnerMessage> for EstateOwnerMessageHandler {
     async fn handle_typed(&self, estate_message: EstateOwnerMessage, _context: &HandlerContext) -> NetworkResult<()> {
         info!("🏰 Received EstateOwnerMessage");
         
-        debug!("🏰 Method: {:?}", estate_message.method);
-        debug!("   Invoice: {}", estate_message.invoice);
+        debug!("🏰 Method: {:?}", estate_message.method_data.method);
+        debug!("   Invoice: {}", estate_message.method_data.invoice);
         
         // Process parameter data
         for param in &estate_message.param_list {

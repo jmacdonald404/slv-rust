@@ -404,14 +404,23 @@ except Exception as e:
             analyses.push("UTF-8: Invalid".to_string());
         }
         
-        // Hex dump (first 32 bytes)
-        let hex_dump = bytes_data.iter()
-            .take(32)
-            .map(|b| format!("{:02x}", b))
-            .collect::<Vec<_>>()
-            .join(" ");
-        let hex_suffix = if bytes_data.len() > 32 { "..." } else { "" };
-        analyses.push(format!("Hex: {}{}", hex_dump, hex_suffix));
+        // Hex dump - show all bytes when using --decode-bytes flag, otherwise first 32
+        let hex_dump = if bytes_data.len() <= 128 {
+            // Show all bytes if reasonable length
+            bytes_data.iter()
+                .map(|b| format!("{:02x}", b))
+                .collect::<Vec<_>>()
+                .join(" ")
+        } else {
+            // Show first 64 bytes for very long data
+            let partial_hex = bytes_data.iter()
+                .take(64)
+                .map(|b| format!("{:02x}", b))
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!("{}...", partial_hex)
+        };
+        analyses.push(format!("Hex: {}", hex_dump));
         
         // Try to detect common patterns
         if bytes_data.len() >= 4 {

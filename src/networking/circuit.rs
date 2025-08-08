@@ -723,8 +723,10 @@ impl Circuit {
         if *self.state.read().await == CircuitState::Connected {
             use crate::networking::packets::generated::*;
             let logout = LogoutRequest {
-                agent_id: self.options.agent_id,
-                session_id: self.options.session_id,
+                agent_data: LogoutRequestAgentDataBlock {
+                    agent_id: self.options.agent_id,
+                    session_id: self.options.session_id,
+                },
             };
             let _ = self.send_reliable(&logout, Duration::from_secs(5)).await;
         }
@@ -825,7 +827,7 @@ impl Circuit {
                     
                     let packet_ack = PacketAck {
                         packets: acks.into_iter()
-                            .map(|id| PacketsBlock { id })
+                            .map(|id| PacketAckPacketsBlock { id })
                             .collect(),
                     };
                     
@@ -878,8 +880,10 @@ impl Circuit {
         };
         
         let ping_packet = StartPingCheck { 
-            ping_id,
-            oldest_unacked: 0, // Empty for now - could track oldest unacked sequence
+            ping_id: StartPingCheckPingIDBlock {
+                ping_id,
+                oldest_unacked: 0, // Empty for now - could track oldest unacked sequence
+            },
         };
         
         // Send ping unreliably - pings are frequent and don't need to be reliable
@@ -1004,8 +1008,10 @@ impl Circuit {
                 
                 use crate::networking::packets::generated::*;
                 let ping_packet = StartPingCheck { 
-            ping_id,
-            oldest_unacked: 0, // Empty for now - could track oldest unacked sequence
+            ping_id: StartPingCheckPingIDBlock {
+                ping_id,
+                oldest_unacked: 0, // Empty for now - could track oldest unacked sequence
+            },
         };
                 
                 let mut serializer = serializer.lock().await;

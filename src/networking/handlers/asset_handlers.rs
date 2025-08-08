@@ -32,23 +32,23 @@ impl TypedPacketHandler<TransferRequest> for TransferRequestHandler {
     async fn handle_typed(&self, transfer_request: TransferRequest, _context: &HandlerContext) -> NetworkResult<()> {
         info!("📥 Received TransferRequest");
         
-        debug!("🔄 Transfer ID: {}", transfer_request.transfer_id);
+        debug!("🔄 Transfer ID: {}", transfer_request.transfer_info.transfer_id);
         debug!("   Channel Type: {}, Source Type: {}", 
-               transfer_request.channel_type,
-               transfer_request.source_type);
-        debug!("   Priority: {}", transfer_request.priority);
+               transfer_request.transfer_info.channel_type,
+               transfer_request.transfer_info.source_type);
+        debug!("   Priority: {}", transfer_request.transfer_info.priority);
         
         // Process transfer parameters to extract asset ID
-        if !transfer_request.params.data.is_empty() && transfer_request.params.data.len() >= 16 {
+        if !transfer_request.transfer_info.params.data.is_empty() && transfer_request.transfer_info.params.data.len() >= 16 {
             // Parse asset ID from parameters (simplified - real implementation would parse LLSD)
-            let asset_id_bytes: [u8; 16] = transfer_request.params.data[0..16].try_into()
+            let asset_id_bytes: [u8; 16] = transfer_request.transfer_info.params.data[0..16].try_into()
                     .map_err(|_| crate::networking::NetworkError::PacketDecode { 
                         reason: "Invalid asset ID in transfer parameters".to_string() 
                     })?;
                 
                 let asset_id = Uuid::from_bytes(asset_id_bytes);
-                let asset_type = AssetType::from(transfer_request.source_type as u8);
-                let priority = match transfer_request.priority {
+                let asset_type = AssetType::from(transfer_request.transfer_info.source_type as u8);
+                let priority = match transfer_request.transfer_info.priority {
                     0.0..=25.0 => AssetPriority::Low,
                     26.0..=75.0 => AssetPriority::Normal,
                     76.0..=100.0 => AssetPriority::High,
@@ -72,7 +72,7 @@ impl TypedPacketHandler<TransferRequest> for TransferRequestHandler {
                 }
         }
         
-        debug!("✅ Processed transfer request: {}", transfer_request.transfer_id);
+        debug!("✅ Processed transfer request: {}", transfer_request.transfer_info.transfer_id);
         Ok(())
     }
 }
@@ -91,28 +91,28 @@ impl TypedPacketHandler<TransferInfo> for TransferInfoHandler {
     async fn handle_typed(&self, transfer_info: TransferInfo, _context: &HandlerContext) -> NetworkResult<()> {
         info!("📤 Received TransferInfo");
         
-        debug!("🔄 Transfer ID: {}", transfer_info.transfer_id);
+        debug!("🔄 Transfer ID: {}", transfer_info.transfer_info.transfer_id);
         debug!("   Channel Type: {}, Target Type: {}", 
-               transfer_info.channel_type,
-               transfer_info.target_type);
+               transfer_info.transfer_info.channel_type,
+               transfer_info.transfer_info.target_type);
         debug!("   Status: {}, Size: {}", 
-               transfer_info.status,
-               transfer_info.size);
+               transfer_info.transfer_info.status,
+               transfer_info.transfer_info.size);
         
         // TODO: Process transfer data if present
         // Handle different transfer types
-        match transfer_info.channel_type {
+        match transfer_info.transfer_info.channel_type {
             0 => debug!("   Channel: Misc"),
             1 => debug!("   Channel: Asset"),
             2 => debug!("   Channel: Estate"),
-            _ => debug!("   Channel: Unknown ({})", transfer_info.channel_type),
+            _ => debug!("   Channel: Unknown ({})", transfer_info.transfer_info.channel_type),
         }
         
         // TODO: Process asset data based on transfer type
         // TODO: Update asset cache with received data
         // TODO: Emit asset transfer events per netplan.md
         
-        debug!("✅ Processed transfer info: {}", transfer_info.transfer_id);
+        debug!("✅ Processed transfer info: {}", transfer_info.transfer_info.transfer_id);
         Ok(())
     }
 }
@@ -131,13 +131,13 @@ impl TypedPacketHandler<TransferAbort> for TransferAbortHandler {
     async fn handle_typed(&self, transfer_abort: TransferAbort, _context: &HandlerContext) -> NetworkResult<()> {
         info!("🚫 Received TransferAbort");
         
-        debug!("🔄 Transfer ID: {}", transfer_abort.transfer_id);
+        debug!("🔄 Transfer ID: {}", transfer_abort.transfer_info.transfer_id);
         
         // TODO: Cancel ongoing transfer
         // TODO: Clean up transfer resources
         // TODO: Emit transfer cancelled event per netplan.md
         
-        debug!("✅ Processed transfer abort: {}", transfer_abort.transfer_id);
+        debug!("✅ Processed transfer abort: {}", transfer_abort.transfer_info.transfer_id);
         Ok(())
     }
 }
@@ -207,12 +207,12 @@ impl ImageDataHandler {
 #[async_trait]
 impl TypedPacketHandler<ImageData> for ImageDataHandler {
     async fn handle_typed(&self, image_data: ImageData, _context: &HandlerContext) -> NetworkResult<()> {
-        debug!("🖼️ Received ImageData: {} bytes", image_data.data.data.len());
+        debug!("🖼️ Received ImageData: {} bytes", image_data.image_data.data.data.len());
         
-        debug!("🖼️ Image ID: {}", image_data.id);
+        debug!("🖼️ Image ID: {}", image_data.image_id.id);
         debug!("   Packets: {}, Codec: {}", 
-               image_data.packets, image_data.codec);
-        debug!("   Size: {}x{}", image_data.size, image_data.size);
+               image_data.image_id.packets, image_data.image_id.codec);
+        debug!("   Size: {}x{}", image_data.image_id.size, image_data.image_id.size);
         
         // TODO: Process image data based on codec
         // TODO: Reassemble multi-packet images
@@ -237,15 +237,15 @@ impl TypedPacketHandler<LayerData> for LayerDataHandler {
     async fn handle_typed(&self, layer_data: LayerData, _context: &HandlerContext) -> NetworkResult<()> {
         debug!("🗺️ Received LayerData");
         
-        debug!("🗺️ Layer Type: {}", layer_data.r#type);
-        debug!("   Data: {} bytes", layer_data.data.data.len());
+        debug!("🗺️ Layer Type: {}", layer_data.layer_id.r#type);
+        debug!("   Data: {} bytes", layer_data.layer_data.data.data.len());
         
         // Process different layer types
-        match layer_data.r#type {
+        match layer_data.layer_id.r#type {
             0 => debug!("   Layer: Land (terrain height)"),
             1 => debug!("   Layer: Wind"),
             2 => debug!("   Layer: Cloud"),
-            _ => debug!("   Layer: Unknown type {}", layer_data.r#type),
+            _ => debug!("   Layer: Unknown type {}", layer_data.layer_id.r#type),
         }
         
         // TODO: Process terrain/layer data

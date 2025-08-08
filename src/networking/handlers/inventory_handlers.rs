@@ -24,12 +24,12 @@ impl TypedPacketHandler<FetchInventoryDescendents> for FetchInventoryDescendents
         info!("📁 Received FetchInventoryDescendents request");
         
         // Process inventory fetch request
-        debug!("📂 Fetching descendants for folder: {}", fetch_request.folder_id);
-        debug!("   Owner: {}, Agent: {}", fetch_request.owner_id, fetch_request.agent_id);
+        debug!("📂 Fetching descendants for folder: {}", fetch_request.inventory_data.folder_id);
+        debug!("   Owner: {}, Agent: {}", fetch_request.inventory_data.owner_id, fetch_request.agent_data.agent_id);
         debug!("   Fetch folders: {:?}, Fetch items: {:?}", 
-               fetch_request.fetch_folders, 
-               fetch_request.fetch_items);
-        debug!("   Sort order: {:?}", fetch_request.sort_order);
+               fetch_request.inventory_data.fetch_folders, 
+               fetch_request.inventory_data.fetch_items);
+        debug!("   Sort order: {:?}", fetch_request.inventory_data.sort_order);
         
         // TODO: Implement inventory system integration
         // This would:
@@ -63,11 +63,11 @@ impl TypedPacketHandler<InventoryDescendents> for InventoryDescendentsHandler {
         info!("📋 Received InventoryDescendents response");
         
         debug!("📂 Agent: {}, Folder: {}", 
-               inventory_response.agent_id,
-               inventory_response.folder_id);
+               inventory_response.agent_data.agent_id,
+               inventory_response.agent_data.folder_id);
         debug!("   Version: {:?}, Descendents: {:?}", 
-               inventory_response.version,
-               inventory_response.descendents);
+               inventory_response.agent_data.version,
+               inventory_response.agent_data.descendents);
         
         // Process folder items
         for folder_data in &inventory_response.folder_data {

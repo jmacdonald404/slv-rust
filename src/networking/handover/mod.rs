@@ -134,15 +134,15 @@ impl RegionCrossingManager {
     
     /// Handle EnableSimulator packet for region crossing
     pub async fn handle_enable_simulator(&self, enable_sim: EnableSimulator) -> NetworkResult<()> {
-        debug!("🌍 Received EnableSimulator for region {:016x}", enable_sim.handle);
+        debug!("🌍 Received EnableSimulator for region {:016x}", enable_sim.simulator_info.handle);
         
         // Extract simulator information
         let simulator_info = SimulatorInfo {
             address: SocketAddr::new(
-                std::net::IpAddr::V4(enable_sim.ip.to_std_addr()),
-                enable_sim.port.to_host_order()
+                std::net::IpAddr::V4(enable_sim.simulator_info.ip.to_std_addr()),
+                enable_sim.simulator_info.port.to_host_order()
             ),
-            region_handle: enable_sim.handle,
+            region_handle: enable_sim.simulator_info.handle,
             region_id: uuid::Uuid::new_v4(), // EnableSimulator doesn't provide region_id
             circuit_code: 0, // EnableSimulator doesn't provide circuit_code
             seed_capability: None, // Will be provided later
@@ -168,9 +168,11 @@ impl RegionCrossingManager {
         
         // Send CompleteAgentMovement packet
         let complete_movement = CompleteAgentMovement {
-            agent_id: self.agent_id,
-            session_id: self.session_id,
-            circuit_code: 0, // Will be filled by circuit
+            agent_data: crate::networking::packets::generated::CompleteAgentMovementAgentDataBlock {
+                agent_id: self.agent_id,
+                session_id: self.session_id,
+                circuit_code: 0, // Will be filled by circuit
+            },
         };
         
         circuit.send_reliable(&complete_movement, std::time::Duration::from_secs(5)).await?;

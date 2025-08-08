@@ -13,8 +13,11 @@ use template_parser::{MessageDefinition, BlockDefinition, Cardinality};
 
 fn generate_block_structs(code: &mut String, message: &MessageDefinition, generated_blocks: &mut HashSet<String>) {
     for block in &message.blocks {
-        if matches!(block.cardinality, Cardinality::Multiple | Cardinality::Variable) && !block.fields.is_empty() {
-            let block_name = format!("{}Block", block.name);
+        // Generate block structs for all block types that have fields, including Single blocks
+        if !block.fields.is_empty() {
+            // Create unique block names to avoid collisions between different messages
+            // Use MessageName + BlockName + "Block" format
+            let block_name = format!("{}{}Block", message.name, block.name);
             
             // Skip if we've already generated this block struct
             if generated_blocks.contains(&block_name) {
@@ -22,10 +25,8 @@ fn generate_block_structs(code: &mut String, message: &MessageDefinition, genera
             }
             generated_blocks.insert(block_name.clone());
             
-            code.push_str(&format!("#[derive(Debug, Clone, Serialize, Deserialize)]
-"));
-            code.push_str(&format!("pub struct {} {{
-", block_name));
+            code.push_str(&format!("#[derive(Debug, Clone, Serialize, Deserialize)]\n"));
+            code.push_str(&format!("pub struct {} {{\n", block_name));
             
             let mut field_names = std::collections::HashSet::new();
             let mut field_counter = std::collections::HashMap::new();
@@ -33,7 +34,6 @@ fn generate_block_structs(code: &mut String, message: &MessageDefinition, genera
             for field in &block.fields {
                 // CRITICAL FIX: UseCircuitCode ID field must be LLUUID, not Vec<u8>
                 let rust_type = if message.name == "UseCircuitCode" && field.name == "ID" {
-                    println!("cargo:warning=FIXING UseCircuitCode ID field: {} -> LLUUID", field.type_name);
                     "LLUUID"
                 } else {
                     map_field_type(&field.type_name)
@@ -47,14 +47,11 @@ fn generate_block_structs(code: &mut String, message: &MessageDefinition, genera
                 }
                 
                 field_names.insert(field_name.clone());
-                code.push_str(&format!("    pub {}: {},
-", 
+                code.push_str(&format!("    pub {}: {},\n", 
                     field_name, rust_type));
             }
             
-            code.push_str("}
-
-");
+            code.push_str("}\n\n");
         }
     }
 }
@@ -68,7 +65,7 @@ fn generate_message_struct(code: &mut String, message: &MessageDefinition) {
     let mut field_counter = std::collections::HashMap::new();
     
     for block in &message.blocks {
-        generate_block_fields_with_dedup(code, block, &mut field_names, &mut field_counter);
+        generate_block_fields_with_dedup(code, block, &message.name, &mut field_names, &mut field_counter);
     }
     
     code.push_str("}\n\n");
@@ -91,10 +88,32 @@ fn generate_message_struct(code: &mut String, message: &MessageDefinition) {
         template_parser::Encoding::Unencoded => "false",
     };
     
+    // Determine reliability based on protocol conventions
+    let reliable = match message.frequency {
+        template_parser::Frequency::Fixed => {
+            // Fixed messages are typically unreliable except for specific ones
+            match message.name.as_str() {
+                "UseCircuitCode" | "CompleteAgentMovement" => "true",
+                _ => "false"
+            }
+        },
+        _ => {
+            // Low/Medium/High frequency messages - determine by content
+            match message.name.as_str() {
+                // Acknowledgment and ping messages are unreliable
+                "PacketAck" | "StartPingCheck" | "CompletePingCheck" => "false",
+                // Agent updates and movement are unreliable (high frequency)
+                "AgentUpdate" | "ViewerEffect" => "false",
+                // Most other messages are reliable by default
+                _ => "true"
+            }
+        }
+    };
+    
     code.push_str(&format!("impl Packet for {} {{\n", message.name));
     code.push_str(&format!("    const ID: u32 = {};\n", message.id));
     code.push_str(&format!("    const FREQUENCY: PacketFrequency = {};\n", frequency_str));
-    code.push_str("    const RELIABLE: bool = true;\n"); // Default to reliable
+    code.push_str(&format!("    const RELIABLE: bool = {};\n", reliable));
     code.push_str(&format!("    const ZEROCODED: bool = {};\n", zerocoded));
     code.push_str(&format!("    const TRUSTED: bool = {};\n", trusted));
     code.push_str("    \n");
@@ -106,59 +125,40 @@ fn generate_message_struct(code: &mut String, message: &MessageDefinition) {
 fn generate_block_fields_with_dedup(
     code: &mut String, 
     block: &BlockDefinition, 
+    message_name: &str,
     field_names: &mut std::collections::HashSet<String>,
     field_counter: &mut std::collections::HashMap<String, u32>
 ) {
-    match block.cardinality {
-        Cardinality::Single => {
-            // Single block - generate fields directly with deduplication
-            for field in &block.fields {
-                let rust_type = map_field_type(&field.type_name);
-                let mut field_name = to_snake_case(&field.name);
-                
-                // Handle field name conflicts by appending counter
-                if field_names.contains(&field_name) {
-                    let counter = field_counter.entry(field_name.clone()).or_insert(1);
-                    *counter += 1;
-                    field_name = format!("{}_{}", field_name, counter);
-                }
-                
-                field_names.insert(field_name.clone());
-                code.push_str(&format!("    pub {}: {},\n", field_name, rust_type));
-            }
+    if !block.fields.is_empty() {
+        let mut block_field_name = to_snake_case(&block.name);
+        
+        // Handle block name conflicts
+        if field_names.contains(&block_field_name) {
+            let counter = field_counter.entry(block_field_name.clone()).or_insert(1);
+            *counter += 1;
+            block_field_name = format!("{}_{}", block_field_name, counter);
         }
-        Cardinality::Multiple => {
-            // Multiple blocks - wrap in Vec
-            if !block.fields.is_empty() {
-                let mut block_field_name = to_snake_case(&block.name);
-                
-                // Handle block name conflicts
-                if field_names.contains(&block_field_name) {
-                    let counter = field_counter.entry(block_field_name.clone()).or_insert(1);
-                    *counter += 1;
-                    block_field_name = format!("{}_{}", block_field_name, counter);
-                }
-                
-                field_names.insert(block_field_name.clone());
-                code.push_str(&format!("    pub {}: Vec<{}Block>,\n", 
-                    block_field_name, block.name));
+        
+        field_names.insert(block_field_name.clone());
+        
+        // Use unique block names: MessageName + BlockName + "Block"
+        let unique_block_name = format!("{}{}Block", message_name, block.name);
+        
+        match block.cardinality {
+            Cardinality::Single => {
+                // Single block - use the generated unique BlockStruct directly
+                code.push_str(&format!("    pub {}: {},\n", 
+                    block_field_name, unique_block_name));
             }
-        }
-        Cardinality::Variable => {
-            // Variable blocks - also wrap in Vec
-            if !block.fields.is_empty() {
-                let mut block_field_name = to_snake_case(&block.name);
-                
-                // Handle block name conflicts
-                if field_names.contains(&block_field_name) {
-                    let counter = field_counter.entry(block_field_name.clone()).or_insert(1);
-                    *counter += 1;
-                    block_field_name = format!("{}_{}", block_field_name, counter);
-                }
-                
-                field_names.insert(block_field_name.clone());
-                code.push_str(&format!("    pub {}: Vec<{}Block>,\n", 
-                    block_field_name, block.name));
+            Cardinality::Multiple => {
+                // Multiple blocks - wrap in Vec
+                code.push_str(&format!("    pub {}: Vec<{}>,\n", 
+                    block_field_name, unique_block_name));
+            }
+            Cardinality::Variable => {
+                // Variable blocks - also wrap in Vec
+                code.push_str(&format!("    pub {}: Vec<{}>,\n", 
+                    block_field_name, unique_block_name));
             }
         }
     }

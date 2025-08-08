@@ -18,12 +18,15 @@ pub mod agent_handlers;
 pub mod region_handlers;
 pub mod inventory_handlers;
 pub mod asset_handlers;
+pub mod time_handlers;
 pub mod system;
 
 // Re-export handlers for easy access
 pub use region_handlers::*;
 pub use inventory_handlers::*;
 pub use asset_handlers::*;
+pub use agent_handlers::*;
+pub use time_handlers::*;
 
 /// Context provided to packet handlers
 #[derive(Debug)]
@@ -155,7 +158,8 @@ impl PacketHandlerRegistry {
                 }
                 Err(e) => {
                     warn!("❌ PACKET HANDLER RESPONSE ERROR: Handler '{}' failed", handler.name());
-                    warn!("   Error: {}", e);
+                    warn!("   Error: {:?}", e);
+                    warn!("   Error Debug: {:#?}", e);
                     warn!("   Processing time: {:?}", processing_time);
                 }
             }
@@ -181,6 +185,12 @@ impl PacketHandlerRegistry {
         // Register the comprehensive RegionHandshakeHandler from login_handlers
         self.register_typed(login_handlers::RegionHandshakeHandler::new()).await;
         self.register_typed(agent_handlers::PacketAckHandler::new()).await;
+        
+        // Register ViewerEffect handler for incoming effects from other agents
+        self.register_typed::<crate::networking::packets::generated::ViewerEffect, _>(agent_handlers::ViewerEffectHandler::new()).await;
+        
+        // Register time synchronization handler
+        self.register_typed::<crate::networking::packets::generated::SimulatorViewerTimeMessage, _>(time_handlers::SimulatorViewerTimeMessageHandler::new()).await;
         
         // Register the critical handlers for auth handshake
         self.register_typed(login_handlers::StartPingCheckHandler::new()).await;
@@ -282,7 +292,8 @@ impl PacketProcessor {
             }
             Err(e) => {
                 warn!("❌ PACKET PROCESSOR RESPONSE ERROR: Packet processing failed");
-                warn!("   Error: {}", e);
+                warn!("   Error: {:?}", e);
+                warn!("   Error Debug: {:#?}", e);
                 warn!("   Total processing time: {:?}", total_time);
             }
         }

@@ -21,7 +21,8 @@
       "WebFetch(domain:github.com)",
       "Bash(grep:*)",
       "WebFetch(domain:docs.rs)",
-      "Bash(target/debug/hippolog_analyzer:*)"
+      "Bash(target/debug/hippolog_analyzer:*)",
+      "Bash(rg:*)"
     ],
     "deny": []
   }

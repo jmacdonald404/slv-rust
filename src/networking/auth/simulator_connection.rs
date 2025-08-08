@@ -7,7 +7,7 @@ use tracing::{info, debug, warn, error};
 use uuid::Uuid;
 
 use super::types::LoginResponse;
-use crate::networking::packets::generated::{UseCircuitCode, CompleteAgentMovement, RegionHandshakeReply};
+use crate::networking::packets::generated::{UseCircuitCode, UseCircuitCodeCircuitCodeBlock, CompleteAgentMovement, CompleteAgentMovementAgentDataBlock, RegionHandshakeReply, RegionHandshakeReplyAgentDataBlock, RegionHandshakeReplyRegionInfoBlock};
 use crate::networking::packets::Packet;
 use crate::networking::serialization::PacketSerializer;
 
@@ -62,9 +62,11 @@ impl SimulatorConnection {
     /// Send UseCircuitCode packet to simulator
     async fn send_use_circuit_code(&self) -> Result<()> {
         let packet = UseCircuitCode {
-            code: self.login_response.circuit_code,
-            session_id: self.login_response.session_id,
-            id: self.login_response.agent_id,
+            circuit_code: UseCircuitCodeCircuitCodeBlock {
+                code: self.login_response.circuit_code,
+                session_id: self.login_response.session_id,
+                id: self.login_response.agent_id,
+            },
         };
 
         info!("📤 Sending UseCircuitCode packet");
@@ -122,9 +124,13 @@ impl SimulatorConnection {
     /// Send RegionHandshakeReply packet
     async fn send_region_handshake_reply(&self) -> Result<()> {
         let packet = RegionHandshakeReply {
-            agent_id: self.login_response.agent_id,
-            session_id: self.login_response.session_id,
-            flags: 0, // Standard flags for region handshake reply
+            agent_data: RegionHandshakeReplyAgentDataBlock {
+                agent_id: self.login_response.agent_id,
+                session_id: self.login_response.session_id,
+            },
+            region_info: RegionHandshakeReplyRegionInfoBlock {
+                flags: 0, // Standard flags for region handshake reply
+            },
         };
 
         info!("📤 Sending RegionHandshakeReply packet");
@@ -139,9 +145,11 @@ impl SimulatorConnection {
     /// Send CompleteAgentMovement packet
     async fn send_complete_agent_movement(&self) -> Result<()> {
         let packet = CompleteAgentMovement {
-            agent_id: self.login_response.agent_id,
-            session_id: self.login_response.session_id,
-            circuit_code: self.login_response.circuit_code,
+            agent_data: CompleteAgentMovementAgentDataBlock {
+                agent_id: self.login_response.agent_id,
+                session_id: self.login_response.session_id,
+                circuit_code: self.login_response.circuit_code,
+            },
         };
 
         info!("📤 Sending CompleteAgentMovement packet");

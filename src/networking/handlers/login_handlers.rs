@@ -21,15 +21,19 @@ impl TypedPacketHandler<RegionHandshake> for RegionHandshakeHandler {
     async fn handle_typed(&self, packet: RegionHandshake, context: &HandlerContext) -> NetworkResult<()> {
         info!("Received RegionHandshake from {}", context.circuit.address());
         
-        info!("Region info: {}", String::from_utf8_lossy(&packet.sim_name.data));
-        info!("Region flags: {:x}", packet.region_flags);
-        info!("Water height: {}", packet.water_height);
+        info!("Region info: {}", String::from_utf8_lossy(&packet.region_info.sim_name.data));
+        info!("Region flags: {:x}", packet.region_info.region_flags);
+        info!("Water height: {}", packet.region_info.water_height);
         
         // Send RegionHandshakeReply
         let reply = RegionHandshakeReply {
-            agent_id: context.agent_id,
-            session_id: context.session_id,
-            flags: 0, // Client flags - 0 for basic functionality
+            agent_data: crate::networking::packets::generated::RegionHandshakeReplyAgentDataBlock {
+                agent_id: context.agent_id,
+                session_id: context.session_id,
+            },
+            region_info: crate::networking::packets::generated::RegionHandshakeReplyRegionInfoBlock {
+                flags: 0, // Client flags - 0 for basic functionality
+            },
         };
         
         context.circuit.send_reliable(&reply, std::time::Duration::from_secs(5)).await?;
@@ -41,12 +45,16 @@ impl TypedPacketHandler<RegionHandshake> for RegionHandshakeHandler {
         
         // 1. AgentHeightWidth
         let agent_height_width = AgentHeightWidth {
-            agent_id: context.agent_id,
-            session_id: context.session_id,
-            circuit_code: context.circuit.circuit_code(),
-            gen_counter: 0,
-            height: 200, // Default height in cm
-            width: 60,   // Default width in cm
+            agent_data: crate::networking::packets::generated::AgentHeightWidthAgentDataBlock {
+                agent_id: context.agent_id,
+                session_id: context.session_id,
+                circuit_code: context.circuit.circuit_code(),
+            },
+            height_width_block: crate::networking::packets::generated::AgentHeightWidthHeightWidthBlockBlock {
+                gen_counter: 0,
+                height: 200, // Default height in cm
+                width: 60,   // Default width in cm
+            },
         };
         
         context.circuit.send_reliable(&agent_height_width, std::time::Duration::from_secs(5)).await?;
@@ -68,19 +76,21 @@ impl TypedPacketHandler<RegionHandshake> for RegionHandshakeHandler {
         // 2. Server responds with ObjectUpdate containing avatar's true position
         // 3. Send corrected AgentUpdate with real position (TODO: implement)
         let agent_update = AgentUpdate {
-            agent_id: context.agent_id,
-            session_id: context.session_id,
-            body_rotation: crate::networking::packets::types::LLQuaternion::identity(),
-            head_rotation: crate::networking::packets::types::LLQuaternion::identity(),
-            state: 0, // Standing
-            // BOGUS POSITION: Using region center as placeholder (256x256m region)
-            camera_center: crate::networking::packets::types::LLVector3::new(128.0, 128.0, 25.0),
-            camera_at_axis: crate::networking::packets::types::LLVector3::new(1.0, 0.0, 0.0),
-            camera_left_axis: crate::networking::packets::types::LLVector3::new(0.0, 1.0, 0.0),
-            camera_up_axis: crate::networking::packets::types::LLVector3::new(0.0, 0.0, 1.0),
-            far: 256.0, // Draw distance
-            control_flags: 0,
-            flags: 0,
+            agent_data: crate::networking::packets::generated::AgentUpdateAgentDataBlock {
+                agent_id: context.agent_id,
+                session_id: context.session_id,
+                body_rotation: crate::networking::packets::types::LLQuaternion::identity(),
+                head_rotation: crate::networking::packets::types::LLQuaternion::identity(),
+                state: 0, // Standing
+                // BOGUS POSITION: Using region center as placeholder (256x256m region)
+                camera_center: crate::networking::packets::types::LLVector3::new(128.0, 128.0, 25.0),
+                camera_at_axis: crate::networking::packets::types::LLVector3::new(1.0, 0.0, 0.0),
+                camera_left_axis: crate::networking::packets::types::LLVector3::new(0.0, 1.0, 0.0),
+                camera_up_axis: crate::networking::packets::types::LLVector3::new(0.0, 0.0, 1.0),
+                far: 256.0, // Draw distance
+                control_flags: 0,
+                flags: 0,
+            },
         };
         
         // Send initial "bogus position" AgentUpdate to prime server's interest list
@@ -109,17 +119,19 @@ impl StartPingCheckHandler {
 #[async_trait]
 impl TypedPacketHandler<StartPingCheck> for StartPingCheckHandler {
     async fn handle_typed(&self, packet: StartPingCheck, context: &HandlerContext) -> NetworkResult<()> {
-        debug!("Received StartPingCheck from {} with PingID: {}", 
+        debug!("Received StartPingCheck from {} with PingID: {:?}", 
                context.circuit.address(), packet.ping_id);
         
         // Respond with CompletePingCheck
         let reply = CompletePingCheck {
-            ping_id: packet.ping_id,
+            ping_id: crate::networking::packets::generated::CompletePingCheckPingIDBlock {
+                ping_id: packet.ping_id.ping_id,
+            },
         };
         
         // Send the ping reply immediately (unreliable)
         context.circuit.send(&reply).await?;
-        debug!("Sent CompletePingCheck reply with PingID: {}", packet.ping_id);
+        debug!("Sent CompletePingCheck reply with PingID: {:?}", packet.ping_id);
         
         Ok(())
     }
@@ -137,11 +149,11 @@ impl CompletePingCheckHandler {
 #[async_trait]
 impl TypedPacketHandler<CompletePingCheck> for CompletePingCheckHandler {
     async fn handle_typed(&self, packet: CompletePingCheck, context: &HandlerContext) -> NetworkResult<()> {
-        debug!("Received CompletePingCheck from {} with PingID: {}", 
+        debug!("Received CompletePingCheck from {} with PingID: {:?}", 
                context.circuit.address(), packet.ping_id);
         
         // Handle ping response
-        context.circuit.handle_ping_response(packet.ping_id).await;
+        context.circuit.handle_ping_response(packet.ping_id.ping_id).await;
         
         Ok(())
     }
@@ -190,7 +202,7 @@ impl TypedPacketHandler<ObjectUpdate> for ObjectUpdateHandler {
         
         // Process object updates - look for avatar's authoritative position
         for (i, obj) in packet.object_data.into_iter().enumerate() {
-            debug!("Object {}: ID={:?}", i, obj.object_id);
+            debug!("Object {}: ID={:?}", i, obj.id);
             
             // PROTOCOL FIX: Check if this ObjectUpdate contains our avatar's authoritative position
             // This is part of the "bogus position" workaround sequence:
@@ -226,19 +238,21 @@ impl TypedPacketHandler<ObjectUpdate> for ObjectUpdateHandler {
                 // Send corrected AgentUpdate with a more reasonable position
                 // Using region center as a fallback since we can't extract exact position yet
                 let corrected_agent_update = AgentUpdate {
-                    agent_id: context.agent_id,
-                    session_id: context.session_id,
-                    body_rotation: crate::networking::packets::types::LLQuaternion::identity(),
-                    head_rotation: crate::networking::packets::types::LLQuaternion::identity(),
-                    state: 0, // Standing
-                    // Use region center as corrected position (this should be the real avatar position)
-                    camera_center: crate::networking::packets::types::LLVector3::new(128.0, 128.0, 25.0),
-                    camera_at_axis: crate::networking::packets::types::LLVector3::new(1.0, 0.0, 0.0),
-                    camera_left_axis: crate::networking::packets::types::LLVector3::new(0.0, 1.0, 0.0),
-                    camera_up_axis: crate::networking::packets::types::LLVector3::new(0.0, 0.0, 1.0),
-                    far: 256.0, // Draw distance
-                    control_flags: 0,
-                    flags: 0,
+                    agent_data: crate::networking::packets::generated::AgentUpdateAgentDataBlock {
+                        agent_id: context.agent_id,
+                        session_id: context.session_id,
+                        body_rotation: crate::networking::packets::types::LLQuaternion::identity(),
+                        head_rotation: crate::networking::packets::types::LLQuaternion::identity(),
+                        state: 0, // Standing
+                        // Use region center as corrected position (this should be the real avatar position)
+                        camera_center: crate::networking::packets::types::LLVector3::new(128.0, 128.0, 25.0),
+                        camera_at_axis: crate::networking::packets::types::LLVector3::new(1.0, 0.0, 0.0),
+                        camera_left_axis: crate::networking::packets::types::LLVector3::new(0.0, 1.0, 0.0),
+                        camera_up_axis: crate::networking::packets::types::LLVector3::new(0.0, 0.0, 1.0),
+                        far: 256.0, // Draw distance
+                        control_flags: 0,
+                        flags: 0,
+                    },
                 };
                 
                 // Send corrected AgentUpdate (unreliable, like the first one)
@@ -271,16 +285,16 @@ impl TypedPacketHandler<LayerData> for LayerDataHandler {
     async fn handle_typed(&self, packet: LayerData, context: &HandlerContext) -> NetworkResult<()> {
         debug!("Received LayerData from {} type={} size={}", 
                context.circuit.address(), 
-               packet.r#type,
-               packet.data.data.len());
+               packet.layer_id.r#type,
+               packet.layer_data.data.data.len());
         
         // Process layer data (terrain, water, etc.)
-        match packet.r#type {
+        match packet.layer_id.r#type {
             0 => debug!("Land layer data received"),
             1 => debug!("Water layer data received"), 
             2 => debug!("Wind layer data received"),
             3 => debug!("Cloud layer data received"),
-            _ => debug!("Unknown layer type: {}", packet.r#type),
+            _ => debug!("Unknown layer type: {}", packet.layer_id.r#type),
         }
         
         Ok(())
@@ -308,8 +322,8 @@ impl TypedPacketHandler<CoarseLocationUpdate> for CoarseLocationUpdateHandler {
         }
         
         // Process you/prey data if present
-        debug!("You: {:?}", packet.you);
-        debug!("Prey: {:?}", packet.prey);
+        debug!("You: {:?}", packet.index.you);
+        debug!("Prey: {:?}", packet.index.prey);
         debug!("Agent data: {:?}", packet.agent_data);
         
         Ok(())
@@ -331,8 +345,8 @@ impl TypedPacketHandler<EconomyData> for EconomyDataHandler {
         info!("Received EconomyData from {}", context.circuit.address());
         
         debug!("Economy info - Object count: {}, Price public: {}", 
-               packet.object_count, 
-               packet.price_public_object_decay);
+               packet.info.object_count, 
+               packet.info.price_public_object_decay);
         
         // Economy data doesn't typically require a response
         // It provides information about land costs, upload fees, etc.
@@ -380,9 +394,9 @@ impl TypedPacketHandler<EnableSimulator> for EnableSimulatorHandler {
         info!("Received EnableSimulator from {}", context.circuit.address());
         
         debug!("Enable simulator: {} at {}:{}", 
-               packet.handle,
-               packet.ip.to_std_addr(), 
-               packet.port.to_host_order());
+               packet.simulator_info.handle,
+               packet.simulator_info.ip.to_std_addr(), 
+               packet.simulator_info.port.to_host_order());
         
         // EnableSimulator tells us about adjacent regions
         // In a full implementation, we'd establish circuits to these
@@ -405,8 +419,8 @@ impl TypedPacketHandler<AgentMovementComplete> for AgentMovementCompleteHandler 
     async fn handle_typed(&self, packet: AgentMovementComplete, context: &HandlerContext) -> NetworkResult<()> {
         info!("Received AgentMovementComplete from {} - completing handshake!", context.circuit.address());
         
-        debug!("Agent position: {:?}", packet.position);
-        debug!("Channel version: {:?}", packet.channel_version);
+        debug!("Agent position: {:?}", packet.data.position);
+        // Channel version field not available in this block structure
         
         // PROTOCOL SEQUENCE: AgentThrottle is sent here AFTER AgentMovementComplete
         // for optimal protocol timing, following the correct sequence.
@@ -434,11 +448,15 @@ impl TypedPacketHandler<AgentMovementComplete> for AgentMovementCompleteHandler 
         };
         
         let agent_throttle = AgentThrottle {
-            agent_id: context.agent_id,
-            session_id: context.session_id,
-            circuit_code: context.circuit.circuit_code(),
-            gen_counter: 0,
-            throttles: crate::networking::packets::types::LLVariable1::new(throttle_data),
+            agent_data: crate::networking::packets::generated::AgentThrottleAgentDataBlock {
+                agent_id: context.agent_id,
+                session_id: context.session_id,
+                circuit_code: context.circuit.circuit_code(),
+            },
+            throttle: crate::networking::packets::generated::AgentThrottleThrottleBlock {
+                gen_counter: 0,
+                throttles: crate::networking::packets::types::LLVariable1::new(throttle_data),
+            },
         };
         
         context.circuit.send_reliable(&agent_throttle, std::time::Duration::from_secs(5)).await?;
@@ -450,18 +468,20 @@ impl TypedPacketHandler<AgentMovementComplete> for AgentMovementCompleteHandler 
         
         for control_flags in control_flags_sequence {
             let agent_update = AgentUpdate {
-                agent_id: context.agent_id,
-                session_id: context.session_id,
-                body_rotation: crate::networking::packets::types::LLQuaternion::identity(),
-                head_rotation: crate::networking::packets::types::LLQuaternion::identity(),
-                state: 0,
-                camera_center: crate::networking::packets::types::LLVector3::new(128.0, 128.0, 25.0),
-                camera_at_axis: crate::networking::packets::types::LLVector3::new(1.0, 0.0, 0.0),
-                camera_left_axis: crate::networking::packets::types::LLVector3::new(0.0, 1.0, 0.0),
-                camera_up_axis: crate::networking::packets::types::LLVector3::new(0.0, 0.0, 1.0),
-                far: 256.0,
-                control_flags,
-                flags: 0,
+                agent_data: crate::networking::packets::generated::AgentUpdateAgentDataBlock {
+                    agent_id: context.agent_id,
+                    session_id: context.session_id,
+                    body_rotation: crate::networking::packets::types::LLQuaternion::identity(),
+                    head_rotation: crate::networking::packets::types::LLQuaternion::identity(),
+                    state: 0,
+                    camera_center: crate::networking::packets::types::LLVector3::new(128.0, 128.0, 25.0),
+                    camera_at_axis: crate::networking::packets::types::LLVector3::new(1.0, 0.0, 0.0),
+                    camera_left_axis: crate::networking::packets::types::LLVector3::new(0.0, 1.0, 0.0),
+                    camera_up_axis: crate::networking::packets::types::LLVector3::new(0.0, 0.0, 1.0),
+                    far: 256.0,
+                    control_flags,
+                    flags: 0,
+                },
             };
             
             // AgentUpdate is sent unreliably

@@ -504,11 +504,15 @@ impl Client {
         
         // Create ChatFromViewer packet
         let chat_packet = ChatFromViewer {
-            agent_id: self.session_info.agent_id,
-            session_id: self.session_info.session_id,
-            message: crate::networking::packets::types::LLVariable2::from_string(message),
-            r#type: 1, // Normal chat
-            channel: channel as i32,
+            agent_data: ChatFromViewerAgentDataBlock {
+                agent_id: self.session_info.agent_id,
+                session_id: self.session_info.session_id,
+            },
+            chat_data: ChatFromViewerChatDataBlock {
+                message: crate::networking::packets::types::LLVariable2::from_string(message),
+                r#type: 1, // Normal chat
+                channel: channel as i32,
+            },
         };
         
         circuit.send(&chat_packet).await?;
@@ -538,18 +542,20 @@ impl Client {
         
         let agent_state = self.agent_state.read().await;
         let agent_update = AgentUpdate {
-            agent_id: self.session_info.agent_id,
-            session_id: self.session_info.session_id,
-            body_rotation: agent_state.body_rotation.clone(),
-            head_rotation: agent_state.head_rotation.clone(),
-            state: agent_state.state,
-            camera_center: agent_state.camera_center.clone(),
-            camera_at_axis: agent_state.camera_at_axis.clone(),
-            camera_left_axis: agent_state.camera_left_axis.clone(),
-            camera_up_axis: agent_state.camera_up_axis.clone(),
-            far: agent_state.far,
-            control_flags: agent_state.control_flags,
-            flags: agent_state.flags,
+            agent_data: AgentUpdateAgentDataBlock {
+                agent_id: self.session_info.agent_id,
+                session_id: self.session_info.session_id,
+                body_rotation: agent_state.body_rotation.clone(),
+                head_rotation: agent_state.head_rotation.clone(),
+                state: agent_state.state,
+                camera_center: agent_state.camera_center.clone(),
+                camera_at_axis: agent_state.camera_at_axis.clone(),
+                camera_left_axis: agent_state.camera_left_axis.clone(),
+                camera_up_axis: agent_state.camera_up_axis.clone(),
+                far: agent_state.far,
+                control_flags: agent_state.control_flags,
+                flags: agent_state.flags,
+            },
         };
         
         // AgentUpdate is sent unreliably
@@ -558,14 +564,14 @@ impl Client {
         Ok(())
     }
     
-    /// Start continuous AgentUpdate messages (simulating what official viewer does)
+    /// Start minimal AgentUpdate messages (matching official viewer's ~21 messages)
     pub async fn start_continuous_agent_updates(&self) -> NetworkResult<()> {
         if self.agent_update_running.swap(true, Ordering::SeqCst) {
             info!("🔄 AgentUpdate loop already running, skipping start");
             return Ok(());
         }
         
-        info!("🚀 Starting continuous AgentUpdate messages");
+        info!("🚀 Starting minimal AgentUpdate messages (official viewer pattern)");
         
         let core = Arc::clone(&self.core);
         let session_info = self.session_info.clone();
@@ -573,48 +579,98 @@ impl Client {
         let running = Arc::clone(&self.agent_update_running);
         
         tokio::spawn(async move {
-            // Match main branch frequency: 100ms intervals (circuit.rs:370)
-            let mut update_interval = interval(Duration::from_millis(100));
+            // Send initial handshake AgentUpdates like Homunculus (3 messages for animation)
             let mut send_count = 0;
             
-            while running.load(Ordering::SeqCst) {
-                update_interval.tick().await;
+            if let Some(circuit) = core.primary_circuit().await {
+                let initial_state = agent_state.read().await.clone();
                 
-                if let Some(circuit) = core.primary_circuit().await {
-                    let current_state = agent_state.read().await.clone();
+                // Send 3 initial AgentUpdates like Homunculus pattern for animation completion
+                for control_flags in [0u32, 0x4000u32, 0u32] { // NONE, FINISH_ANIM, NONE
+                    tokio::time::sleep(Duration::from_millis(1000)).await;
                     
-                    // Send AgentUpdate every time for now (like main branch does)
-                    // This ensures we see the messages in hippolog for debugging
                     let agent_update = AgentUpdate {
-                        agent_id: session_info.agent_id,
-                        session_id: session_info.session_id,
-                        body_rotation: current_state.body_rotation.clone(),
-                        head_rotation: current_state.head_rotation.clone(),
-                        state: current_state.state,
-                        camera_center: current_state.camera_center.clone(),
-                        camera_at_axis: current_state.camera_at_axis.clone(),
-                        camera_left_axis: current_state.camera_left_axis.clone(),
-                        camera_up_axis: current_state.camera_up_axis.clone(),
-                        far: current_state.far,
-                        control_flags: current_state.control_flags,
-                        flags: current_state.flags,
+                        agent_data: AgentUpdateAgentDataBlock {
+                            agent_id: session_info.agent_id,
+                            session_id: session_info.session_id,
+                            body_rotation: initial_state.body_rotation.clone(),
+                            head_rotation: initial_state.head_rotation.clone(),
+                            state: initial_state.state,
+                            camera_center: initial_state.camera_center.clone(),
+                            camera_at_axis: initial_state.camera_at_axis.clone(),
+                            camera_left_axis: initial_state.camera_left_axis.clone(),
+                            camera_up_axis: initial_state.camera_up_axis.clone(),
+                            far: initial_state.far,
+                            control_flags,
+                            flags: initial_state.flags,
+                        },
                     };
                     
                     if let Err(e) = circuit.send(&agent_update).await {
-                        warn!("❌ Failed to send AgentUpdate #{}: {}", send_count, e);
+                        warn!("❌ Failed to send initial AgentUpdate #{}: {}", send_count + 1, e);
                     } else {
                         send_count += 1;
-                        if send_count % 10 == 1 { // Log every 10th message to avoid spam
-                            info!("📡 Sent AgentUpdate #{} ({}ms intervals)", send_count, 100);
-                        }
+                        info!("📡 Sent initial AgentUpdate #{} (control_flags={})", send_count, control_flags);
                     }
-                } else {
-                    warn!("⚠️ No primary circuit available for AgentUpdate");
-                    break;
                 }
+                
+                // Now enter very conservative update mode - only send on significant changes
+                let mut check_interval = interval(Duration::from_millis(5000)); // Check every 5 seconds
+                let mut last_significant_state: Option<AgentState> = Some(initial_state);
+                let mut last_update_time = std::time::Instant::now();
+                
+                while running.load(Ordering::SeqCst) {
+                    check_interval.tick().await;
+                    
+                    let current_state = agent_state.read().await.clone();
+                    let now = std::time::Instant::now();
+                    
+                    // Very restrictive change detection - only major state changes
+                    let significant_change = if let Some(ref last) = last_significant_state {
+                        // Only send if control flags changed (movement/sitting/etc)
+                        last.control_flags != current_state.control_flags ||
+                        // Or if state changed (typing, away, etc)
+                        last.state != current_state.state ||
+                        // Or if it's been more than 30 seconds since last update (heartbeat)
+                        now.duration_since(last_update_time) > Duration::from_secs(30)
+                    } else {
+                        true
+                    };
+                    
+                    if significant_change && send_count < 21 { // Cap at official viewer's ~21 messages
+                        let agent_update = AgentUpdate {
+                            agent_data: AgentUpdateAgentDataBlock {
+                                agent_id: session_info.agent_id,
+                                session_id: session_info.session_id,
+                                body_rotation: current_state.body_rotation.clone(),
+                                head_rotation: current_state.head_rotation.clone(),
+                                state: current_state.state,
+                                camera_center: current_state.camera_center.clone(),
+                                camera_at_axis: current_state.camera_at_axis.clone(),
+                                camera_left_axis: current_state.camera_left_axis.clone(),
+                                camera_up_axis: current_state.camera_up_axis.clone(),
+                                far: current_state.far,
+                                control_flags: current_state.control_flags,
+                                flags: current_state.flags,
+                            },
+                        };
+                        
+                        if let Err(e) = circuit.send(&agent_update).await {
+                            warn!("❌ Failed to send AgentUpdate #{}: {}", send_count + 1, e);
+                        } else {
+                            send_count += 1;
+                            last_update_time = now;
+                            info!("📡 Sent AgentUpdate #{} (significant change)", send_count);
+                        }
+                        
+                        last_significant_state = Some(current_state);
+                    }
+                }
+            } else {
+                warn!("⚠️ No primary circuit available for AgentUpdate");
             }
             
-            info!("⏹️ AgentUpdate loop stopped after {} messages", send_count);
+            info!("⏹️ AgentUpdate loop stopped after {} messages (target ~21)", send_count);
         });
         
         Ok(())
@@ -741,7 +797,9 @@ impl Client {
         // Send a simple TestMessage packet unreliably just to verify network path
         use crate::networking::packets::generated::*;
         let test_message = TestMessage {
-            test1: 42, // Simple test value
+            test_block1: crate::networking::packets::generated::TestMessageTestBlock1Block {
+                test1: 42, // Simple test value
+            },
             neighbor_block: vec![], // Empty neighbor block
         };
         
@@ -790,9 +848,11 @@ impl Client {
         
         // Step 1: Send UseCircuitCode - establishes the circuit
         let use_circuit_code = UseCircuitCode {
-            code: circuit.circuit_code(),
-            session_id: self.session_info.session_id,
-            id: self.session_info.agent_id, // Fixed: Use LLUUID directly, not Vec<u8>
+            circuit_code: crate::networking::packets::generated::UseCircuitCodeCircuitCodeBlock {
+                code: circuit.circuit_code(),
+                session_id: self.session_info.session_id,
+                id: self.session_info.agent_id, // Fixed: Use LLUUID directly, not Vec<u8>
+            },
         };
         
         info!("📦 UseCircuitCode details:");
@@ -920,9 +980,11 @@ impl Client {
         // Step 2: Send CompleteAgentMovement - critical for main region handshake
         // This triggers the server to send RegionHandshake AND AgentMovementComplete
         let complete_agent_movement = CompleteAgentMovement {
-            agent_id: self.session_info.agent_id,
-            session_id: self.session_info.session_id,
-            circuit_code: circuit.circuit_code(),
+            agent_data: crate::networking::packets::generated::CompleteAgentMovementAgentDataBlock {
+                agent_id: self.session_info.agent_id,
+                session_id: self.session_info.session_id,
+                circuit_code: circuit.circuit_code(),
+            },
         };
         
         // SECURITY: CompleteAgentMovement also contains sensitive data, ensure reliable delivery
@@ -935,9 +997,13 @@ impl Client {
 
         // PROTOCOL COMPLIANCE: Send RegionHandshakeReply after CompleteAgentMovement (from hippolog analysis)
         let region_handshake_reply = RegionHandshakeReply {
-            agent_id: self.session_info.agent_id,
-            session_id: self.session_info.session_id,
-            flags: 5, // From official log: Flags=5
+            agent_data: crate::networking::packets::generated::RegionHandshakeReplyAgentDataBlock {
+                agent_id: self.session_info.agent_id,
+                session_id: self.session_info.session_id,
+            },
+            region_info: crate::networking::packets::generated::RegionHandshakeReplyRegionInfoBlock {
+                flags: 5, // From official log: Flags=5
+            },
         };
         circuit.send(&region_handshake_reply).await?;
         info!("🤝 Sent RegionHandshakeReply (flags=5) for protocol compliance");
@@ -945,30 +1011,38 @@ impl Client {
         // PROTOCOL COMPLIANCE: Send AgentThrottle for bandwidth management (from hippolog analysis)
         let throttles_data = vec![0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]; // Basic throttling
         let agent_throttle = AgentThrottle {
-            agent_id: self.session_info.agent_id,
-            session_id: self.session_info.session_id,
-            circuit_code: circuit.circuit_code(),
-            gen_counter: 0,
-            throttles: crate::networking::packets::types::LLVariable1::new(throttles_data),
+            agent_data: crate::networking::packets::generated::AgentThrottleAgentDataBlock {
+                agent_id: self.session_info.agent_id,
+                session_id: self.session_info.session_id,
+                circuit_code: circuit.circuit_code(),
+            },
+            throttle: crate::networking::packets::generated::AgentThrottleThrottleBlock {
+                gen_counter: 0,
+                throttles: crate::networking::packets::types::LLVariable1::new(throttles_data),
+            },
         };
         circuit.send(&agent_throttle).await?;
         info!("📊 Sent AgentThrottle for bandwidth management");
 
         // PROTOCOL COMPLIANCE: Send AgentHeightWidth for viewport setup (from hippolog analysis)
         let agent_height_width = AgentHeightWidth {
-            agent_id: self.session_info.agent_id,
-            session_id: self.session_info.session_id,
-            circuit_code: circuit.circuit_code(),
-            gen_counter: 0,
-            height: 661, // From official log
-            width: 1280, // From official log
+            agent_data: crate::networking::packets::generated::AgentHeightWidthAgentDataBlock {
+                agent_id: self.session_info.agent_id,
+                session_id: self.session_info.session_id,
+                circuit_code: circuit.circuit_code(),
+            },
+            height_width_block: crate::networking::packets::generated::AgentHeightWidthHeightWidthBlockBlock {
+                gen_counter: 0,
+                height: 661, // From official log
+                width: 1280, // From official log
+            },
         };
         circuit.send(&agent_height_width).await?;
         info!("📐 Sent AgentHeightWidth (1280x661) for viewport setup");
         
         // Step 3: Send UUIDNameRequest for essential avatar data
         let uuid_name_request = UUIDNameRequest {
-            uuidname_block: vec![UUIDNameBlockBlock {
+            uuidname_block: vec![UUIDNameRequestUUIDNameBlockBlock {
                 id: self.session_info.agent_id,
             }],
         };
@@ -980,11 +1054,15 @@ impl Client {
         // NOTE: AgentThrottle and AgentHeightWidth are sent AFTER RegionHandshakeReply
         // in the RegionHandshakeHandler, following the official protocol sequence
         let agent_fov = AgentFOV {
-            agent_id: self.session_info.agent_id,
-            session_id: self.session_info.session_id,
-            circuit_code: circuit.circuit_code(),
-            gen_counter: 0,
-            vertical_angle: 1.2566370964050293, // ~72 degrees (homunculus standard)
+            agent_data: crate::networking::packets::generated::AgentFOVAgentDataBlock {
+                agent_id: self.session_info.agent_id,
+                session_id: self.session_info.session_id,
+                circuit_code: circuit.circuit_code(),
+            },
+            fovblock: crate::networking::packets::generated::AgentFOVFOVBlockBlock {
+                gen_counter: 0,
+                vertical_angle: 1.2566370964050293, // ~72 degrees (homunculus standard)
+            },
         };
         
         circuit.send(&agent_fov).await?;
@@ -994,9 +1072,11 @@ impl Client {
         
         // AgentAnimation - Set initial animation state
         let agent_animation = AgentAnimation {
-            agent_id: self.session_info.agent_id,
-            session_id: self.session_info.session_id,
-            animation_list: vec![AnimationListBlock {
+            agent_data: AgentAnimationAgentDataBlock {
+                agent_id: self.session_info.agent_id,
+                session_id: self.session_info.session_id,
+            },
+            animation_list: vec![AgentAnimationAnimationListBlock {
                 anim_id: crate::networking::packets::types::LLUUID::nil(), // Standing animation (using nil for now)
                 start_anim: false, // Stop animation = false
             }],
@@ -1007,30 +1087,56 @@ impl Client {
 
         // SetAlwaysRun - Set run state
         let set_always_run = SetAlwaysRun {
-            agent_id: self.session_info.agent_id,
-            session_id: self.session_info.session_id,
-            always_run: false, // Don't always run
+            agent_data: crate::networking::packets::generated::SetAlwaysRunAgentDataBlock {
+                agent_id: self.session_info.agent_id,
+                session_id: self.session_info.session_id,
+                always_run: false, // Don't always run
+            },
         };
         circuit.send(&set_always_run).await?;
         info!("🏃 Sent SetAlwaysRun (false) for movement state");
 
         // MuteListRequest - Request mute list 
         let mute_list_request = MuteListRequest {
-            agent_id: self.session_info.agent_id,
-            session_id: self.session_info.session_id,
-            mute_crc: 0, // Initial request
+            agent_data: crate::networking::packets::generated::MuteListRequestAgentDataBlock {
+                agent_id: self.session_info.agent_id,
+                session_id: self.session_info.session_id,
+            },
+            mute_data: crate::networking::packets::generated::MuteListRequestMuteDataBlock {
+                mute_crc: 0, // Initial request
+            },
         };
         circuit.send(&mute_list_request).await?;
         info!("🔇 Sent MuteListRequest (CRC=0) for mute list sync");
 
         // MoneyBalanceRequest - Request money balance
         let money_balance_request = MoneyBalanceRequest {
-            agent_id: self.session_info.agent_id,
-            session_id: self.session_info.session_id,
-            transaction_id: crate::networking::packets::types::LLUUID::nil(),
+            agent_data: crate::networking::packets::generated::MoneyBalanceRequestAgentDataBlock {
+                agent_id: self.session_info.agent_id,
+                session_id: self.session_info.session_id,
+            },
+            money_data: crate::networking::packets::generated::MoneyBalanceRequestMoneyDataBlock {
+                transaction_id: crate::networking::packets::types::LLUUID::nil(),
+            },
         };
         circuit.send(&money_balance_request).await?;
         info!("💰 Sent MoneyBalanceRequest for balance query");
+        
+        // Send early ViewerEffect messages to match official viewer (entry #22 in hippolog)
+        info!("🎭 Sending early ViewerEffect messages (protocol compliance)");
+        let source_pos = Position::new(128.0, 128.0, 25.0);
+        let target_pos = Position::new(130.0, 130.0, 25.0);
+        
+        // Send PointAt effect (Type=9 as seen in official viewer hippolog)
+        if let Err(e) = self.send_viewer_effect(
+            crate::networking::effects::EffectType::PointAt, 
+            source_pos, 
+            target_pos
+        ).await {
+            warn!("⚠️ Failed to send early ViewerEffect: {}", e);
+        } else {
+            info!("🎯 Sent early ViewerEffect: PointAt (protocol compliance)");
+        }
         
         info!("✅ All critical handshake packets sent (protocol compliant)");
         info!("Server will respond with:");
@@ -1132,31 +1238,7 @@ impl Client {
             }
         }
         
-        // Step 9: Send initial ViewerEffect messages to match official viewer behavior
-        info!("🎭 Sending initial ViewerEffect messages");
-        let source_pos = Position::new(128.0, 128.0, 25.0);
-        let target_pos = Position::new(130.0, 130.0, 25.0);
-        
-        // Send PointAt effect (Type=9 as seen in hippolog)
-        if let Err(e) = self.send_viewer_effect(
-            crate::networking::effects::EffectType::PointAt, 
-            source_pos, 
-            target_pos
-        ).await {
-            warn!("⚠️ Failed to send initial PointAt effect: {}", e);
-        }
-        
-        // Small delay between effects
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        
-        // Send Beam effect (Type=4 as seen in hippolog)
-        if let Err(e) = self.send_viewer_effect(
-            crate::networking::effects::EffectType::Beam, 
-            source_pos, 
-            target_pos
-        ).await {
-            warn!("⚠️ Failed to send initial Beam effect: {}", e);
-        }
+        // ViewerEffect messages already sent early in handshake for protocol compliance
 
         info!("🔍 CLIENT CONNECT: Method completing successfully");
         Ok(())
@@ -1172,18 +1254,25 @@ impl Client {
                 debug!("📋 EVENTQUEUE: Successfully parsed LLSD XML");
                 
                 // Parse <key>ack</key><integer>N</integer> pattern
+                // Need to handle whitespace nodes between key and integer
                 for node in doc.descendants() {
                     if node.tag_name().name() == "key" && node.text() == Some("ack") {
-                        // Look for the next integer sibling
-                        if let Some(next) = node.next_sibling() {
+                        // Look for the next integer node (may not be immediate sibling due to whitespace)
+                        let mut current = node.next_sibling();
+                        while let Some(next) = current {
                             if next.tag_name().name() == "integer" {
                                 if let Some(ack_text) = next.text() {
                                     if let Ok(ack_val) = ack_text.parse::<i64>() {
                                         ack_id = Some(ack_val);
                                         debug!("📋 EVENTQUEUE: Parsed ACK = {}", ack_val);
+                                        break;
                                     }
                                 }
+                            } else if !next.tag_name().name().is_empty() {
+                                // Stop if we hit a non-integer, non-whitespace element
+                                break;
                             }
+                            current = next.next_sibling();
                         }
                     }
                     
@@ -1202,6 +1291,10 @@ impl Client {
                 
                 if events.is_empty() && ack_id.is_some() {
                     debug!("📋 EVENTQUEUE: No events in response, just ACK");
+                } else if ack_id.is_none() {
+                    warn!("⚠️ EVENTQUEUE: Failed to parse ACK from response");
+                    debug!("⚠️ EVENTQUEUE: Raw XML (first 1000 chars): {}", 
+                           xml.chars().take(1000).collect::<String>());
                 }
             }
             Err(e) => {

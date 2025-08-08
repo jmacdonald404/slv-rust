@@ -80,7 +80,7 @@ where
     P: Packet + Clone,
 {
     /// Handle a typed packet
-    async fn handle_typed(&self, packet: &P, context: &HandlerContext) -> NetworkResult<()>;
+    async fn handle_typed(&self, packet: P, context: &HandlerContext) -> NetworkResult<()>;
     
     /// Priority level (higher = processed first)
     fn priority(&self) -> i32 {

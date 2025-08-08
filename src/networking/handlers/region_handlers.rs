@@ -23,11 +23,11 @@ impl ObjectUpdateHandler {
 #[async_trait]
 impl TypedPacketHandler<ObjectUpdate> for ObjectUpdateHandler {
     async fn handle_typed(&self, object_update: ObjectUpdate, context: &HandlerContext) -> NetworkResult<()> {
-        info!("🎯 Received ObjectUpdate for region {:016x}", object_update.region_handle);
+        info!("🎯 Received ObjectUpdate for region {:016x}", object_update.region_data.region_handle);
         
         // Process each object in the update
         for object_data in &object_update.object_data {
-            debug!("📦 Object update: ID={}", object_data.object_id);
+            debug!("📦 Object update: ID={}", object_data.id);
             
             // TODO: Parse additional object fields once we understand the generated structure
             // TODO: Integrate with world state management
@@ -57,11 +57,11 @@ impl ObjectUpdateCompressedHandler {
 impl TypedPacketHandler<ObjectUpdateCompressed> for ObjectUpdateCompressedHandler {
     async fn handle_typed(&self, compressed_update: ObjectUpdateCompressed, context: &HandlerContext) -> NetworkResult<()> {
         info!("🗜️ Received ObjectUpdateCompressed for region {:016x}", 
-              compressed_update.region_handle);
+              compressed_update.region_data.region_handle);
         
         // Process each compressed object update
         for object_data in &compressed_update.object_data {
-            debug!("📦 Compressed object: ID={}", object_data.object_id);
+            debug!("📦 Compressed object: data length={}", object_data.data.data.len());
             
             // TODO: Decompress and parse object data
             // TODO: Integrate with world state management per netplan.md
@@ -85,11 +85,11 @@ impl ObjectUpdateCachedHandler {
 impl TypedPacketHandler<ObjectUpdateCached> for ObjectUpdateCachedHandler {
     async fn handle_typed(&self, cached_update: ObjectUpdateCached, context: &HandlerContext) -> NetworkResult<()> {
         info!("💾 Received ObjectUpdateCached for region {:016x}", 
-              cached_update.region_handle);
+              cached_update.region_data.region_handle);
         
         // Process cached object references
         for object_data in &cached_update.object_data {
-            debug!("📦 Cached object: ID={}", object_data.object_id);
+            debug!("📦 Cached object: ID={}", object_data.id);
             
             // TODO: Check if we have this object cached locally
             // TODO: Request full update if cache miss
@@ -117,7 +117,7 @@ impl TypedPacketHandler<KillObject> for KillObjectHandler {
         
         // Process each object to be removed
         for object_data in &kill_object.object_data {
-            info!("🗑️ Removing object ID: {}", object_data.object_id);
+            info!("🗑️ Removing object ID: {}", object_data.id);
             
             // TODO: Remove object from world state
             // TODO: Clean up associated resources (textures, meshes, etc.)
@@ -142,11 +142,11 @@ impl ImprovedTerseObjectUpdateHandler {
 impl TypedPacketHandler<ImprovedTerseObjectUpdate> for ImprovedTerseObjectUpdateHandler {
     async fn handle_typed(&self, terse_update: ImprovedTerseObjectUpdate, context: &HandlerContext) -> NetworkResult<()> {
         debug!("🏃 Received ImprovedTerseObjectUpdate for region {:016x}", 
-               terse_update.region_handle);
+               terse_update.region_data.region_handle);
         
         // Process terse updates (position/rotation changes)
         for object_data in &terse_update.object_data {
-            debug!("📍 Terse update for object: ID={}", object_data.object_id);
+            debug!("📍 Terse update for object: data length={}", object_data.data.data.len());
             
             // TODO: Decode binary terse format 
             // TODO: Update object positions in world state

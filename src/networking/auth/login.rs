@@ -307,6 +307,7 @@ impl AuthenticationService {
 
         let response = client
             .get(url)
+            .timeout(Duration::from_secs(10))
             .header("Accept", "application/llsd+xml")
             .header("User-Agent", "Second Life Release 7.1.15 (1559633637437)")
             .send()

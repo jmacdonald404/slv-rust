@@ -3,7 +3,7 @@
 //! This module implements the ViewerEffect message system which is used for
 //! visual effects like pointing gestures, beams, spheres, and other particle effects.
 
-use crate::networking::packets::generated::{ViewerEffect, EffectBlock};
+use crate::networking::packets::generated::{ViewerEffect, ViewerEffectEffectBlock, ViewerEffectAgentDataBlock};
 use crate::networking::packets::types::{LLUUID, LLVariable1};
 use uuid::Uuid;
 use std::collections::HashMap;
@@ -249,7 +249,7 @@ impl EffectManager {
         debug!("  TypeData: {} bytes = {:02x?}", type_data_bytes.len(), type_data_bytes);
         
         // Create the effect block
-        let effect_block = EffectBlock {
+        let effect_block = ViewerEffectEffectBlock {
             id: LLUUID::from(effect_id),
             agent_id: LLUUID::from(config.agent_id),
             r#type: u8::from(config.effect_type),
@@ -260,8 +260,10 @@ impl EffectManager {
 
         // Create the ViewerEffect message with exactly ONE effect block (like official viewer)
         let viewer_effect = ViewerEffect {
-            agent_id: LLUUID::from(config.agent_id),
-            session_id: LLUUID::from(session_id),
+            agent_data: ViewerEffectAgentDataBlock {
+                agent_id: LLUUID::from(config.agent_id),
+                session_id: LLUUID::from(session_id),
+            },
             effect: vec![effect_block], // Single effect only, matching official viewer
         };
 
